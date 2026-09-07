@@ -18,70 +18,66 @@ jobs:
     timeout-minutes: 12
     env:
       PRIVATE_REPO: ${{ secrets.PRIVATE_REPO }}
-      PRIVATE_REPO_PAT: ${{ secrets.PRIVATE_REPO_PAT }}
+      PRIVATE_REPO_PAT: ${{ secrets.PRIVATE_REPO_PAT || secrets.PERSONAL_ACCESS_TOKEN || secrets.PAT || secrets.GH_PAT || secrets.GITHUB_PAT }}
       CLASPRC_JSON: ${{ secrets.CLASPRC_JSON }}
-      APPS_SCRIPT_ID: ${{ secrets.APPS_SCRIPT_ID }}
-      APPS_SCRIPT_DEPLOYMENT_ID: ${{ secrets.APPS_SCRIPT_DEPLOYMENT_ID }}
-      LEGACY_SITE_URL: ${{ secrets.LEGACY_SITE_URL }}
-      SITE_URL: ${{ secrets.SITE_URL }}
-      FIREBASE_PROJECT_ID: ${{ secrets.FIREBASE_PROJECT_ID }}
 
     steps:
-      - name: Verifica configurazione protetta
+      - name: Verifica accesso sorgente privato
         shell: bash
         run: |
           set -euo pipefail
-          for name in PRIVATE_REPO PRIVATE_REPO_PAT CLASPRC_JSON APPS_SCRIPT_ID APPS_SCRIPT_DEPLOYMENT_ID SITE_URL; do
-            if [ -z "${!name:-}" ]; then
-              echo "::error::Secret richiesto non configurato: $name"
-              exit 1
-            fi
-          done
+          test -n "$PRIVATE_REPO" || { echo "::error::PRIVATE_REPO mancante"; exit 1; }
+          test -n "$PRIVATE_REPO_PAT" || { echo "::error::PAT per repository privato mancante"; exit 1; }
 
       - name: Scarica sorgente privato
         uses: actions/checkout@v5
         with:
           repository: ${{ secrets.PRIVATE_REPO }}
-          token: ${{ secrets.PRIVATE_REPO_PAT }}
+          token: ${{ secrets.PRIVATE_REPO_PAT || secrets.PERSONAL_ACCESS_TOKEN || secrets.PAT || secrets.GH_PAT || secrets.GITHUB_PAT }}
           ref: main
           path: source
           persist-credentials: false
 
-      - name: Configura Node.js
-        uses: actions/setup-node@v5
+      - uses: actions/setup-node@v7
         with:
-          node-version: "22"
+          node-version: '22'
 
-      - name: Applica URL ufficiale senza esporlo
-        if: env.LEGACY_SITE_URL != ''
+      - name: Carica identificativi originali senza pubblicarli
         working-directory: source
         shell: bash
         run: |
-          python3 - <<'PY'
-          import os
-          from pathlib import Path
-          old = os.environ['LEGACY_SITE_URL']
-          new = os.environ['SITE_URL']
-          for p in Path('apps-script').rglob('*'):
-              if not p.is_file():
-                  continue
-              try:
-                  text = p.read_text()
-              except UnicodeDecodeError:
-                  continue
-              if old in text:
-                  p.write_text(text.replace(old, new))
-          PY
+          node <<'NODE'
+          const fs=require('node:fs');
+          const text=fs.readFileSync('.github/workflows/apps-script-deploy.yml','utf8');
+          const legacy=text.match(/grep -RIl '([^']+)' apps-script/)?.[1];
+          const official=text.match(/sed -i 's#[^#]+#([^#]+)#g'/)?.[1];
+          const scriptId=text.match(/scriptId:'([^']+)'/)?.[1];
+          const deploymentId=text.match(/--deploymentId\s+([^\s]+)\s+--description/)?.[1];
+          if(!legacy || !official || !scriptId || !deploymentId) throw new Error('Configurazione Apps Script originale non trovata');
+          fs.appendFileSync(process.env.GITHUB_ENV, `LEGACY_SITE_URL=${legacy}\nSITE_URL=${official}\nAPPS_SCRIPT_ID=${scriptId}\nAPPS_SCRIPT_DEPLOYMENT_ID=${deploymentId}\n`);
+          NODE
 
-      - name: Configura credenziale clasp temporanea
+      - name: Applica il dominio ufficiale agli script email
         working-directory: source
         shell: bash
+        run: |
+          set -euo pipefail
+          grep -RIl "$LEGACY_SITE_URL" apps-script | xargs -r sed -i "s#${LEGACY_SITE_URL}#${SITE_URL}#g"
+          if grep -R "$LEGACY_SITE_URL" apps-script; then
+            echo "::error::Dominio legacy ancora presente."
+            exit 1
+          fi
+
+      - name: Verifica credenziale senza mostrarla
+        if: vars.APPS_SCRIPT_ENABLED == 'true'
+        working-directory: source
         run: |
           node <<'NODE'
           const fs=require('node:fs'), os=require('node:os'), path=require('node:path');
           let c;
           try { c=JSON.parse(process.env.CLASPRC_JSON || ''); }
-          catch { console.error('CLASPRC_JSON mancante o non valido.'); process.exit(1); }
+          catch { console.error('CLASPRC_JSON mancante o JSON non valido.'); process.exit(1); }
+          if(c.type==='service_account'||c.private_key){ console.error('CLASPRC_JSON non è una credenziale OAuth clasp valida.'); process.exit(1); }
           const modern=c.tokens?.default;
           const validModern=modern?.type==='authorized_user' && modern.refresh_token && modern.client_id && modern.client_secret;
           const validLegacy=c.token?.refresh_token && c.oauth2ClientSettings?.clientId && c.oauth2ClientSettings?.clientSecret;
@@ -89,38 +85,46 @@ jobs:
           if(!validModern && !validLegacy && !validGlobal){ console.error('Credenziale OAuth clasp incompleta.'); process.exit(1); }
           fs.writeFileSync(path.join(os.homedir(),'.clasprc.json'),JSON.stringify(c),{mode:0o600});
           fs.writeFileSync('apps-script/.clasp.json',JSON.stringify({scriptId:process.env.APPS_SCRIPT_ID,rootDir:'.'}));
-          console.log('Credenziale clasp configurata senza mostrarne il contenuto.');
+          console.log('Formato OAuth valido. Nessuna credenziale mostrata.');
           NODE
 
       - name: Verifica accesso al progetto Apps Script
+        if: vars.APPS_SCRIPT_ENABLED == 'true'
         working-directory: source/apps-script
-        run: npx --yes @google/clasp@3.4.1 deployments > /tmp/clasp-check.log 2>&1
+        run: |
+          if ! npx --yes @google/clasp@3.4.1 deployments > /tmp/clasp-check.log 2>&1; then
+            echo "::error::Accesso Apps Script non riuscito."
+            exit 1
+          fi
 
-      - name: Aggiorna codice e deployment
+      - name: Aggiorna codice e implementazione esistente
+        if: vars.APPS_SCRIPT_ENABLED == 'true'
         working-directory: source/apps-script
         shell: bash
         run: |
-          set -euo pipefail
-          npx --yes @google/clasp@3.4.1 push --force > /tmp/clasp-push.log 2>&1
-          npx --yes @google/clasp@3.4.1 deploy --deploymentId "$APPS_SCRIPT_DEPLOYMENT_ID" --description "GitHub Actions ${GITHUB_SHA}" > /tmp/clasp-deploy.log 2>&1
+          if ! npx --yes @google/clasp@3.4.1 push --force > /tmp/clasp-push.log 2>&1; then
+            node ../scripts/clasp-error.cjs /tmp/clasp-push.log
+            exit 1
+          fi
+          if ! npx --yes @google/clasp@3.4.1 deploy --deploymentId "$APPS_SCRIPT_DEPLOYMENT_ID" --description "GitHub Actions ${GITHUB_SHA}" > /tmp/clasp-deploy.log 2>&1; then
+            node ../scripts/clasp-error.cjs /tmp/clasp-deploy.log
+            exit 1
+          fi
 
-      - name: Verifica worker pubblicato
+      - name: Verifica worker, template e versione pubblicata
+        if: vars.APPS_SCRIPT_ENABLED == 'true'
         working-directory: source
-        env:
-          FIREBASE_PROJECT_ID: ${{ secrets.FIREBASE_PROJECT_ID }}
-          SITE_URL: ${{ secrets.SITE_URL }}
         shell: bash
         run: |
           set -euo pipefail
           npm --prefix tools ci --no-audit --no-fund
           set +e
-          output="$(node tools/check-apps-script.mjs 2>&1)"
-          code=$?
+          output="$(node tools/check-apps-script.mjs 2>&1)"; code=$?
           set -e
           printf '%s\n' "$output"
           if [ "$code" -eq 0 ]; then exit 0; fi
           if printf '%s' "$output" | grep -Eqi 'FIRESTORE_429|ADMIN_FIRESTORE_429|RESOURCE_EXHAUSTED|Quota exceeded|(^|[^0-9])429([^0-9]|$)'; then
-            echo "::warning::Verifica rinviata per quota temporanea."
+            echo "::warning::Verifica Firestore rinviata per quota temporanea."
             exit 0
           fi
           exit "$code"
