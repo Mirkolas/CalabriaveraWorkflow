@@ -4,30 +4,31 @@ on:
   workflow_dispatch:
     inputs:
       backup_tag:
-        description: 'Tag della release backup da ripristinare'
+        description: 'Tag della release backup-v3 da ripristinare'
         required: true
         type: string
       apply:
-        description: 'Modificare Firebase? false = sola simulazione'
+        description: 'Modificare Firebase? false = solo simulazione e controllo integrità'
         type: boolean
         default: false
       confirmation:
-        description: 'Conferma richiesta dal tool privato'
+        description: 'Per applicare: RESTORE calabriavera-e08d4 seguito da spazio e tag'
         type: string
       exact:
-        description: 'Eliminare anche elementi creati dopo il backup'
+        description: 'Eliminare anche account/documenti creati dopo la copia? Distruttivo'
         type: boolean
         default: false
       delete_confirmation:
-        description: 'Conferma aggiuntiva per exact'
+        description: 'Solo con exact: DELETE EXTRA calabriavera-e08d4'
         type: string
       site_settings:
-        description: 'Ripristinare anche Hosting/regole/impostazioni supportate'
+        description: 'Ripristinare anche Hosting, regole, indici e impostazioni Auth supportate'
         type: boolean
         default: false
 
 permissions:
   contents: read
+  actions: read
   id-token: write
 
 concurrency:
@@ -38,7 +39,7 @@ jobs:
   restore:
     if: vars.BACKUPS_ENABLED == 'true' && github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
-    timeout-minutes: 40
+    timeout-minutes: 35
     env:
       PRIVATE_REPO: ${{ secrets.PRIVATE_REPO }}
       PRIVATE_REPO_PAT: ${{ secrets.PRIVATE_REPO_PAT }}
@@ -52,7 +53,7 @@ jobs:
           test -n "$PRIVATE_REPO_PAT" || { echo "::error::PAT per repository privato mancante"; exit 1; }
 
       - name: Scarica sorgente privato
-        uses: actions/checkout@v5
+        uses: actions/checkout@v7
         with:
           repository: ${{ secrets.PRIVATE_REPO }}
           token: ${{ secrets.PRIVATE_REPO_PAT }}
@@ -74,11 +75,11 @@ jobs:
           workload_identity_provider: ${{ vars.FIREBASE_WIF_PROVIDER }}
           service_account: ${{ vars.FIREBASE_RESTORE_SERVICE_ACCOUNT }}
 
-      - name: Simulazione o ripristino con copia preventiva
+      - name: Simulazione o ripristino con copia di sicurezza preventiva
         working-directory: source
         env:
+          FIREBASE_PROJECT_ID: calabriavera-e08d4
           GITHUB_TOKEN: ${{ secrets.PRIVATE_REPO_PAT }}
-          GITHUB_REPOSITORY: ${{ secrets.PRIVATE_REPO }}
           CALABRIAVERA_BACKUP_ENCRYPTION_KEY: ${{ secrets.CALABRIAVERA_BACKUP_ENCRYPTION_KEY }}
           FIREBASE_AUTH_HASH_CONFIG: ${{ secrets.FIREBASE_AUTH_HASH_CONFIG }}
           RESTORE_BACKUP_TAG: ${{ inputs.backup_tag }}
@@ -87,4 +88,7 @@ jobs:
           RESTORE_EXACT: ${{ inputs.exact }}
           RESTORE_DELETE_CONFIRM: ${{ inputs.delete_confirmation }}
           RESTORE_SITE_SETTINGS: ${{ inputs.site_settings }}
-        run: node tools/backup/restore.mjs
+        shell: bash
+        run: |
+          set -euo pipefail
+          GITHUB_REPOSITORY="$PRIVATE_REPO" node tools/backup/restore.mjs
