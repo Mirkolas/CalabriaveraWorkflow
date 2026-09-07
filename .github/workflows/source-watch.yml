@@ -12,7 +12,7 @@ on:
         default: false
 
 permissions:
-  contents: write
+  contents: read
   actions: write
 
 concurrency:
@@ -35,7 +35,7 @@ jobs:
           test -n "$PRIVATE_REPO" || { echo "::error::PRIVATE_REPO mancante"; exit 1; }
           test -n "$PRIVATE_REPO_PAT" || { echo "::error::PAT per repository privato mancante"; exit 1; }
 
-      - name: Trova l'ultimo controllo completato
+      - name: Trova l'ultimo controllo riuscito
         id: previous
         env:
           GH_TOKEN: ${{ github.token }}
@@ -43,13 +43,13 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          since="$(gh api "repos/${GH_REPO}/actions/workflows/source-watch.yml/runs?status=completed&per_page=1" --jq '.workflow_runs[0].run_started_at // empty' 2>/dev/null || true)"
+          since="$(gh api "repos/${GH_REPO}/actions/workflows/source-watch.yml/runs?status=success&per_page=1" --jq '.workflow_runs[0].run_started_at // empty' 2>/dev/null || true)"
           if [ -z "$since" ]; then
             since="$(date -u -d '20 minutes ago' +%Y-%m-%dT%H:%M:%SZ)"
           fi
           echo "since=$since" >> "$GITHUB_OUTPUT"
 
-      - name: Applica gli stessi trigger del repository privato
+      - name: Applica i trigger del commit privato 34eb685
         id: source
         env:
           GH_TOKEN: ${{ secrets.PRIVATE_REPO_PAT }}
@@ -61,11 +61,7 @@ jobs:
           set +x
           work=/tmp/cv-source-watch
           rm -rf "$work"
-          mkdir -p "$work/workflows" "$work/commits"
-
-          for workflow in apps-script-deploy.yml firebase-deploy.yml magazine-sync.yml promo-story.yml seo-sync.yml; do
-            gh api "repos/${PRIVATE_REPO}/contents/.github/workflows/${workflow}?ref=main" --jq '.content' | base64 -d > "$work/workflows/$workflow"
-          done
+          mkdir -p "$work/commits"
 
           gh api --paginate "repos/${PRIVATE_REPO}/commits?sha=main&since=${SINCE}&per_page=100" --jq '.[].sha' > "$work/shas"
 
@@ -77,8 +73,8 @@ jobs:
             gh api "repos/${PRIVATE_REPO}/commits/${sha}" > "$work/commits/${n}.json"
           done < "$work/shas"
 
-          # Il workflow privato verify.yml usa pull_request, non push.
-          # Considera soltanto PR verso main aggiornate dall'ultimo controllo.
+          # verify.yml nel commit sorgente usa pull_request. Consideriamo solo PR
+          # aperte verso main che sono cambiate dall'ultimo controllo riuscito.
           gh api "repos/${PRIVATE_REPO}/pulls?state=open&base=main&sort=updated&direction=desc&per_page=100" \
             | jq -r --arg since "$SINCE" '.[] | select(.updated_at >= $since) | .head.sha' > "$work/pr-heads"
           while IFS= read -r sha; do
@@ -90,23 +86,6 @@ jobs:
           const fs = require('node:fs');
           const path = require('node:path');
           const root = process.env.WORK;
-
-          function list(section, text) {
-            const lines = text.split(/\r?\n/);
-            const start = lines.findIndex(line => new RegExp(`^\\s{4}${section}:\\s*$`).test(line));
-            if (start < 0) return [];
-            const values = [];
-            for (let i = start + 1; i < lines.length; i++) {
-              const line = lines[i];
-              if (/^\s{0,4}\S/.test(line)) break;
-              const match = line.match(/^\s{6}-\s*(.+?)\s*$/);
-              if (!match) continue;
-              let value = match[1];
-              if ((value.startsWith("'") && value.endsWith("'")) || (value.startsWith('"') && value.endsWith('"'))) value = value.slice(1, -1);
-              values.push(value);
-            }
-            return values;
-          }
 
           function glob(pattern) {
             let out = '^';
@@ -124,30 +103,101 @@ jobs:
             return new RegExp(out + '$');
           }
 
-          function config(name) {
-            const text = fs.readFileSync(path.join(root, 'workflows', name), 'utf8');
-            return { paths: list('paths', text).map(glob), ignore: list('paths-ignore', text).map(glob) };
-          }
+          const rules = {
+            apps: {
+              paths: [
+                'apps-script/**',
+                'tools/check-apps-script.mjs',
+                '.github/workflows/apps-script-deploy.yml'
+              ].map(glob)
+            },
+            deploy: {
+              ignore: [
+                '**/*.md',
+                'docs/**',
+                '.github/workflow-templates/**'
+              ].map(glob)
+            },
+            magazine: {
+              paths: [
+                '.github/workflows/magazine-sync.yml',
+                '.github/workflows/social-watchdog.yml',
+                '.github/workflows/promo-story.yml',
+                'tools/automation-cadence-runner.mjs',
+                'tools/queue-new-magazine-items.mjs',
+                'tools/publish-magazine-batch.mjs',
+                'tools/sync-magazine.mjs',
+                'tools/sync-magazine-v2.mjs',
+                'tools/sync-tourism-opendata.mjs',
+                'tools/sync-regional-opendata.mjs',
+                'tools/source-fetch-compat.mjs',
+                'tools/cleanup-ingv-magnitude.mjs',
+                'tools/magazine-policy.mjs',
+                'tools/enforce-positive-magazine.mjs',
+                'tools/reconcile-magazine.mjs',
+                'tools/backfill-blog-covers.mjs',
+                'tools/package.json',
+                'tools/publish-social.mjs',
+                'tools/publish-social-runner.mjs',
+                'tools/publish-social-pair.mjs',
+                'tools/publish-promo-story.mjs',
+                'tools/meta-page-token.mjs',
+                'tools/check-meta-config.mjs',
+                'tools/check-meta-token-expiry.mjs',
+                'data/magazine-sources.json',
+                'data/magazine-sources-extra-commercial.json',
+                'tools/source-registry.mjs',
+                'tools/institutional-source.mjs',
+                'tools/feed-parser.mjs',
+                'tools/tourism-source.mjs',
+                'tools/enforce-source-rights.mjs',
+                'assets/js/magazine-lanes.js',
+                'assets/js/magazine-rights.js',
+                'assets/js/blog.js',
+                'assets/css/blog-sections.css',
+                'assets/images/blog-default-*.png',
+                'assets/Story-Promo_instagram-facebook.png',
+                'assets/Story-Promo_instagram-safe.png'
+              ].map(glob)
+            },
+            promo: {
+              paths: [
+                'tools/publish-promo-story.mjs',
+                'tools/automation-cadence-runner.mjs',
+                '.github/workflows/promo-story.yml',
+                'assets/Story-Promo_instagram-facebook.png',
+                'assets/Story-Promo_instagram-safe.png'
+              ].map(glob)
+            },
+            seo: {
+              paths: [
+                '.github/workflows/seo-sync.yml',
+                'tools/check-seo-sync.mjs',
+                'tools/lib/seo-snapshot.mjs'
+              ].map(glob)
+            }
+          };
+
           function triggered(files, cfg) {
-            if (cfg.paths.length) return files.some(file => cfg.paths.some(rule => rule.test(file)));
-            if (cfg.ignore.length) return files.some(file => !cfg.ignore.some(rule => rule.test(file)));
+            if (cfg.paths?.length) return files.some(file => cfg.paths.some(rule => rule.test(file)));
+            if (cfg.ignore?.length) return files.some(file => !cfg.ignore.some(rule => rule.test(file)));
             return true;
           }
 
-          const workflows = {
-            apps: config('apps-script-deploy.yml'),
-            deploy: config('firebase-deploy.yml'),
-            magazine: config('magazine-sync.yml'),
-            promo: config('promo-story.yml'),
-            seo: config('seo-sync.yml')
-          };
           const forced = process.env.FORCE === 'true';
           const prChanged = fs.readFileSync(path.join(root, 'pr-heads'), 'utf8').trim().length > 0;
           const result = {
-            apps: forced, deploy: forced, magazine: forced, promo: false, seo: forced,
+            apps: forced,
+            deploy: forced,
+            magazine: forced,
+            promo: false,
+            seo: forced,
             verify: forced || prChanged,
-            magazine_force: false, social_dry_run: false, social_publish: false,
-            social_republish_instagram: false, social_republish_ricadi: false
+            magazine_force: false,
+            social_dry_run: false,
+            social_publish: false,
+            social_republish_instagram: false,
+            social_republish_ricadi: false
           };
 
           const dir = path.join(root, 'commits');
@@ -157,11 +207,15 @@ jobs:
             const files = (commit.files || []).map(file => file.filename);
             const message = commit.commit?.message || '';
             if (!files.length) continue;
-            if (triggered(files, workflows.apps)) result.apps = true;
-            if (triggered(files, workflows.deploy)) result.deploy = true;
-            if (triggered(files, workflows.seo)) result.seo = true;
-            if (triggered(files, workflows.promo) && message.includes('[promo-story-now]')) result.promo = true;
-            if (triggered(files, workflows.magazine)) {
+
+            if (triggered(files, rules.apps)) result.apps = true;
+            if (triggered(files, rules.deploy)) result.deploy = true;
+            if (triggered(files, rules.seo)) result.seo = true;
+
+            // promo-story.yml del commit esegue il job su push soltanto con questo marker.
+            if (triggered(files, rules.promo) && message.includes('[promo-story-now]')) result.promo = true;
+
+            if (triggered(files, rules.magazine)) {
               result.magazine = true;
               result.magazine_force ||= message.includes('[magazine-force]');
               result.social_dry_run ||= message.includes('[social-dry-run]');
@@ -171,7 +225,9 @@ jobs:
             }
           }
 
-          for (const [key, value] of Object.entries(result)) fs.appendFileSync(process.env.GITHUB_OUTPUT, `${key}=${value}\n`);
+          for (const [key, value] of Object.entries(result)) {
+            fs.appendFileSync(process.env.GITHUB_OUTPUT, `${key}=${value}\n`);
+          }
           NODE
 
           rm -rf "$work"
