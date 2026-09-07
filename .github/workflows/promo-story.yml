@@ -25,6 +25,7 @@ jobs:
       - name: Richiama automazione centrale
         env:
           GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
           FORCE: ${{ inputs.force }}
         shell: bash
         run: |
