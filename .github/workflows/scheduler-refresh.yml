@@ -1,0 +1,32 @@
+name: Refresh scheduled workflow registration
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/scheduler-refresh.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: write
+
+jobs:
+  refresh:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Disable and re-enable scheduled workflows
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          for workflow in source-watch.yml magazine-sync.yml promo-story.yml seo-sync.yml; do
+            echo "Refreshing ${workflow}"
+            gh workflow disable "$workflow" --repo "$GH_REPO" || true
+            sleep 2
+            gh workflow enable "$workflow" --repo "$GH_REPO"
+          done
+          echo "Scheduled workflow registration refreshed."
