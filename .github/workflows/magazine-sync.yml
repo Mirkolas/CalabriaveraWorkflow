@@ -3,7 +3,7 @@ name: Blog automatico - RSS e OpenData
 on:
   schedule:
     - cron: '17 */2 * * *'
-    - cron: '6 17 7 9 *'
+    - cron: '24 17 7 9 *'
   workflow_dispatch:
     inputs:
       mode:
