@@ -1,4 +1,4 @@
-name: Verify private source
+name: Verifica codice e backup
 
 on:
   workflow_dispatch:
@@ -9,7 +9,7 @@ permissions:
   contents: read
 
 concurrency:
-  group: verify-private-source
+  group: verify-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:
