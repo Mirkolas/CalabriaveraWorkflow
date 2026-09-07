@@ -1,5 +1,6 @@
 name: Full workflow test launcher
 
+# test round: dispatcher targeting and JSON auth fallback
 on:
   push:
     branches: [main]
