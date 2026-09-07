@@ -16,7 +16,7 @@ jobs:
     timeout-minutes: 10
     env:
       PRIVATE_REPO: ${{ secrets.PRIVATE_REPO }}
-      PRIVATE_REPO_PAT: ${{ secrets.PRIVATE_REPO_PAT }}
+      PRIVATE_REPO_PAT: ${{ secrets.PRIVATE_REPO_PAT || secrets.PERSONAL_ACCESS_TOKEN || secrets.PAT }}
       RUNNER_ENABLED: ${{ secrets.RUNNER_ENABLED }}
       FIREBASE_PROJECT_ID: ${{ secrets.FIREBASE_PROJECT_ID }}
       SITE_URL: ${{ secrets.SITE_URL }}
@@ -54,45 +54,47 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          for name in PRIVATE_REPO PRIVATE_REPO_PAT FIREBASE_PROJECT_ID SITE_URL BACKUP_ENCRYPTION_KEY FIREBASE_AUTH_HASH_CONFIG CLASPRC_JSON APPS_SCRIPT_ID APPS_SCRIPT_DEPLOYMENT_ID; do
+          missing=0
+          for name in PRIVATE_REPO PRIVATE_REPO_PAT FIREBASE_PROJECT_ID SITE_URL BACKUP_ENCRYPTION_KEY FIREBASE_AUTH_HASH_CONFIG CLASPRC_JSON APPS_SCRIPT_ID APPS_SCRIPT_DEPLOYMENT_ID META_GRAPH_VERSION META_PAGE_ID META_IG_USER_ID META_PAGE_ACCESS_TOKEN META_INSTAGRAM_ACCESS_TOKEN ADMIN_ALERT_EMAIL SOCIAL_FACEBOOK_ENABLED SOCIAL_INSTAGRAM_ENABLED SOCIAL_MAX_DESTINATION_ATTEMPTS PROMO_FACEBOOK_STORY_IMAGE_URL PROMO_INSTAGRAM_STORY_IMAGE_URL SMOKE_TEST_EMAIL SMOKE_TEST_PASSWORD; do
             if [ -z "${!name:-}" ]; then
-              echo "::error::Secret mancante: $name"
-              exit 1
+              echo "::error::Configurazione mancante: $name"
+              missing=1
             fi
           done
           if [[ "$SITE_URL" != https://* ]]; then
             echo "::error::SITE_URL non valido"
-            exit 1
+            missing=1
           fi
           if [ -z "$FIREBASE_SERVICE_ACCOUNT" ] && { [ -z "$FIREBASE_WIF_PROVIDER" ] || [ -z "$FIREBASE_DEPLOY_SERVICE_ACCOUNT" ]; }; then
             echo "::error::Autenticazione Firebase deploy non configurata"
-            exit 1
+            missing=1
           fi
           if [ -z "$FIREBASE_BACKUP_SERVICE_ACCOUNT" ] && { [ -z "$FIREBASE_WIF_PROVIDER" ] || [ -z "$FIREBASE_BACKUP_WIF_SERVICE_ACCOUNT" ]; }; then
             echo "::error::Autenticazione Firebase backup non configurata"
-            exit 1
+            missing=1
           fi
           if [ -z "$FIREBASE_RESTORE_SERVICE_ACCOUNT" ] && { [ -z "$FIREBASE_WIF_PROVIDER" ] || [ -z "$FIREBASE_RESTORE_WIF_SERVICE_ACCOUNT" ]; }; then
             echo "::error::Autenticazione Firebase restore non configurata"
-            exit 1
+            missing=1
           fi
           if [ -z "$FIREBASE_BLOG_SERVICE_ACCOUNT" ] && { [ -z "$FIREBASE_BLOG_WIF_PROVIDER" ] || [ -z "$FIREBASE_BLOG_WIF_SERVICE_ACCOUNT" ]; }; then
             echo "::error::Autenticazione Firebase automazioni non configurata"
-            exit 1
+            missing=1
           fi
+          if [ "$missing" -ne 0 ]; then exit 1; fi
           node -e 'JSON.parse(process.env.CLASPRC_JSON); console.log("CLASPRC_JSON: formato JSON valido")'
           for name in FIREBASE_SERVICE_ACCOUNT FIREBASE_BACKUP_SERVICE_ACCOUNT FIREBASE_RESTORE_SERVICE_ACCOUNT FIREBASE_BLOG_SERVICE_ACCOUNT; do
             if [ -n "${!name:-}" ]; then
               NAME="$name" node -e 'JSON.parse(process.env[process.env.NAME]); console.log(process.env.NAME + ": formato JSON valido")'
             fi
           done
-          echo "Configurazione di base valida. Nessun valore sensibile mostrato."
+          echo "Configurazione completa: valori presenti e formati base validi."
 
       - name: Prova accesso al repository privato
         uses: actions/checkout@v5
         with:
           repository: ${{ secrets.PRIVATE_REPO }}
-          token: ${{ secrets.PRIVATE_REPO_PAT }}
+          token: ${{ secrets.PRIVATE_REPO_PAT || secrets.PERSONAL_ACCESS_TOKEN || secrets.PAT }}
           ref: main
           path: private-source-test
           persist-credentials: false
