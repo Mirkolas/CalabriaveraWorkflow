@@ -33,7 +33,7 @@ jobs:
   import:
     if: vars.BLOG_AUTOMATION_DISABLED != 'true' && github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
-    timeout-minutes: 28
+    timeout-minutes: 24
     env:
       PRIVATE_REPO: ${{ secrets.PRIVATE_REPO }}
       PRIVATE_REPO_PAT: ${{ secrets.PRIVATE_REPO_PAT }}
@@ -47,7 +47,7 @@ jobs:
           test -n "$PRIVATE_REPO_PAT" || { echo "::error::PAT per repository privato mancante"; exit 1; }
 
       - name: Scarica sorgente privato
-        uses: actions/checkout@v5
+        uses: actions/checkout@v7
         with:
           repository: ${{ secrets.PRIVATE_REPO }}
           token: ${{ secrets.PRIVATE_REPO_PAT }}
@@ -103,7 +103,7 @@ jobs:
           fi
           node tools/check-meta-token-expiry.mjs
 
-      - name: Controlla fonti e pubblica nuovi contenuti
+      - name: Controlla tutte le fonti e pubblica i nuovi contenuti ogni 4 ore
         if: github.event_name == 'schedule' || github.event_name == 'repository_dispatch' || (github.event_name == 'workflow_dispatch' && inputs.mode == 'blog')
         working-directory: source
         env:
