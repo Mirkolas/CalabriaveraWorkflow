@@ -1,0 +1,207 @@
+name: Content automation
+
+on:
+  schedule:
+    - cron: "7 */4 * * *"
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: 'Operazione da eseguire'
+        type: choice
+        required: true
+        default: blog
+        options:
+          - blog
+          - meta-token-check
+          - social-watchdog
+          - social-dry-run
+          - social-publish
+          - promo-story-watchdog
+          - promo-story-publish
+
+permissions:
+  contents: read
+  id-token: write
+
+concurrency:
+  group: content-automation-${{ github.event_name == 'workflow_dispatch' && inputs.mode || 'scheduled' }}
+  cancel-in-progress: false
+
+jobs:
+  run:
+    runs-on: ubuntu-latest
+    timeout-minutes: 28
+    env:
+      RUNNER_ENABLED: ${{ secrets.RUNNER_ENABLED }}
+      PRIVATE_REPO: ${{ secrets.PRIVATE_REPO }}
+      PRIVATE_REPO_PAT: ${{ secrets.PRIVATE_REPO_PAT }}
+      FIREBASE_PROJECT_ID: ${{ secrets.FIREBASE_PROJECT_ID }}
+      SITE_URL: ${{ secrets.SITE_URL }}
+      FIREBASE_SERVICE_ACCOUNT_JSON: ${{ secrets.FIREBASE_BLOG_SERVICE_ACCOUNT }}
+      FIREBASE_WIF_PROVIDER: ${{ secrets.FIREBASE_BLOG_WIF_PROVIDER }}
+      FIREBASE_WIF_SERVICE_ACCOUNT: ${{ secrets.FIREBASE_BLOG_WIF_SERVICE_ACCOUNT }}
+
+    steps:
+      - name: Abilitazione runner
+        id: gate
+        shell: bash
+        run: |
+          if [ "$RUNNER_ENABLED" = "true" ]; then
+            echo "enabled=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "enabled=false" >> "$GITHUB_OUTPUT"
+            echo "Runner schedulato non ancora abilitato."
+          fi
+
+      - name: Verifica configurazione protetta
+        if: steps.gate.outputs.enabled == 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          for name in PRIVATE_REPO PRIVATE_REPO_PAT FIREBASE_PROJECT_ID SITE_URL; do
+            if [ -z "${!name:-}" ]; then
+              echo "::error::Secret richiesto non configurato: $name"
+              exit 1
+            fi
+          done
+          if [ -z "${FIREBASE_SERVICE_ACCOUNT_JSON:-}" ] && { [ -z "${FIREBASE_WIF_PROVIDER:-}" ] || [ -z "${FIREBASE_WIF_SERVICE_ACCOUNT:-}" ]; }; then
+            echo "::error::Configura l'autenticazione Firebase per le automazioni."
+            exit 1
+          fi
+
+      - name: Scarica sorgente privato
+        if: steps.gate.outputs.enabled == 'true'
+        uses: actions/checkout@v5
+        with:
+          repository: ${{ secrets.PRIVATE_REPO }}
+          token: ${{ secrets.PRIVATE_REPO_PAT }}
+          ref: main
+          path: source
+          persist-credentials: false
+
+      - name: Configura Node.js
+        if: steps.gate.outputs.enabled == 'true'
+        uses: actions/setup-node@v5
+        with:
+          node-version: "22"
+
+      - name: Autentica Google Cloud con JSON
+        if: steps.gate.outputs.enabled == 'true' && env.FIREBASE_SERVICE_ACCOUNT_JSON != ''
+        uses: google-github-actions/auth@v3
+        with:
+          credentials_json: ${{ secrets.FIREBASE_BLOG_SERVICE_ACCOUNT }}
+
+      - name: Autentica Google Cloud con Workload Identity Federation
+        if: steps.gate.outputs.enabled == 'true' && env.FIREBASE_SERVICE_ACCOUNT_JSON == ''
+        uses: google-github-actions/auth@v3
+        with:
+          workload_identity_provider: ${{ secrets.FIREBASE_BLOG_WIF_PROVIDER }}
+          service_account: ${{ secrets.FIREBASE_BLOG_WIF_SERVICE_ACCOUNT }}
+
+      - name: Installa dipendenze tools
+        if: steps.gate.outputs.enabled == 'true'
+        working-directory: source
+        run: npm --prefix tools ci --no-audit --no-fund
+
+      - name: Controlla validita token social
+        if: steps.gate.outputs.enabled == 'true' && (github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && inputs.mode == 'meta-token-check'))
+        continue-on-error: true
+        working-directory: source
+        env:
+          FIREBASE_PROJECT_ID: ${{ secrets.FIREBASE_PROJECT_ID }}
+          SITE_URL: ${{ secrets.SITE_URL }}
+          META_GRAPH_VERSION: ${{ secrets.META_GRAPH_VERSION }}
+          META_PAGE_ACCESS_TOKEN: ${{ secrets.META_PAGE_ACCESS_TOKEN }}
+          META_INSTAGRAM_ACCESS_TOKEN: ${{ secrets.META_INSTAGRAM_ACCESS_TOKEN }}
+          ADMIN_ALERT_EMAIL: ${{ secrets.ADMIN_ALERT_EMAIL }}
+        run: node tools/check-meta-token-expiry.mjs
+
+      - name: Sincronizza contenuti
+        if: steps.gate.outputs.enabled == 'true' && (github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && inputs.mode == 'blog'))
+        working-directory: source
+        env:
+          FIREBASE_PROJECT_ID: ${{ secrets.FIREBASE_PROJECT_ID }}
+          NODE_OPTIONS: --import=./tools/source-fetch-compat.mjs
+          AUTOMATION_INTERVAL_MINUTES: "240"
+          AUTOMATION_LOCK_MINUTES: "35"
+          AUTOMATION_FORCE: ${{ github.event_name == 'workflow_dispatch' && inputs.mode == 'blog' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          node tools/automation-cadence-runner.mjs magazine-site -- bash -lc '
+            set -euo pipefail
+            export MAGAZINE_CYCLE_STARTED_AT_MS=$(date +%s%3N)
+            node tools/enforce-source-rights.mjs
+            node tools/cleanup-ingv-magnitude.mjs
+            set +e
+            node tools/sync-magazine-v2.mjs; rss_code=$?
+            set -e
+            node tools/queue-new-magazine-items.mjs
+            set +e
+            node tools/sync-tourism-opendata.mjs; tourism_code=$?
+            set -e
+            node tools/queue-new-magazine-items.mjs
+            set +e
+            node tools/sync-regional-opendata.mjs; regional_code=$?
+            set -e
+            node tools/queue-new-magazine-items.mjs
+            node tools/reconcile-magazine.mjs
+            node tools/enforce-positive-magazine.mjs
+            node tools/backfill-blog-covers.mjs
+            node tools/publish-magazine-batch.mjs
+            if [ "$rss_code" -ne 0 ] && [ "$tourism_code" -ne 0 ] && [ "$regional_code" -ne 0 ]; then exit 1; fi
+          '
+
+      - name: Pubblica social
+        if: steps.gate.outputs.enabled == 'true' && (github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && (inputs.mode == 'social-watchdog' || inputs.mode == 'social-dry-run' || inputs.mode == 'social-publish')))
+        working-directory: source
+        env:
+          FIREBASE_PROJECT_ID: ${{ secrets.FIREBASE_PROJECT_ID }}
+          SITE_URL: ${{ secrets.SITE_URL }}
+          META_GRAPH_VERSION: ${{ secrets.META_GRAPH_VERSION }}
+          META_PAGE_ID: ${{ secrets.META_PAGE_ID }}
+          META_IG_USER_ID: ${{ secrets.META_IG_USER_ID }}
+          META_PAGE_ACCESS_TOKEN: ${{ secrets.META_PAGE_ACCESS_TOKEN }}
+          META_INSTAGRAM_ACCESS_TOKEN: ${{ secrets.META_INSTAGRAM_ACCESS_TOKEN }}
+          SOCIAL_FACEBOOK_ENABLED: ${{ secrets.SOCIAL_FACEBOOK_ENABLED }}
+          SOCIAL_INSTAGRAM_ENABLED: ${{ secrets.SOCIAL_INSTAGRAM_ENABLED }}
+          SOCIAL_FACEBOOK_STORY_ENABLED: "false"
+          SOCIAL_INSTAGRAM_STORY_ENABLED: "false"
+          SOCIAL_MAX_POST_AGE_HOURS: "8760"
+          SOCIAL_MAX_DESTINATION_ATTEMPTS: ${{ secrets.SOCIAL_MAX_DESTINATION_ATTEMPTS }}
+          SOCIAL_DRY_RUN: ${{ github.event_name == 'workflow_dispatch' && inputs.mode == 'social-dry-run' }}
+          AUTOMATION_INTERVAL_MINUTES: "240"
+          AUTOMATION_LOCK_MINUTES: "35"
+          AUTOMATION_ADVANCE_ON_FAILURE: "true"
+          AUTOMATION_FORCE: ${{ github.event_name == 'workflow_dispatch' && inputs.mode == 'social-publish' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [ "$SOCIAL_DRY_RUN" = "true" ]; then
+            node tools/check-meta-config.mjs
+            node tools/publish-social-pair.mjs
+          else
+            node tools/automation-cadence-runner.mjs social-feed -- bash -lc 'node tools/check-meta-config.mjs && node tools/publish-social-pair.mjs'
+          fi
+
+      - name: Pubblica story promozionale
+        if: steps.gate.outputs.enabled == 'true' && (github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && (inputs.mode == 'promo-story-watchdog' || inputs.mode == 'promo-story-publish')))
+        working-directory: source
+        env:
+          FIREBASE_PROJECT_ID: ${{ secrets.FIREBASE_PROJECT_ID }}
+          SITE_URL: ${{ secrets.SITE_URL }}
+          META_GRAPH_VERSION: ${{ secrets.META_GRAPH_VERSION }}
+          META_PAGE_ID: ${{ secrets.META_PAGE_ID }}
+          META_IG_USER_ID: ${{ secrets.META_IG_USER_ID }}
+          META_PAGE_ACCESS_TOKEN: ${{ secrets.META_PAGE_ACCESS_TOKEN }}
+          META_INSTAGRAM_ACCESS_TOKEN: ${{ secrets.META_INSTAGRAM_ACCESS_TOKEN }}
+          SOCIAL_FACEBOOK_ENABLED: ${{ secrets.SOCIAL_FACEBOOK_ENABLED }}
+          SOCIAL_INSTAGRAM_ENABLED: ${{ secrets.SOCIAL_INSTAGRAM_ENABLED }}
+          PROMO_FACEBOOK_STORY_IMAGE_URL: ${{ secrets.PROMO_FACEBOOK_STORY_IMAGE_URL }}
+          PROMO_INSTAGRAM_STORY_IMAGE_URL: ${{ secrets.PROMO_INSTAGRAM_STORY_IMAGE_URL }}
+          PROMO_STORY_TARGET: both
+          PROMO_STORY_DRY_RUN: "false"
+          AUTOMATION_INTERVAL_MINUTES: "1440"
+          AUTOMATION_LOCK_MINUTES: "30"
+          AUTOMATION_FORCE: ${{ github.event_name == 'workflow_dispatch' && inputs.mode == 'promo-story-publish' }}
+        run: node tools/automation-cadence-runner.mjs promo-story -- bash -lc 'node tools/check-meta-config.mjs && node tools/publish-promo-story.mjs'
