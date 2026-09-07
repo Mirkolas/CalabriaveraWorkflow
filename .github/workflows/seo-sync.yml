@@ -29,7 +29,7 @@ jobs:
         id: gate
         shell: bash
         run: |
-          if [ "$RUNNER_ENABLED" = "true" ]; then
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ] || [ "$RUNNER_ENABLED" = "true" ]; then
             echo "enabled=true" >> "$GITHUB_OUTPUT"
           else
             echo "enabled=false" >> "$GITHUB_OUTPUT"
@@ -80,12 +80,12 @@ jobs:
           output="$(node tools/check-seo-sync.mjs 2>&1)"
           code=$?
           set -e
-          printf '%s\n' "$output"
           if [ "$code" -eq 0 ]; then exit 0; fi
           if printf '%s' "$output" | grep -Eqi 'RESOURCE_EXHAUSTED|Quota exceeded|HTTP 429|FIRESTORE_429|(^|[^0-9])429([^0-9]|$)'; then
             echo "::warning::Verifica SEO rinviata per quota temporanea."
             exit 0
           fi
+          echo "::error::Verifica SEO non riuscita; output privato omesso dal log pubblico."
           exit "$code"
 
       - name: Avvia deploy pubblico
