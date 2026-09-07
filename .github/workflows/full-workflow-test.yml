@@ -1,6 +1,6 @@
 name: Full workflow test launcher
 
-# rerun after WIF service account binding
+# test WIF paths for backup and content automation
 on:
   push:
     branches: [main]
@@ -16,12 +16,15 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
-      - name: Avvia nuovo Firebase deploy WIF
+      - name: Avvia backup e automazioni contenuti
         env:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
         shell: bash
         run: |
           set -euo pipefail
-          gh workflow run firebase-deploy.yml --ref main
-          echo 'Nuovo deploy WIF accodato.'
+          gh workflow run daily-backup.yml --ref main
+          gh workflow run magazine-sync.yml --ref main -f mode=meta-token-check
+          gh workflow run magazine-sync.yml --ref main -f mode=social-dry-run
+          gh workflow run magazine-sync.yml --ref main -f mode=blog
+          echo 'Test WIF backup/content accodati.'
