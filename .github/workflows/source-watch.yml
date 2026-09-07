@@ -79,8 +79,8 @@ jobs:
 
           # Il workflow privato verify.yml usa pull_request, non push.
           # Considera soltanto PR verso main aggiornate dall'ultimo controllo.
-          gh api --paginate "repos/${PRIVATE_REPO}/pulls?state=open&base=main&sort=updated&direction=desc&per_page=100" \
-            --jq --arg since "$SINCE" '[.[] | select(.updated_at >= $since) | .head.sha] | .[]' > "$work/pr-heads" || true
+          gh api "repos/${PRIVATE_REPO}/pulls?state=open&base=main&sort=updated&direction=desc&per_page=100" \
+            | jq -r --arg since "$SINCE" '.[] | select(.updated_at >= $since) | .head.sha' > "$work/pr-heads"
           while IFS= read -r sha; do
             [ -n "$sha" ] || continue
             echo "::add-mask::$sha"
