@@ -1,13 +1,15 @@
-name: Promotional story dispatcher
+name: Story promozionale CalabriaVera
 
 on:
   workflow_dispatch:
     inputs:
       force:
-        description: 'Forza la pubblicazione senza attendere la cadenza automatica'
+        description: 'Forza la Story su Facebook e Instagram anche se non sono trascorse 24 ore'
         type: boolean
         required: false
         default: false
+  repository_dispatch:
+    types: [source-promo-story-push]
 
 permissions:
   contents: read
@@ -19,17 +21,21 @@ concurrency:
 
 jobs:
   dispatch:
+    if: github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
-      - name: Richiama automazione centrale
+      - name: Richiama backend Story con cadenza protetta
         env:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
           FORCE: ${{ inputs.force }}
+          SOURCE_PUSH: ${{ github.event_name == 'repository_dispatch' }}
         shell: bash
         run: |
           set -euo pipefail
           mode=promo-story-watchdog
-          if [ "$FORCE" = "true" ]; then mode=promo-story-publish; fi
+          if [ "$FORCE" = "true" ] || [ "$SOURCE_PUSH" = "true" ]; then
+            mode=promo-story-publish
+          fi
           gh workflow run magazine-sync.yml --ref main -f mode="$mode"
