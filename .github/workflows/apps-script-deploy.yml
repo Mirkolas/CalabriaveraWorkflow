@@ -9,33 +9,123 @@ permissions:
   contents: read
 
 concurrency:
-  group: apps-script-production-dispatch
+  group: apps-script-production
   cancel-in-progress: false
 
 jobs:
-  dispatch:
-    if: github.ref == 'refs/heads/main'
+  deploy:
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 8
     env:
       PRIVATE_REPO: ${{ secrets.PRIVATE_REPO }}
-      GH_TOKEN: ${{ secrets.PRIVATE_REPO_PAT || secrets.PERSONAL_ACCESS_TOKEN || secrets.PAT || secrets.GH_PAT || secrets.GITHUB_PAT }}
-      TARGET_WORKFLOW: apps-script-deploy.yml
+      PRIVATE_REPO_PAT: ${{ secrets.PRIVATE_REPO_PAT || secrets.PERSONAL_ACCESS_TOKEN || secrets.PAT || secrets.GH_PAT || secrets.GITHUB_PAT }}
+
     steps:
-      - name: Avvia Apps Script nella repo privata e attende l'esito
+      - name: Verifica accesso sorgente privato
         shell: bash
         run: |
           set -euo pipefail
           test -n "$PRIVATE_REPO" || { echo "::error::PRIVATE_REPO mancante"; exit 1; }
-          test -n "$GH_TOKEN" || { echo "::error::PAT per repository privato mancante"; exit 1; }
-          started="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
-          gh workflow run "$TARGET_WORKFLOW" --repo "$PRIVATE_REPO" --ref main
-          run_id=""
-          for attempt in $(seq 1 30); do
-            run_id="$(gh api "repos/$PRIVATE_REPO/actions/workflows/$TARGET_WORKFLOW/runs?event=workflow_dispatch&branch=main&per_page=20" --jq ".workflow_runs[] | select(.created_at >= \"$started\") | .id" | head -n1)"
-            [ -n "$run_id" ] && break
-            sleep 2
-          done
-          test -n "$run_id" || { echo "::error::Run privato non trovato dopo il dispatch"; exit 1; }
-          echo "Run privato: $run_id"
-          gh run watch "$run_id" --repo "$PRIVATE_REPO" --exit-status
+          test -n "$PRIVATE_REPO_PAT" || { echo "::error::PAT per repository privato mancante"; exit 1; }
+
+      - name: Scarica sorgente privato
+        uses: actions/checkout@v7
+        with:
+          repository: ${{ secrets.PRIVATE_REPO }}
+          token: ${{ secrets.PRIVATE_REPO_PAT || secrets.PERSONAL_ACCESS_TOKEN || secrets.PAT || secrets.GH_PAT || secrets.GITHUB_PAT }}
+          ref: main
+          path: source
+          persist-credentials: false
+
+      - name: Conserva SHA del sorgente privato
+        working-directory: source
+        shell: bash
+        run: echo "SOURCE_SHA=$(git rev-parse HEAD)" >> "$GITHUB_ENV"
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version: '22'
+
+      - name: Applica il dominio ufficiale agli script email
+        working-directory: source
+        run: |
+          grep -RIl 'https://calabriavera.web.app' apps-script | xargs -r sed -i 's#https://calabriavera.web.app#https://calabriavera.com#g'
+          if grep -R 'https://calabriavera.web.app' apps-script; then
+            echo "::error::Dominio Firebase legacy ancora presente negli script email."
+            exit 1
+          fi
+          grep -q "https://calabriavera.com" apps-script/EmailAutomation.gs
+
+      - name: Verifica credenziale senza mostrarla
+        if: vars.APPS_SCRIPT_ENABLED == 'true'
+        working-directory: source
+        env:
+          CLASPRC_JSON: ${{ secrets.CLASPRC_JSON }}
+        run: |
+          node <<'NODE'
+          const fs=require('node:fs'), os=require('node:os'), path=require('node:path');
+          let c;
+          try { c=JSON.parse(process.env.CLASPRC_JSON || ''); }
+          catch { console.error('CLASPRC_JSON mancante o JSON non valido. Inserire il file generato da clasp login.'); process.exit(1); }
+          if(c.type==='service_account'||c.private_key){ console.error('CLASPRC_JSON contiene un account di servizio Firebase: occorre il file OAuth generato da clasp login.'); process.exit(1); }
+          const modern=c.tokens?.default;
+          const validModern=modern?.type==='authorized_user' && modern.refresh_token && modern.client_id && modern.client_secret;
+          const validLegacy=c.token?.refresh_token && c.oauth2ClientSettings?.clientId && c.oauth2ClientSettings?.clientSecret;
+          const validGlobal=c.refresh_token && c.access_token;
+          if(!validModern && !validLegacy && !validGlobal){ console.error('Credenziale OAuth incompleta: rigenerare con npx @google/clasp@3.4.1 login e copiare tutto il file .clasprc.json.'); process.exit(1); }
+          fs.writeFileSync(path.join(os.homedir(),'.clasprc.json'),JSON.stringify(c),{mode:0o600});
+          fs.writeFileSync('apps-script/.clasp.json',JSON.stringify({scriptId:'1ErMLq8Bph_HQihBzlHuInnn__5YsZ2Kj7N-umVxr0LzqqI4FqEL5tdn1',rootDir:'.'}));
+          console.log('Formato OAuth valido. Nessuna credenziale mostrata.');
+          NODE
+
+      - name: Verifica accesso al progetto Apps Script
+        if: vars.APPS_SCRIPT_ENABLED == 'true'
+        working-directory: source/apps-script
+        run: |
+          if ! npx --yes @google/clasp@3.4.1 deployments > /tmp/clasp-check.log 2>&1; then
+            echo "::error::Accesso Apps Script non riuscito. Verificare login del proprietario e Apps Script API abilitata."
+            exit 1
+          fi
+
+      - name: Aggiorna codice e implementazione esistente
+        if: vars.APPS_SCRIPT_ENABLED == 'true'
+        working-directory: source/apps-script
+        env:
+          GITHUB_SHA: ${{ env.SOURCE_SHA }}
+        run: |
+          if ! npx --yes @google/clasp@3.4.1 push --force > /tmp/clasp-push.log 2>&1; then
+            node ../scripts/clasp-error.cjs /tmp/clasp-push.log
+            echo "::error::Aggiornamento Apps Script non riuscito."
+            exit 1
+          fi
+          if ! npx --yes @google/clasp@3.4.1 deploy --deploymentId AKfycbybzwBASQBXjcITav3u40hM12SSezzBdBL9UyIJI-ld1eGNQ8Uly96iOdO4E_bVIbVMGQ --description "GitHub Actions ${GITHUB_SHA}" > /tmp/clasp-deploy.log 2>&1; then
+            node ../scripts/clasp-error.cjs /tmp/clasp-deploy.log
+            echo "::error::Codice aggiornato ma implementazione non riuscita."
+            exit 1
+          fi
+
+      - name: Verifica worker, template e versione pubblicata
+        if: vars.APPS_SCRIPT_ENABLED == 'true'
+        working-directory: source
+        shell: bash
+        run: |
+          set -euo pipefail
+          npm --prefix tools ci --no-audit --no-fund
+          set +e
+          output="$(node tools/check-apps-script.mjs 2>&1)"
+          code=$?
+          set -e
+          printf '%s\n' "$output"
+          if [ "$code" -eq 0 ]; then
+            exit 0
+          fi
+          if printf '%s' "$output" | grep -Eqi 'FIRESTORE_429|ADMIN_FIRESTORE_429|RESOURCE_EXHAUSTED|Quota exceeded|(^|[^0-9])429([^0-9]|$)'; then
+            echo "::warning::Deploy Apps Script completato; verifica Firestore rinviata per quota temporaneamente esaurita. Il worker continuerà a essere verificato nelle esecuzioni successive."
+            exit 0
+          fi
+          exit "$code"
+
+      - name: Rimuovi credenziali temporanee
+        if: always()
+        working-directory: source
+        run: rm -f "$HOME/.clasprc.json" apps-script/.clasp.json /tmp/clasp-check.log /tmp/clasp-push.log /tmp/clasp-deploy.log
