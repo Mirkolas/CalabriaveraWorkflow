@@ -18,25 +18,21 @@ jobs:
     timeout-minutes: 12
     env:
       PRIVATE_REPO: ${{ secrets.PRIVATE_REPO }}
-      PRIVATE_REPO_PAT: ${{ secrets.PRIVATE_REPO_PAT }}
+      PRIVATE_REPO_PAT: ${{ secrets.PRIVATE_REPO_PAT || secrets.PERSONAL_ACCESS_TOKEN || secrets.PAT || secrets.GH_PAT || secrets.GITHUB_PAT }}
 
     steps:
-      - name: Verifica configurazione protetta
+      - name: Verifica accesso sorgente privato
         shell: bash
         run: |
           set -euo pipefail
-          for name in PRIVATE_REPO PRIVATE_REPO_PAT; do
-            if [ -z "${!name:-}" ]; then
-              echo "::error::Secret richiesto non configurato: $name"
-              exit 1
-            fi
-          done
+          test -n "$PRIVATE_REPO" || { echo "::error::PRIVATE_REPO mancante"; exit 1; }
+          test -n "$PRIVATE_REPO_PAT" || { echo "::error::PAT per repository privato mancante"; exit 1; }
 
       - name: Scarica sorgente privato
         uses: actions/checkout@v5
         with:
           repository: ${{ secrets.PRIVATE_REPO }}
-          token: ${{ secrets.PRIVATE_REPO_PAT }}
+          token: ${{ secrets.PRIVATE_REPO_PAT || secrets.PERSONAL_ACCESS_TOKEN || secrets.PAT || secrets.GH_PAT || secrets.GITHUB_PAT }}
           ref: main
           path: source
           persist-credentials: false
@@ -44,7 +40,7 @@ jobs:
       - name: Configura Node.js
         uses: actions/setup-node@v5
         with:
-          node-version: "22"
+          node-version: '22'
 
       - name: Installa dipendenze
         working-directory: source
