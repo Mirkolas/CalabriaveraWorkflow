@@ -52,6 +52,8 @@ jobs:
           const project=text.match(/FIREBASE_PROJECT_ID:\s*([^\s]+)/)?.[1];
           const site=text.match(/SITE_URL:\s*(https:\/\/[^\s]+)/)?.[1];
           if(!project || !site) throw new Error('Configurazione SEO originale non trovata');
+          console.log(`::add-mask::${project}`);
+          console.log(`::add-mask::${site}`);
           fs.appendFileSync(process.env.GITHUB_ENV, `FIREBASE_PROJECT_ID=${project}\nSITE_URL=${site}\n`);
           NODE
 
@@ -83,4 +85,5 @@ jobs:
         if: steps.changes.outputs.needs_sync == 'true'
         env:
           GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
         run: gh workflow run firebase-deploy.yml --ref main
