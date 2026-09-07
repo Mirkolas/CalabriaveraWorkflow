@@ -43,9 +43,24 @@ jobs:
         with:
           node-version: '22'
 
-      - name: Installa, compila e testa
+      - name: Carica configurazione originale senza pubblicarla
         working-directory: source
-        run: npm ci && npm --prefix tools ci --no-audit --no-fund && npm run build && npm run test:backup
+        shell: bash
+        run: |
+          node <<'NODE'
+          const fs=require('node:fs');
+          const text=fs.readFileSync('.github/workflows/firebase-deploy.yml','utf8');
+          const project=text.match(/FIREBASE_PROJECT_ID:\s*([^\s]+)/)?.[1];
+          const site=text.match(/SITE_URL:\s*(https:\/\/[^\s]+)/)?.[1];
+          if(!project || !site) throw new Error('Configurazione deploy originale non trovata');
+          console.log(`::add-mask::${project}`);
+          console.log(`::add-mask::${site}`);
+          fs.appendFileSync(process.env.GITHUB_ENV, `FIREBASE_PROJECT_ID=${project}\nSITE_URL=${site}\n`);
+          NODE
+
+      - name: Installa, valida, compila e testa
+        working-directory: source
+        run: npm ci && npm --prefix tools ci --no-audit --no-fund && npm run validate && npm run build && npm run test:backup
 
       - name: Autentica Google Cloud con WIF
         uses: google-github-actions/auth@v3
