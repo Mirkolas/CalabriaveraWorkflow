@@ -4,6 +4,8 @@ on:
   workflow_dispatch:
   repository_dispatch:
     types: [source-deploy]
+  schedule:
+    - cron: '17 */4 * * *'
 
 permissions:
   contents: read
@@ -15,7 +17,7 @@ concurrency:
 
 jobs:
   deploy:
-    if: vars.FIREBASE_AUTO_DEPLOY_ENABLED == 'true' && github.ref == 'refs/heads/main'
+    if: vars.FIREBASE_AUTO_DEPLOY_ENABLED == 'true' && github.ref == 'refs/heads/main' && github.event_name != 'schedule'
     concurrency:
       group: firebase-production
       cancel-in-progress: false
