@@ -53,6 +53,10 @@ jobs:
           workload_identity_provider: ${{ vars.FIREBASE_WIF_PROVIDER }}
           service_account: ${{ vars.FIREBASE_BACKUP_SERVICE_ACCOUNT }}
 
+      - name: Allinea dist alla release Hosting
+        working-directory: source
+        run: npm run generate-sitemap:database
+
       - name: Backup, verifica remota e rotazione
         working-directory: source
         env:
