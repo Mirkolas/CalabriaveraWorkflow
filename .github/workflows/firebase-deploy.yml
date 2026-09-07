@@ -1,4 +1,4 @@
-name: Firebase deploy
+name: Firebase - Deploy CalabriaVera
 
 on:
   workflow_dispatch:
