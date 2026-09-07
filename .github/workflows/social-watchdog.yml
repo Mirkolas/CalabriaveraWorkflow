@@ -1,10 +1,10 @@
-name: Social dispatcher
+name: Social watchdog - Facebook e Instagram
 
 on:
   workflow_dispatch:
     inputs:
       force:
-        description: 'Forza la pubblicazione senza attendere la cadenza automatica'
+        description: 'Forza una coppia social anche se non e trascorsa la cadenza automatica'
         type: boolean
         required: false
         default: false
@@ -14,15 +14,16 @@ permissions:
   actions: write
 
 concurrency:
-  group: social-dispatch
+  group: social-watchdog-dispatch
   cancel-in-progress: false
 
 jobs:
   dispatch:
+    if: vars.BLOG_AUTOMATION_DISABLED != 'true' && github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
-      - name: Richiama automazione centrale
+      - name: Richiama backend Social con cadenza protetta
         env:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
