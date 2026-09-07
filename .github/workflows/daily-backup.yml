@@ -1,4 +1,4 @@
-name: Encrypted backup
+name: Firebase - Backup completo cifrato
 
 on:
   schedule:
