@@ -1,0 +1,21 @@
+name: Temporary automatic bridge validation
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/validation-launcher.yml'
+
+permissions:
+  contents: read
+  actions: write
+
+jobs:
+  launch:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Avvia watcher sorgente in verifica forzata
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh workflow run source-watch.yml --repo "$GITHUB_REPOSITORY" --ref main -f force=true
