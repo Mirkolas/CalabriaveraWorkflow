@@ -2,15 +2,27 @@
 
 Questo repository pubblico esegue GitHub Actions usando il sorgente di un repository privato senza copiarlo nel repository pubblico.
 
-Il checkout privato avviene solo sul runner temporaneo tramite secret. I workflow non contengono in chiaro nome del repository privato, token, ID progetto, URL applicativi, account di servizio o credenziali social.
+Il checkout privato avviene soltanto sul runner temporaneo tramite secret. Nei file pubblici non sono presenti in chiaro nome del repository sorgente, PAT, ID progetto, URL applicativi, account di servizio, ID Apps Script o credenziali social.
+
+## Come vengono rilevati i push privati
+
+`Private source watcher` viene eseguito ogni 15 minuti quando `RUNNER_ENABLED=true`. Legge con il PAT soltanto il commit corrente del branch `main`, ne calcola una seconda impronta SHA-256 e salva nella cache pubblica solo quell'impronta. Lo SHA originale e il nome del repository privato non vengono scritti nel repository o nei log.
+
+Quando l'impronta cambia, il watcher avvia nel repository pubblico:
+
+- `Verify private source`
+- `Firebase deploy`
+- `Apps Script deploy`
+
+Il watcher puo anche essere avviato manualmente; l'opzione `force` forza i tre workflow anche se la versione non e cambiata.
 
 ## Secrets di base
 
 Configura in **Settings → Secrets and variables → Actions**:
 
 - `PRIVATE_REPO`: repository sorgente privato nel formato `owner/repository`.
-- `PRIVATE_REPO_PAT`: PAT con accesso minimo necessario al repository privato.
-- `RUNNER_ENABLED`: imposta esattamente `true` solo dopo aver completato e testato tutti i secret; protegge i workflow schedulati.
+- `PRIVATE_REPO_PAT`: PAT con accesso al repository privato. Per operazioni di backup/ripristino che modificano release, tag o contenuti servono anche i relativi permessi di scrittura.
+- `RUNNER_ENABLED`: imposta esattamente `true` solo dopo i test manuali; abilita watcher e cron.
 - `FIREBASE_PROJECT_ID`
 - `SITE_URL`
 
@@ -38,6 +50,8 @@ Automazioni contenuti:
 - JSON: `FIREBASE_BLOG_SERVICE_ACCOUNT`
 - oppure WIF: `FIREBASE_BLOG_WIF_PROVIDER` + `FIREBASE_BLOG_WIF_SERVICE_ACCOUNT`
 
+**Nota WIF:** se il provider Google Cloud era limitato al nome del vecchio repository privato, va autorizzato anche questo repository pubblico. In alternativa usa temporaneamente il corrispondente secret JSON.
+
 ## Social
 
 - `META_GRAPH_VERSION`
@@ -57,7 +71,7 @@ Automazioni contenuti:
 - `CLASPRC_JSON`
 - `APPS_SCRIPT_ID`
 - `APPS_SCRIPT_DEPLOYMENT_ID`
-- `LEGACY_SITE_URL` (solo se deve essere sostituito automaticamente)
+- `LEGACY_SITE_URL` (solo se serve la sostituzione automatica)
 
 ## Browser smoke test
 
@@ -66,10 +80,10 @@ Automazioni contenuti:
 
 ## Cutover sicuro
 
-1. Copia i secret nel repository pubblico.
-2. Lascia `RUNNER_ENABLED` diverso da `true`.
-3. Avvia manualmente `Verify private source`, `Firebase deploy`, `Browser smoke test` e le automazioni che vuoi verificare.
-4. Quando i test sono riusciti, imposta `RUNNER_ENABLED=true` per attivare i cron pubblici.
-5. Solo a quel punto disattiva i corrispondenti trigger automatici nel repository privato, evitando esecuzioni duplicate.
+1. Copia i secret nel repository pubblico e lascia `RUNNER_ENABLED` diverso da `true`.
+2. Avvia manualmente `Verify private source`, `Firebase deploy`, `Browser smoke test`, `Encrypted backup`, `SEO sync` e le modalita di `Content automation` che vuoi verificare. I test manuali funzionano anche con i cron disabilitati.
+3. Verifica `Apps Script deploy`; se usi WIF, verifica prima l'autorizzazione del nuovo repository pubblico su Google Cloud.
+4. Imposta `RUNNER_ENABLED=true`: da quel momento watcher e cron pubblici diventano operativi.
+5. Solo dopo run pubbliche riuscite disattiva i trigger automatici dei workflow nel repository privato, evitando doppie esecuzioni.
 
-I workflow `repository_dispatch` sono gia predisposti per ricevere in seguito eventi di push dal repository privato tramite un relay minimo, senza spostare il lavoro pesante fuori da questo repository pubblico.
+I workflow privati non vengono disattivati automaticamente da questa configurazione: restano il fallback finche non completi manualmente il cutover delle credenziali.
