@@ -19,7 +19,7 @@ jobs:
   sync:
     if: vars.FIREBASE_AUTO_DEPLOY_ENABLED == 'true' && github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
-    timeout-minutes: 8
+    timeout-minutes: 5
     env:
       PRIVATE_REPO: ${{ secrets.PRIVATE_REPO }}
       PRIVATE_REPO_PAT: ${{ secrets.PRIVATE_REPO_PAT || secrets.PERSONAL_ACCESS_TOKEN || secrets.PAT || secrets.GH_PAT || secrets.GITHUB_PAT }}
@@ -33,7 +33,7 @@ jobs:
           test -n "$PRIVATE_REPO_PAT" || { echo "::error::PAT per repository privato mancante"; exit 1; }
 
       - name: Scarica sorgente privato
-        uses: actions/checkout@v5
+        uses: actions/checkout@v7
         with:
           repository: ${{ secrets.PRIVATE_REPO }}
           token: ${{ secrets.PRIVATE_REPO_PAT || secrets.PERSONAL_ACCESS_TOKEN || secrets.PAT || secrets.GH_PAT || secrets.GITHUB_PAT }}
@@ -45,24 +45,12 @@ jobs:
         with:
           node-version: '22'
 
-      - name: Carica configurazione SEO originale senza pubblicarla
-        working-directory: source
-        run: |
-          node <<'NODE'
-          const fs=require('node:fs');
-          const text=fs.readFileSync('.github/workflows/seo-sync.yml','utf8');
-          const project=text.match(/FIREBASE_PROJECT_ID:\s*([^\s]+)/)?.[1];
-          const site=text.match(/SITE_URL:\s*(https:\/\/[^\s]+)/)?.[1];
-          if(!project || !site) throw new Error('Configurazione SEO originale non trovata');
-          console.log(`::add-mask::${project}`);
-          console.log(`::add-mask::${site}`);
-          fs.appendFileSync(process.env.GITHUB_ENV, `FIREBASE_PROJECT_ID=${project}\nSITE_URL=${site}\n`);
-          NODE
-
-      - name: Confronta contenuti e sitemap
+      - name: Confronta tutti i contenuti pubblici con la sitemap online
         id: changes
         working-directory: source
         env:
+          FIREBASE_PROJECT_ID: calabriavera-e08d4
+          SITE_URL: https://calabriavera.com
           GH_TOKEN: ${{ github.token }}
           SEO_FORCE_SYNC: ${{ github.event_name == 'workflow_dispatch' }}
         shell: bash
@@ -72,20 +60,18 @@ jobs:
           output="$(node tools/check-seo-sync.mjs 2>&1)"
           code=$?
           set -e
+          printf '%s\n' "$output"
           if [ "$code" -eq 0 ]; then
-            printf '%s\n' "$output"
             exit 0
           fi
           if printf '%s' "$output" | grep -Eqi 'RESOURCE_EXHAUSTED|Quota exceeded|HTTP 429|FIRESTORE_429|(^|[^0-9])429([^0-9]|$)'; then
-            echo "::warning::Verifica SEO rinviata per quota temporanea."
+            echo "::warning::Verifica SEO rinviata: quota Firestore temporaneamente esaurita. Il prossimo controllo programmato riproverà senza pubblicare dati SEO incompleti."
             exit 0
           fi
-          echo "::error::Verifica SEO non riuscita; dettagli del sorgente privato omessi."
           exit "$code"
 
-      - name: Avvia rigenerazione SEO e deploy pubblico
+      - name: Avvia rigenerazione SEO e deploy Firebase
         if: steps.changes.outputs.needs_sync == 'true'
         env:
           GH_TOKEN: ${{ github.token }}
-          GH_REPO: ${{ github.repository }}
         run: gh workflow run firebase-deploy.yml --ref main
