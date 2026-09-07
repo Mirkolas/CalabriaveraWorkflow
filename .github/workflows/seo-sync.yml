@@ -1,9 +1,11 @@
-name: SEO sync
+name: SEO - Sincronizza attività e sitemap
 
 on:
   schedule:
     - cron: '27 */6 * * *'
   workflow_dispatch:
+  repository_dispatch:
+    types: [source-seo-push]
 
 permissions:
   contents: read
