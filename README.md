@@ -1,89 +1,71 @@
 # Public workflow runner
 
-Questo repository pubblico esegue GitHub Actions usando il sorgente di un repository privato senza copiarlo nel repository pubblico.
+Questo repository pubblico esegue i workflow usando il sorgente del repository privato, scaricato soltanto sul runner temporaneo. Il codice applicativo, il nome del repository privato e gli identificativi hardcoded presenti nel sorgente non vengono copiati nel repository pubblico.
 
-Il checkout privato avviene soltanto sul runner temporaneo tramite secret. Nei file pubblici non sono presenti in chiaro nome del repository sorgente, PAT, ID progetto, URL applicativi, account di servizio, ID Apps Script o credenziali social.
+## Regola di configurazione
 
-## Come vengono rilevati i push privati
+Le configurazioni applicative mantengono **gli stessi nomi e lo stesso tipo** del repository privato:
 
-`Private source watcher` viene eseguito ogni 15 minuti quando `RUNNER_ENABLED=true`. Legge con il PAT soltanto il commit corrente del branch `main`, ne calcola una seconda impronta SHA-256 e salva nella cache pubblica solo quell'impronta. Lo SHA originale e il nome del repository privato non vengono scritti nel repository o nei log.
+- cio che nel privato e una **Repository Variable** viene letto con `vars.*` anche qui;
+- cio che nel privato e un **Repository Secret** viene letto con `secrets.*` anche qui;
+- i valori che nel workflow privato erano hardcoded vengono letti dal sorgente privato a runtime, senza duplicarli nei file pubblici.
 
-Quando l'impronta cambia, il watcher avvia nel repository pubblico:
+Gli unici valori tecnici aggiuntivi sono necessari per permettere al runner pubblico di leggere il sorgente privato:
+
+- Secret `PRIVATE_REPO`: `owner/repository` del sorgente privato.
+- Secret PAT: preferibilmente `PRIVATE_REPO_PAT`. Per compatibilita i workflow riconoscono anche `PERSONAL_ACCESS_TOKEN`, `PAT`, `GH_PAT` o `GITHUB_PAT`. Il PAT deve avere accesso in lettura al repository privato; backup/restore richiedono anche i permessi necessari per release/contenuti privati.
+
+## Repository Variables originali
+
+Copia con lo stesso nome e valore del repository privato:
+
+- `FIREBASE_AUTO_DEPLOY_ENABLED`
+- `FIREBASE_WIF_PROVIDER`
+- `FIREBASE_DEPLOY_SERVICE_ACCOUNT`
+- `BACKUPS_ENABLED`
+- `FIREBASE_BACKUP_SERVICE_ACCOUNT`
+- `FIREBASE_RESTORE_SERVICE_ACCOUNT`
+- `APPS_SCRIPT_ENABLED`
+- `BLOG_AUTOMATION_DISABLED`
+- `FIREBASE_BLOG_WIF_PROVIDER`
+- `FIREBASE_BLOG_SERVICE_ACCOUNT`
+- `META_GRAPH_VERSION`
+- `META_PAGE_ID`
+- `META_IG_USER_ID`
+- `SOCIAL_FACEBOOK_ENABLED`
+- `SOCIAL_INSTAGRAM_ENABLED`
+- `SOCIAL_MAX_DESTINATION_ATTEMPTS`
+
+## Repository Secrets originali
+
+Copia con lo stesso nome e valore del repository privato:
+
+- `CLASPRC_JSON`
+- `CALABRIAVERA_BACKUP_ENCRYPTION_KEY`
+- `FIREBASE_AUTH_HASH_CONFIG`
+- `META_PAGE_ACCESS_TOKEN`
+- `META_INSTAGRAM_ACCESS_TOKEN`
+- `SMOKE_TEST_EMAIL`
+- `SMOKE_TEST_PASSWORD`
+
+Non servono i vecchi secret aggiuntivi `FIREBASE_PROJECT_ID`, `SITE_URL`, `APPS_SCRIPT_ID`, `APPS_SCRIPT_DEPLOYMENT_ID`, `ADMIN_ALERT_EMAIL`, `PROMO_FACEBOOK_STORY_IMAGE_URL`, `PROMO_INSTAGRAM_STORY_IMAGE_URL`, `BACKUP_ENCRYPTION_KEY` o service-account JSON creati durante la prima migrazione: non fanno parte della configurazione originale.
+
+## Rilevamento sorgente privato
+
+`Private source watcher` controlla ogni 15 minuti il commit corrente del branch `main`. Nel repository pubblico conserva soltanto un'impronta SHA-256 e non salva lo SHA originale del sorgente.
+
+Quando rileva una versione nuova avvia:
 
 - `Verify private source`
 - `Firebase deploy`
 - `Apps Script deploy`
 
-Il watcher puo anche essere avviato manualmente; l'opzione `force` forza i tre workflow anche se la versione non e cambiata.
+I workflow schedulati di backup, SEO e automazioni contenuti continuano con le stesse cadenze del privato.
 
-## Secrets di base
+## Workload Identity Federation
 
-Configura in **Settings → Secrets and variables → Actions**:
+I nomi delle Variables WIF sono identici al privato. Tuttavia Google Cloud vede ora come identita OIDC il repository pubblico. Se il provider WIF e limitato esplicitamente al nome del repository privato, occorre autorizzare anche questo repository pubblico nel provider/policy Google Cloud; copiare la stessa Variable da solo non cambia la policy lato Google.
 
-- `PRIVATE_REPO`: repository sorgente privato nel formato `owner/repository`.
-- `PRIVATE_REPO_PAT`: PAT con accesso al repository privato. Per operazioni di backup/ripristino che modificano release, tag o contenuti servono anche i relativi permessi di scrittura.
-- `RUNNER_ENABLED`: imposta esattamente `true` solo dopo i test manuali; abilita watcher e cron.
-- `FIREBASE_PROJECT_ID`
-- `SITE_URL`
+## Test
 
-## Firebase
-
-Puoi usare JSON oppure Workload Identity Federation.
-
-Deploy:
-- JSON: `FIREBASE_SERVICE_ACCOUNT`
-- oppure WIF: `FIREBASE_WIF_PROVIDER` + `FIREBASE_DEPLOY_SERVICE_ACCOUNT`
-
-Backup:
-- JSON: `FIREBASE_BACKUP_SERVICE_ACCOUNT`
-- oppure WIF: `FIREBASE_WIF_PROVIDER` + `FIREBASE_BACKUP_WIF_SERVICE_ACCOUNT`
-- `BACKUP_ENCRYPTION_KEY`
-- `FIREBASE_AUTH_HASH_CONFIG`
-
-Restore:
-- JSON: `FIREBASE_RESTORE_SERVICE_ACCOUNT`
-- oppure WIF: `FIREBASE_WIF_PROVIDER` + `FIREBASE_RESTORE_WIF_SERVICE_ACCOUNT`
-- `BACKUP_ENCRYPTION_KEY`
-- `FIREBASE_AUTH_HASH_CONFIG`
-
-Automazioni contenuti:
-- JSON: `FIREBASE_BLOG_SERVICE_ACCOUNT`
-- oppure WIF: `FIREBASE_BLOG_WIF_PROVIDER` + `FIREBASE_BLOG_WIF_SERVICE_ACCOUNT`
-
-**Nota WIF:** se il provider Google Cloud era limitato al nome del vecchio repository privato, va autorizzato anche questo repository pubblico. In alternativa usa temporaneamente il corrispondente secret JSON.
-
-## Social
-
-- `META_GRAPH_VERSION`
-- `META_PAGE_ID`
-- `META_IG_USER_ID`
-- `META_PAGE_ACCESS_TOKEN`
-- `META_INSTAGRAM_ACCESS_TOKEN`
-- `ADMIN_ALERT_EMAIL`
-- `SOCIAL_FACEBOOK_ENABLED`
-- `SOCIAL_INSTAGRAM_ENABLED`
-- `SOCIAL_MAX_DESTINATION_ATTEMPTS`
-- `PROMO_FACEBOOK_STORY_IMAGE_URL`
-- `PROMO_INSTAGRAM_STORY_IMAGE_URL`
-
-## Apps Script
-
-- `CLASPRC_JSON`
-- `APPS_SCRIPT_ID`
-- `APPS_SCRIPT_DEPLOYMENT_ID`
-- `LEGACY_SITE_URL` (solo se serve la sostituzione automatica)
-
-## Browser smoke test
-
-- `SMOKE_TEST_EMAIL`
-- `SMOKE_TEST_PASSWORD`
-
-## Cutover sicuro
-
-1. Copia i secret nel repository pubblico e lascia `RUNNER_ENABLED` diverso da `true`.
-2. Avvia manualmente `Verify private source`, `Firebase deploy`, `Browser smoke test`, `Encrypted backup`, `SEO sync` e le modalita di `Content automation` che vuoi verificare. I test manuali funzionano anche con i cron disabilitati.
-3. Verifica `Apps Script deploy`; se usi WIF, verifica prima l'autorizzazione del nuovo repository pubblico su Google Cloud.
-4. Imposta `RUNNER_ENABLED=true`: da quel momento watcher e cron pubblici diventano operativi.
-5. Solo dopo run pubbliche riuscite disattiva i trigger automatici dei workflow nel repository privato, evitando doppie esecuzioni.
-
-I workflow privati non vengono disattivati automaticamente da questa configurazione: restano il fallback finche non completi manualmente il cutover delle credenziali.
+`Configuration test` non esegue deploy: verifica accesso al sorgente privato, installazione, test, backup test, validazione e build. I workflow applicativi usano poi direttamente le stesse Variables e Secrets del privato.
