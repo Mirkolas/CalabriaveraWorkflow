@@ -1,0 +1,18 @@
+name: Trigger final encrypted backup validation
+
+on:
+  push:
+    branches: [main]
+
+permissions:
+  actions: write
+  contents: read
+
+jobs:
+  dispatch:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Avvia backup cifrato
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh workflow run daily-backup.yml --repo "$GITHUB_REPOSITORY" --ref main
