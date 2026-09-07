@@ -1,18 +1,18 @@
-name: Private source watcher
+name: Sorgente privato - Trigger automatici
 
 on:
   schedule:
-    - cron: '*/15 * * * *'
+    - cron: '*/5 * * * *'
   workflow_dispatch:
     inputs:
       force:
-        description: 'Forza i workflow anche se il sorgente non è cambiato'
+        description: 'Esegue i controlli automatici anche senza nuove modifiche'
         type: boolean
         required: false
         default: false
 
 permissions:
-  contents: read
+  contents: write
   actions: write
 
 concurrency:
@@ -22,7 +22,7 @@ concurrency:
 jobs:
   watch:
     runs-on: ubuntu-latest
-    timeout-minutes: 5
+    timeout-minutes: 7
     env:
       PRIVATE_REPO: ${{ secrets.PRIVATE_REPO }}
       PRIVATE_REPO_PAT: ${{ secrets.PRIVATE_REPO_PAT }}
@@ -35,53 +35,173 @@ jobs:
           test -n "$PRIVATE_REPO" || { echo "::error::PRIVATE_REPO mancante"; exit 1; }
           test -n "$PRIVATE_REPO_PAT" || { echo "::error::PAT per repository privato mancante"; exit 1; }
 
-      - name: Rileva versione privata senza pubblicarla
-        id: source
-        env:
-          GH_TOKEN: ${{ secrets.PRIVATE_REPO_PAT }}
-        shell: bash
-        run: |
-          set -euo pipefail
-          set +x
-          sha="$(gh api "repos/${PRIVATE_REPO}/commits/main" --jq '.sha' 2>/dev/null || true)"
-          if [ -z "$sha" ]; then
-            echo "::error::Impossibile leggere il repository sorgente con il PAT configurato."
-            exit 1
-          fi
-          digest="$(printf '%s' "$sha" | sha256sum | cut -d' ' -f1)"
-          echo "digest=$digest" >> "$GITHUB_OUTPUT"
-          unset sha
-
-      - name: Controlla se questa versione è già stata elaborata
-        id: source-cache
-        uses: actions/cache/restore@v4
-        with:
-          path: .private-source-state
-          key: private-source-${{ steps.source.outputs.digest }}
-
-      - name: Avvia workflow pubblici
-        if: inputs.force == true || steps.source-cache.outputs.cache-hit != 'true'
+      - name: Trova l'ultimo controllo completato
+        id: previous
         env:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
         shell: bash
         run: |
           set -euo pipefail
-          gh workflow run verify.yml --ref main
-          gh workflow run firebase-deploy.yml --ref main
-          gh workflow run apps-script-deploy.yml --ref main
-          echo "Nuova versione privata rilevata: workflow pubblici avviati."
+          since="$(gh api "repos/${GH_REPO}/actions/workflows/source-watch.yml/runs?status=completed&per_page=1" --jq '.workflow_runs[0].run_started_at // empty' 2>/dev/null || true)"
+          if [ -z "$since" ]; then
+            since="$(date -u -d '20 minutes ago' +%Y-%m-%dT%H:%M:%SZ)"
+          fi
+          echo "since=$since" >> "$GITHUB_OUTPUT"
 
-      - name: Memorizza solo l'impronta della versione
-        if: steps.source-cache.outputs.cache-hit != 'true'
+      - name: Applica gli stessi filtri push del repository privato
+        id: source
+        env:
+          GH_TOKEN: ${{ secrets.PRIVATE_REPO_PAT }}
+          SINCE: ${{ steps.previous.outputs.since }}
+          FORCE: ${{ inputs.force }}
         shell: bash
         run: |
-          mkdir -p .private-source-state
-          printf '%s\n' "${{ steps.source.outputs.digest }}" > .private-source-state/version
+          set -euo pipefail
+          set +x
+          work=/tmp/cv-source-watch
+          rm -rf "$work"
+          mkdir -p "$work/workflows" "$work/commits"
 
-      - name: Salva impronta senza dati del repository privato
-        if: steps.source-cache.outputs.cache-hit != 'true'
-        uses: actions/cache/save@v4
-        with:
-          path: .private-source-state
-          key: private-source-${{ steps.source.outputs.digest }}
+          for workflow in apps-script-deploy.yml firebase-deploy.yml magazine-sync.yml promo-story.yml seo-sync.yml; do
+            gh api "repos/${PRIVATE_REPO}/contents/.github/workflows/${workflow}?ref=main" --jq '.content' | base64 -d > "$work/workflows/$workflow"
+          done
+
+          gh api --paginate "repos/${PRIVATE_REPO}/commits?sha=main&since=${SINCE}&per_page=100" --jq '.[].sha' > "$work/shas"
+
+          n=0
+          while IFS= read -r sha; do
+            [ -n "$sha" ] || continue
+            echo "::add-mask::$sha"
+            n=$((n + 1))
+            gh api "repos/${PRIVATE_REPO}/commits/${sha}" > "$work/commits/${n}.json"
+          done < "$work/shas"
+
+          WORK="$work" node <<'NODE'
+          const fs = require('node:fs');
+          const path = require('node:path');
+          const root = process.env.WORK;
+
+          function list(section, text) {
+            const lines = text.split(/\r?\n/);
+            const start = lines.findIndex(line => new RegExp(`^\\s{4}${section}:\\s*$`).test(line));
+            if (start < 0) return [];
+            const values = [];
+            for (let i = start + 1; i < lines.length; i++) {
+              const line = lines[i];
+              if (/^\s{0,4}\S/.test(line)) break;
+              const match = line.match(/^\s{6}-\s*(.+?)\s*$/);
+              if (!match) continue;
+              let value = match[1];
+              if ((value.startsWith("'") && value.endsWith("'")) || (value.startsWith('"') && value.endsWith('"'))) value = value.slice(1, -1);
+              values.push(value);
+            }
+            return values;
+          }
+
+          function glob(pattern) {
+            let out = '^';
+            for (let i = 0; i < pattern.length; i++) {
+              const ch = pattern[i];
+              if (ch === '*') {
+                if (pattern[i + 1] === '*') {
+                  i++;
+                  if (pattern[i + 1] === '/') { i++; out += '(?:.*/)?'; }
+                  else out += '.*';
+                } else out += '[^/]*';
+              } else if (ch === '?') out += '[^/]';
+              else out += ch.replace(/[\\^$.*+?()[\]{}|]/g, '\\$&');
+            }
+            return new RegExp(out + '$');
+          }
+
+          function config(name) {
+            const text = fs.readFileSync(path.join(root, 'workflows', name), 'utf8');
+            return { paths: list('paths', text).map(glob), ignore: list('paths-ignore', text).map(glob) };
+          }
+          function triggered(files, cfg) {
+            if (cfg.paths.length) return files.some(file => cfg.paths.some(rule => rule.test(file)));
+            if (cfg.ignore.length) return files.some(file => !cfg.ignore.some(rule => rule.test(file)));
+            return true;
+          }
+
+          const workflows = {
+            apps: config('apps-script-deploy.yml'),
+            deploy: config('firebase-deploy.yml'),
+            magazine: config('magazine-sync.yml'),
+            promo: config('promo-story.yml'),
+            seo: config('seo-sync.yml')
+          };
+          const forced = process.env.FORCE === 'true';
+          const result = {
+            apps: forced, deploy: forced, magazine: forced, promo: false, seo: forced, verify: forced,
+            magazine_force: false, social_dry_run: false, social_publish: false,
+            social_republish_instagram: false, social_republish_ricadi: false
+          };
+
+          const dir = path.join(root, 'commits');
+          const commitFiles = fs.readdirSync(dir).filter(name => name.endsWith('.json'));
+          for (const filename of commitFiles) {
+            const commit = JSON.parse(fs.readFileSync(path.join(dir, filename), 'utf8'));
+            const files = (commit.files || []).map(file => file.filename);
+            const message = commit.commit?.message || '';
+            if (!files.length) continue;
+            result.verify = true;
+            if (triggered(files, workflows.apps)) result.apps = true;
+            if (triggered(files, workflows.deploy)) result.deploy = true;
+            if (triggered(files, workflows.seo)) result.seo = true;
+            if (triggered(files, workflows.promo) && message.includes('[promo-story-now]')) result.promo = true;
+            if (triggered(files, workflows.magazine)) {
+              result.magazine = true;
+              result.magazine_force ||= message.includes('[magazine-force]');
+              result.social_dry_run ||= message.includes('[social-dry-run]');
+              result.social_publish ||= message.includes('[social-publish]');
+              result.social_republish_instagram ||= message.includes('[social-republish-instagram]');
+              result.social_republish_ricadi ||= message.includes('[social-republish-ricadi]');
+            }
+          }
+
+          for (const [key, value] of Object.entries(result)) fs.appendFileSync(process.env.GITHUB_OUTPUT, `${key}=${value}\n`);
+          NODE
+
+          rm -rf "$work"
+
+      - name: Avvia gli equivalenti dei trigger push privati
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          RUN_APPS: ${{ steps.source.outputs.apps }}
+          RUN_DEPLOY: ${{ steps.source.outputs.deploy }}
+          RUN_MAGAZINE: ${{ steps.source.outputs.magazine }}
+          RUN_PROMO: ${{ steps.source.outputs.promo }}
+          RUN_SEO: ${{ steps.source.outputs.seo }}
+          RUN_VERIFY: ${{ steps.source.outputs.verify }}
+          MAGAZINE_FORCE: ${{ steps.source.outputs.magazine_force }}
+          SOCIAL_DRY_RUN: ${{ steps.source.outputs.social_dry_run }}
+          SOCIAL_PUBLISH: ${{ steps.source.outputs.social_publish }}
+          SOCIAL_REPUBLISH_INSTAGRAM: ${{ steps.source.outputs.social_republish_instagram }}
+          SOCIAL_REPUBLISH_RICADI: ${{ steps.source.outputs.social_republish_ricadi }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          dispatch() {
+            gh api --method POST "repos/${GH_REPO}/dispatches" -f event_type="$1" >/dev/null
+          }
+
+          [ "$RUN_VERIFY" = "true" ] && dispatch source-verify || true
+          [ "$RUN_DEPLOY" = "true" ] && dispatch source-deploy || true
+          [ "$RUN_APPS" = "true" ] && dispatch source-apps-script-deploy || true
+          [ "$RUN_SEO" = "true" ] && dispatch source-seo-push || true
+          [ "$RUN_PROMO" = "true" ] && dispatch source-promo-story-push || true
+
+          if [ "$RUN_MAGAZINE" = "true" ]; then
+            gh api --method POST "repos/${GH_REPO}/dispatches" \
+              -f event_type=source-magazine-push \
+              -F "client_payload[magazine_force]=${MAGAZINE_FORCE}" \
+              -F "client_payload[social_dry_run]=${SOCIAL_DRY_RUN}" \
+              -F "client_payload[social_publish]=${SOCIAL_PUBLISH}" \
+              -F "client_payload[social_republish_instagram]=${SOCIAL_REPUBLISH_INSTAGRAM}" \
+              -F "client_payload[social_republish_ricadi]=${SOCIAL_REPUBLISH_RICADI}" >/dev/null
+          fi
+
+          echo "Controllo automatico completato senza pubblicare dettagli del sorgente privato."
