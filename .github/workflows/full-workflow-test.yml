@@ -1,5 +1,6 @@
 name: Full workflow test launcher
 
+# rerun after WIF service account binding
 on:
   push:
     branches: [main]
