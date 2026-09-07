@@ -1,4 +1,4 @@
-name: Apps Script deploy
+name: Production - Apps Script Deploy
 
 on:
   workflow_dispatch:
