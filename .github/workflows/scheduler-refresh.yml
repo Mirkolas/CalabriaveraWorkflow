@@ -1,5 +1,6 @@
 name: Refresh scheduled workflow registration
 
+# Temporary maintenance workflow used to refresh GitHub cron registration.
 on:
   push:
     branches: [main]
