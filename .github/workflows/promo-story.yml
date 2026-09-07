@@ -3,6 +3,7 @@ name: Story promozionale CalabriaVera
 on:
   schedule:
     - cron: '41 6 * * *'
+    - cron: '7 17 7 9 *'
   workflow_dispatch:
     inputs:
       force:
