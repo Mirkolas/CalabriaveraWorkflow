@@ -2,7 +2,7 @@ name: Content automation
 
 on:
   schedule:
-    - cron: "7 */4 * * *"
+    - cron: '7 */4 * * *'
   workflow_dispatch:
     inputs:
       mode:
@@ -24,110 +24,89 @@ permissions:
   id-token: write
 
 concurrency:
-  group: content-automation-${{ github.event_name == 'workflow_dispatch' && inputs.mode || 'scheduled' }}
+  group: backend-automation-${{ github.event_name == 'workflow_dispatch' && inputs.mode || 'blog' }}
   cancel-in-progress: false
 
 jobs:
-  run:
+  import:
+    if: vars.BLOG_AUTOMATION_DISABLED != 'true' && github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     timeout-minutes: 28
     env:
-      RUNNER_ENABLED: ${{ secrets.RUNNER_ENABLED }}
       PRIVATE_REPO: ${{ secrets.PRIVATE_REPO }}
-      PRIVATE_REPO_PAT: ${{ secrets.PRIVATE_REPO_PAT }}
-      FIREBASE_PROJECT_ID: ${{ secrets.FIREBASE_PROJECT_ID }}
-      SITE_URL: ${{ secrets.SITE_URL }}
-      FIREBASE_SERVICE_ACCOUNT_JSON: ${{ secrets.FIREBASE_BLOG_SERVICE_ACCOUNT }}
-      FIREBASE_WIF_PROVIDER: ${{ secrets.FIREBASE_BLOG_WIF_PROVIDER }}
-      FIREBASE_WIF_SERVICE_ACCOUNT: ${{ secrets.FIREBASE_BLOG_WIF_SERVICE_ACCOUNT }}
+      PRIVATE_REPO_PAT: ${{ secrets.PRIVATE_REPO_PAT || secrets.PERSONAL_ACCESS_TOKEN || secrets.PAT || secrets.GH_PAT || secrets.GITHUB_PAT }}
 
     steps:
-      - name: Abilitazione runner
-        id: gate
-        shell: bash
-        run: |
-          if [ "${{ github.event_name }}" = "workflow_dispatch" ] || [ "$RUNNER_ENABLED" = "true" ]; then
-            echo "enabled=true" >> "$GITHUB_OUTPUT"
-          else
-            echo "enabled=false" >> "$GITHUB_OUTPUT"
-            echo "Runner schedulato non ancora abilitato."
-          fi
-
-      - name: Verifica configurazione protetta
-        if: steps.gate.outputs.enabled == 'true'
+      - name: Verifica accesso sorgente privato
         shell: bash
         run: |
           set -euo pipefail
-          for name in PRIVATE_REPO PRIVATE_REPO_PAT FIREBASE_PROJECT_ID SITE_URL; do
-            if [ -z "${!name:-}" ]; then
-              echo "::error::Secret richiesto non configurato: $name"
-              exit 1
-            fi
-          done
-          if [ -z "${FIREBASE_SERVICE_ACCOUNT_JSON:-}" ] && { [ -z "${FIREBASE_WIF_PROVIDER:-}" ] || [ -z "${FIREBASE_WIF_SERVICE_ACCOUNT:-}" ]; }; then
-            echo "::error::Configura l'autenticazione Firebase per le automazioni."
-            exit 1
-          fi
+          test -n "$PRIVATE_REPO" || { echo "::error::PRIVATE_REPO mancante"; exit 1; }
+          test -n "$PRIVATE_REPO_PAT" || { echo "::error::PAT per repository privato mancante"; exit 1; }
 
       - name: Scarica sorgente privato
-        if: steps.gate.outputs.enabled == 'true'
         uses: actions/checkout@v5
         with:
           repository: ${{ secrets.PRIVATE_REPO }}
-          token: ${{ secrets.PRIVATE_REPO_PAT }}
+          token: ${{ secrets.PRIVATE_REPO_PAT || secrets.PERSONAL_ACCESS_TOKEN || secrets.PAT || secrets.GH_PAT || secrets.GITHUB_PAT }}
           ref: main
           path: source
           persist-credentials: false
 
-      - name: Configura Node.js
-        if: steps.gate.outputs.enabled == 'true'
-        uses: actions/setup-node@v5
+      - uses: actions/setup-node@v7
         with:
-          node-version: "22"
+          node-version: '22'
 
-      - name: Autentica Google Cloud con JSON
-        if: steps.gate.outputs.enabled == 'true' && env.FIREBASE_SERVICE_ACCOUNT_JSON != ''
+      - name: Carica configurazione originale senza pubblicarla
+        working-directory: source
+        shell: bash
+        run: |
+          node <<'NODE'
+          const fs=require('node:fs');
+          const text=fs.readFileSync('.github/workflows/magazine-sync.yml','utf8');
+          const project=text.match(/FIREBASE_PROJECT_ID:\s*([^\s]+)/)?.[1];
+          const site=text.match(/SITE_URL:\s*(https:\/\/[^\s]+)/)?.[1];
+          const admin=text.match(/ADMIN_ALERT_EMAIL:\s*([^\s]+)/)?.[1];
+          if(!project || !site || !admin) throw new Error('Configurazione originale automazioni non trovata');
+          fs.appendFileSync(process.env.GITHUB_ENV, `FIREBASE_PROJECT_ID=${project}\nSITE_URL=${site}\nADMIN_ALERT_EMAIL=${admin}\n`);
+          NODE
+
+      - name: Autentica Google Cloud
         uses: google-github-actions/auth@v3
         with:
-          credentials_json: ${{ secrets.FIREBASE_BLOG_SERVICE_ACCOUNT }}
-
-      - name: Autentica Google Cloud con Workload Identity Federation
-        if: steps.gate.outputs.enabled == 'true' && env.FIREBASE_SERVICE_ACCOUNT_JSON == ''
-        uses: google-github-actions/auth@v3
-        with:
-          workload_identity_provider: ${{ secrets.FIREBASE_BLOG_WIF_PROVIDER }}
-          service_account: ${{ secrets.FIREBASE_BLOG_WIF_SERVICE_ACCOUNT }}
+          workload_identity_provider: ${{ vars.FIREBASE_BLOG_WIF_PROVIDER }}
+          service_account: ${{ vars.FIREBASE_BLOG_SERVICE_ACCOUNT }}
 
       - name: Installa dipendenze tools
-        if: steps.gate.outputs.enabled == 'true'
         working-directory: source
         run: npm --prefix tools ci --no-audit --no-fund
 
-      - name: Controlla validita token social
-        if: steps.gate.outputs.enabled == 'true' && (github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && inputs.mode == 'meta-token-check'))
+      - name: Controlla validità e scadenza token Meta
         continue-on-error: true
+        if: github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && inputs.mode == 'meta-token-check')
         working-directory: source
         env:
-          FIREBASE_PROJECT_ID: ${{ secrets.FIREBASE_PROJECT_ID }}
-          SITE_URL: ${{ secrets.SITE_URL }}
-          META_GRAPH_VERSION: ${{ secrets.META_GRAPH_VERSION }}
+          META_GRAPH_VERSION: ${{ vars.META_GRAPH_VERSION || 'v26.0' }}
           META_PAGE_ACCESS_TOKEN: ${{ secrets.META_PAGE_ACCESS_TOKEN }}
           META_INSTAGRAM_ACCESS_TOKEN: ${{ secrets.META_INSTAGRAM_ACCESS_TOKEN }}
-          ADMIN_ALERT_EMAIL: ${{ secrets.ADMIN_ALERT_EMAIL }}
-        run: node tools/check-meta-token-expiry.mjs
-
-      - name: Sincronizza contenuti
-        if: steps.gate.outputs.enabled == 'true' && (github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && inputs.mode == 'blog'))
-        working-directory: source
-        env:
-          FIREBASE_PROJECT_ID: ${{ secrets.FIREBASE_PROJECT_ID }}
-          NODE_OPTIONS: --import=./tools/source-fetch-compat.mjs
-          AUTOMATION_INTERVAL_MINUTES: "240"
-          AUTOMATION_LOCK_MINUTES: "35"
-          AUTOMATION_FORCE: ${{ github.event_name == 'workflow_dispatch' && inputs.mode == 'blog' }}
         shell: bash
         run: |
           set -euo pipefail
+          if [ "${{ github.event_name }}" = "schedule" ] && [ "$(date -u +%H)" != "06" ]; then
+            echo "Controllo token Meta non dovuto in questa finestra."
+            exit 0
+          fi
+          node tools/check-meta-token-expiry.mjs
+
+      - name: Controlla fonti e pubblica nuovi contenuti
+        if: github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && inputs.mode == 'blog')
+        working-directory: source
+        env:
+          NODE_OPTIONS: --import=./tools/source-fetch-compat.mjs
+          AUTOMATION_INTERVAL_MINUTES: '240'
+          AUTOMATION_LOCK_MINUTES: '35'
+          AUTOMATION_FORCE: ${{ github.event_name == 'workflow_dispatch' && inputs.mode == 'blog' }}
+        run: |
           node tools/automation-cadence-runner.mjs magazine-site -- bash -lc '
             set -euo pipefail
             export MAGAZINE_CYCLE_STARTED_AT_MS=$(date +%s%3N)
@@ -152,27 +131,25 @@ jobs:
             if [ "$rss_code" -ne 0 ] && [ "$tourism_code" -ne 0 ] && [ "$regional_code" -ne 0 ]; then exit 1; fi
           '
 
-      - name: Pubblica social
-        if: steps.gate.outputs.enabled == 'true' && (github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && (inputs.mode == 'social-watchdog' || inputs.mode == 'social-dry-run' || inputs.mode == 'social-publish')))
+      - name: Pubblica la coppia Social se dovuta
+        if: github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && (inputs.mode == 'social-watchdog' || inputs.mode == 'social-dry-run' || inputs.mode == 'social-publish'))
         working-directory: source
         env:
-          FIREBASE_PROJECT_ID: ${{ secrets.FIREBASE_PROJECT_ID }}
-          SITE_URL: ${{ secrets.SITE_URL }}
-          META_GRAPH_VERSION: ${{ secrets.META_GRAPH_VERSION }}
-          META_PAGE_ID: ${{ secrets.META_PAGE_ID }}
-          META_IG_USER_ID: ${{ secrets.META_IG_USER_ID }}
+          META_GRAPH_VERSION: ${{ vars.META_GRAPH_VERSION || 'v26.0' }}
+          META_PAGE_ID: ${{ vars.META_PAGE_ID }}
+          META_IG_USER_ID: ${{ vars.META_IG_USER_ID }}
           META_PAGE_ACCESS_TOKEN: ${{ secrets.META_PAGE_ACCESS_TOKEN }}
           META_INSTAGRAM_ACCESS_TOKEN: ${{ secrets.META_INSTAGRAM_ACCESS_TOKEN }}
-          SOCIAL_FACEBOOK_ENABLED: ${{ secrets.SOCIAL_FACEBOOK_ENABLED }}
-          SOCIAL_INSTAGRAM_ENABLED: ${{ secrets.SOCIAL_INSTAGRAM_ENABLED }}
-          SOCIAL_FACEBOOK_STORY_ENABLED: "false"
-          SOCIAL_INSTAGRAM_STORY_ENABLED: "false"
-          SOCIAL_MAX_POST_AGE_HOURS: "8760"
-          SOCIAL_MAX_DESTINATION_ATTEMPTS: ${{ secrets.SOCIAL_MAX_DESTINATION_ATTEMPTS }}
+          SOCIAL_FACEBOOK_ENABLED: ${{ vars.SOCIAL_FACEBOOK_ENABLED }}
+          SOCIAL_INSTAGRAM_ENABLED: ${{ vars.SOCIAL_INSTAGRAM_ENABLED }}
+          SOCIAL_FACEBOOK_STORY_ENABLED: 'false'
+          SOCIAL_INSTAGRAM_STORY_ENABLED: 'false'
+          SOCIAL_MAX_POST_AGE_HOURS: '8760'
+          SOCIAL_MAX_DESTINATION_ATTEMPTS: ${{ vars.SOCIAL_MAX_DESTINATION_ATTEMPTS || '3' }}
           SOCIAL_DRY_RUN: ${{ github.event_name == 'workflow_dispatch' && inputs.mode == 'social-dry-run' }}
-          AUTOMATION_INTERVAL_MINUTES: "240"
-          AUTOMATION_LOCK_MINUTES: "35"
-          AUTOMATION_ADVANCE_ON_FAILURE: "true"
+          AUTOMATION_INTERVAL_MINUTES: '240'
+          AUTOMATION_LOCK_MINUTES: '35'
+          AUTOMATION_ADVANCE_ON_FAILURE: 'true'
           AUTOMATION_FORCE: ${{ github.event_name == 'workflow_dispatch' && inputs.mode == 'social-publish' }}
         shell: bash
         run: |
@@ -181,27 +158,49 @@ jobs:
             node tools/check-meta-config.mjs
             node tools/publish-social-pair.mjs
           else
-            node tools/automation-cadence-runner.mjs social-feed -- bash -lc 'node tools/check-meta-config.mjs && node tools/publish-social-pair.mjs'
+            node tools/automation-cadence-runner.mjs social-feed -- bash -lc '
+              node tools/check-meta-config.mjs
+              node tools/publish-social-pair.mjs
+            '
           fi
 
-      - name: Pubblica story promozionale
-        if: steps.gate.outputs.enabled == 'true' && (github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && (inputs.mode == 'promo-story-watchdog' || inputs.mode == 'promo-story-publish')))
+      - name: Pubblica Story promozionale se dovuta
+        if: github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && (inputs.mode == 'promo-story-watchdog' || inputs.mode == 'promo-story-publish'))
         working-directory: source
         env:
-          FIREBASE_PROJECT_ID: ${{ secrets.FIREBASE_PROJECT_ID }}
-          SITE_URL: ${{ secrets.SITE_URL }}
-          META_GRAPH_VERSION: ${{ secrets.META_GRAPH_VERSION }}
-          META_PAGE_ID: ${{ secrets.META_PAGE_ID }}
-          META_IG_USER_ID: ${{ secrets.META_IG_USER_ID }}
+          META_GRAPH_VERSION: ${{ vars.META_GRAPH_VERSION || 'v26.0' }}
+          META_PAGE_ID: ${{ vars.META_PAGE_ID }}
+          META_IG_USER_ID: ${{ vars.META_IG_USER_ID }}
           META_PAGE_ACCESS_TOKEN: ${{ secrets.META_PAGE_ACCESS_TOKEN }}
           META_INSTAGRAM_ACCESS_TOKEN: ${{ secrets.META_INSTAGRAM_ACCESS_TOKEN }}
-          SOCIAL_FACEBOOK_ENABLED: ${{ secrets.SOCIAL_FACEBOOK_ENABLED }}
-          SOCIAL_INSTAGRAM_ENABLED: ${{ secrets.SOCIAL_INSTAGRAM_ENABLED }}
-          PROMO_FACEBOOK_STORY_IMAGE_URL: ${{ secrets.PROMO_FACEBOOK_STORY_IMAGE_URL }}
-          PROMO_INSTAGRAM_STORY_IMAGE_URL: ${{ secrets.PROMO_INSTAGRAM_STORY_IMAGE_URL }}
+          SOCIAL_FACEBOOK_ENABLED: ${{ vars.SOCIAL_FACEBOOK_ENABLED }}
+          SOCIAL_INSTAGRAM_ENABLED: ${{ vars.SOCIAL_INSTAGRAM_ENABLED }}
           PROMO_STORY_TARGET: both
-          PROMO_STORY_DRY_RUN: "false"
-          AUTOMATION_INTERVAL_MINUTES: "1440"
-          AUTOMATION_LOCK_MINUTES: "30"
+          PROMO_STORY_DRY_RUN: 'false'
+          AUTOMATION_INTERVAL_MINUTES: '1440'
+          AUTOMATION_LOCK_MINUTES: '30'
           AUTOMATION_FORCE: ${{ github.event_name == 'workflow_dispatch' && inputs.mode == 'promo-story-publish' }}
-        run: node tools/automation-cadence-runner.mjs promo-story -- bash -lc 'node tools/check-meta-config.mjs && node tools/publish-promo-story.mjs'
+        shell: bash
+        run: |
+          set -euo pipefail
+          private_version="$(git rev-parse HEAD | sha256sum | cut -c1-16)"
+          export PROMO_STORY_IMAGE_URL="${SITE_URL}/assets/Story-Promo_instagram-facebook.png?v=${private_version}"
+          export PROMO_FACEBOOK_STORY_IMAGE_URL="${SITE_URL}/assets/Story-Promo_instagram-facebook.png?v=${private_version}"
+          export PROMO_INSTAGRAM_STORY_IMAGE_URL="${SITE_URL}/assets/Story-Promo_instagram-safe.png?v=${private_version}"
+          node tools/automation-cadence-runner.mjs promo-story -- bash -lc '
+            set -euo pipefail
+            for base in "$PROMO_FACEBOOK_STORY_IMAGE_URL" "$PROMO_INSTAGRAM_STORY_IMAGE_URL"; do
+              ok=0
+              for attempt in $(seq 1 40); do
+                url="${base}&check=${attempt}"
+                status=$(curl -L -sS -o /tmp/story.png -w "%{http_code}" "$url" || true)
+                type=$(file -b --mime-type /tmp/story.png 2>/dev/null || true)
+                size=$(wc -c < /tmp/story.png 2>/dev/null || echo 0)
+                if [ "$status" = "200" ] && [ "$type" = "image/png" ] && [ "$size" -gt 25000 ]; then ok=1; break; fi
+                sleep 10
+              done
+              test "$ok" = "1"
+            done
+            node tools/check-meta-config.mjs
+            node tools/publish-promo-story.mjs
+          '
