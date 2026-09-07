@@ -7,6 +7,7 @@ on:
 
 permissions:
   contents: read
+  actions: read
   id-token: write
 
 concurrency:
@@ -76,7 +77,8 @@ jobs:
         working-directory: source
         env:
           GITHUB_TOKEN: ${{ secrets.PRIVATE_REPO_PAT }}
-          GITHUB_REPOSITORY: ${{ secrets.PRIVATE_REPO }}
+          GITHUB_ACTIONS_TOKEN: ${{ github.token }}
+          GITHUB_ACTIONS_REPOSITORY: ${{ github.repository }}
           CALABRIAVERA_BACKUP_ENCRYPTION_KEY: ${{ secrets.CALABRIAVERA_BACKUP_ENCRYPTION_KEY }}
           FIREBASE_AUTH_HASH_CONFIG: ${{ secrets.FIREBASE_AUTH_HASH_CONFIG }}
         run: node tools/backup/run.mjs
