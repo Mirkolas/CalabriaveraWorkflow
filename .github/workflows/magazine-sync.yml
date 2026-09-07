@@ -2,7 +2,7 @@ name: Blog automatico - RSS e OpenData
 
 on:
   schedule:
-    - cron: '7 */4 * * *'
+    - cron: '17 */2 * * *'
   workflow_dispatch:
     inputs:
       mode:
@@ -103,12 +103,12 @@ jobs:
           fi
           node tools/check-meta-token-expiry.mjs
 
-      - name: Controlla tutte le fonti e pubblica i nuovi contenuti ogni 4 ore
+      - name: Controlla tutte le fonti e pubblica i nuovi contenuti ogni 2 ore
         if: github.event_name == 'schedule' || github.event_name == 'repository_dispatch' || (github.event_name == 'workflow_dispatch' && inputs.mode == 'blog')
         working-directory: source
         env:
           NODE_OPTIONS: --import=./tools/source-fetch-compat.mjs
-          AUTOMATION_INTERVAL_MINUTES: '240'
+          AUTOMATION_INTERVAL_MINUTES: '120'
           AUTOMATION_LOCK_MINUTES: '35'
           AUTOMATION_FORCE: ${{ (github.event_name == 'workflow_dispatch' && inputs.mode == 'blog') || (github.event_name == 'repository_dispatch' && github.event.client_payload.magazine_force == true) }}
         run: |
@@ -154,7 +154,7 @@ jobs:
           SOCIAL_FORCE_INSTAGRAM_REPUBLISH: ${{ github.event_name == 'repository_dispatch' && github.event.client_payload.social_republish_instagram == true }}
           SOCIAL_FORCE_POST_ID: ${{ github.event_name == 'repository_dispatch' && github.event.client_payload.social_republish_ricadi == true && 'ext-b531af8d21e352c377ddff4c712d' || '' }}
           SOCIAL_DRY_RUN: ${{ (github.event_name == 'workflow_dispatch' && inputs.mode == 'social-dry-run') || (github.event_name == 'repository_dispatch' && github.event.client_payload.social_dry_run == true) }}
-          AUTOMATION_INTERVAL_MINUTES: '240'
+          AUTOMATION_INTERVAL_MINUTES: '120'
           AUTOMATION_LOCK_MINUTES: '35'
           AUTOMATION_ADVANCE_ON_FAILURE: 'true'
           AUTOMATION_FORCE: ${{ (github.event_name == 'workflow_dispatch' && inputs.mode == 'social-publish') || (github.event_name == 'repository_dispatch' && github.event.client_payload.social_publish == true) }}
