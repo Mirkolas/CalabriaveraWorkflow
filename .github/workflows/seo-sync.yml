@@ -1,0 +1,95 @@
+name: SEO sync
+
+on:
+  schedule:
+    - cron: "27 */6 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: write
+
+concurrency:
+  group: seo-production
+  cancel-in-progress: false
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    timeout-minutes: 8
+    env:
+      RUNNER_ENABLED: ${{ secrets.RUNNER_ENABLED }}
+      PRIVATE_REPO: ${{ secrets.PRIVATE_REPO }}
+      PRIVATE_REPO_PAT: ${{ secrets.PRIVATE_REPO_PAT }}
+      FIREBASE_PROJECT_ID: ${{ secrets.FIREBASE_PROJECT_ID }}
+      SITE_URL: ${{ secrets.SITE_URL }}
+
+    steps:
+      - name: Abilitazione runner
+        id: gate
+        shell: bash
+        run: |
+          if [ "$RUNNER_ENABLED" = "true" ]; then
+            echo "enabled=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "enabled=false" >> "$GITHUB_OUTPUT"
+            echo "Runner schedulato non ancora abilitato."
+          fi
+
+      - name: Verifica configurazione protetta
+        if: steps.gate.outputs.enabled == 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          for name in PRIVATE_REPO PRIVATE_REPO_PAT FIREBASE_PROJECT_ID SITE_URL; do
+            if [ -z "${!name:-}" ]; then
+              echo "::error::Secret richiesto non configurato: $name"
+              exit 1
+            fi
+          done
+
+      - name: Scarica sorgente privato
+        if: steps.gate.outputs.enabled == 'true'
+        uses: actions/checkout@v5
+        with:
+          repository: ${{ secrets.PRIVATE_REPO }}
+          token: ${{ secrets.PRIVATE_REPO_PAT }}
+          ref: main
+          path: source
+          persist-credentials: false
+
+      - name: Configura Node.js
+        if: steps.gate.outputs.enabled == 'true'
+        uses: actions/setup-node@v5
+        with:
+          node-version: "22"
+
+      - name: Confronta contenuti e sitemap
+        if: steps.gate.outputs.enabled == 'true'
+        id: changes
+        working-directory: source
+        env:
+          FIREBASE_PROJECT_ID: ${{ secrets.FIREBASE_PROJECT_ID }}
+          SITE_URL: ${{ secrets.SITE_URL }}
+          GH_TOKEN: ${{ github.token }}
+          SEO_FORCE_SYNC: ${{ github.event_name == 'workflow_dispatch' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          set +e
+          output="$(node tools/check-seo-sync.mjs 2>&1)"
+          code=$?
+          set -e
+          printf '%s\n' "$output"
+          if [ "$code" -eq 0 ]; then exit 0; fi
+          if printf '%s' "$output" | grep -Eqi 'RESOURCE_EXHAUSTED|Quota exceeded|HTTP 429|FIRESTORE_429|(^|[^0-9])429([^0-9]|$)'; then
+            echo "::warning::Verifica SEO rinviata per quota temporanea."
+            exit 0
+          fi
+          exit "$code"
+
+      - name: Avvia deploy pubblico
+        if: steps.gate.outputs.enabled == 'true' && steps.changes.outputs.needs_sync == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh workflow run firebase-deploy.yml --ref main
