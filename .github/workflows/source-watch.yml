@@ -63,6 +63,7 @@ jobs:
         if: inputs.force == true || steps.source-cache.outputs.cache-hit != 'true'
         env:
           GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
         shell: bash
         run: |
           set -euo pipefail
