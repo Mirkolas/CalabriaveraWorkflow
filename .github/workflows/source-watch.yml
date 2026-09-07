@@ -49,7 +49,7 @@ jobs:
           fi
           echo "since=$since" >> "$GITHUB_OUTPUT"
 
-      - name: Applica gli stessi filtri push del repository privato
+      - name: Applica gli stessi trigger del repository privato
         id: source
         env:
           GH_TOKEN: ${{ secrets.PRIVATE_REPO_PAT }}
@@ -76,6 +76,15 @@ jobs:
             n=$((n + 1))
             gh api "repos/${PRIVATE_REPO}/commits/${sha}" > "$work/commits/${n}.json"
           done < "$work/shas"
+
+          # Il workflow privato verify.yml usa pull_request, non push.
+          # Considera soltanto PR verso main aggiornate dall'ultimo controllo.
+          gh api --paginate "repos/${PRIVATE_REPO}/pulls?state=open&base=main&sort=updated&direction=desc&per_page=100" \
+            --jq --arg since "$SINCE" '[.[] | select(.updated_at >= $since) | .head.sha] | .[]' > "$work/pr-heads" || true
+          while IFS= read -r sha; do
+            [ -n "$sha" ] || continue
+            echo "::add-mask::$sha"
+          done < "$work/pr-heads"
 
           WORK="$work" node <<'NODE'
           const fs = require('node:fs');
@@ -133,8 +142,10 @@ jobs:
             seo: config('seo-sync.yml')
           };
           const forced = process.env.FORCE === 'true';
+          const prChanged = fs.readFileSync(path.join(root, 'pr-heads'), 'utf8').trim().length > 0;
           const result = {
-            apps: forced, deploy: forced, magazine: forced, promo: false, seo: forced, verify: forced,
+            apps: forced, deploy: forced, magazine: forced, promo: false, seo: forced,
+            verify: forced || prChanged,
             magazine_force: false, social_dry_run: false, social_publish: false,
             social_republish_instagram: false, social_republish_ricadi: false
           };
@@ -146,7 +157,6 @@ jobs:
             const files = (commit.files || []).map(file => file.filename);
             const message = commit.commit?.message || '';
             if (!files.length) continue;
-            result.verify = true;
             if (triggered(files, workflows.apps)) result.apps = true;
             if (triggered(files, workflows.deploy)) result.deploy = true;
             if (triggered(files, workflows.seo)) result.seo = true;
@@ -166,7 +176,7 @@ jobs:
 
           rm -rf "$work"
 
-      - name: Avvia gli equivalenti dei trigger push privati
+      - name: Avvia gli equivalenti dei trigger privati
         env:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
