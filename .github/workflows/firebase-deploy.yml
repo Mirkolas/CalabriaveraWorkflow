@@ -1,11 +1,11 @@
 name: Firebase - Deploy CalabriaVera
 
 on:
+  schedule:
+    - cron: '17 */4 * * *'
   workflow_dispatch:
   repository_dispatch:
     types: [source-deploy]
-  schedule:
-    - cron: '17 */4 * * *'
 
 permissions:
   contents: read
@@ -22,10 +22,10 @@ jobs:
       group: firebase-production
       cancel-in-progress: false
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    timeout-minutes: 15
     env:
       PRIVATE_REPO: ${{ secrets.PRIVATE_REPO }}
-      PRIVATE_REPO_PAT: ${{ secrets.PRIVATE_REPO_PAT }}
+      PRIVATE_REPO_PAT: ${{ secrets.PRIVATE_REPO_PAT || secrets.PERSONAL_ACCESS_TOKEN || secrets.PAT || secrets.GH_PAT || secrets.GITHUB_PAT }}
 
     steps:
       - name: Verifica accesso sorgente privato
@@ -36,10 +36,10 @@ jobs:
           test -n "$PRIVATE_REPO_PAT" || { echo "::error::PAT per repository privato mancante"; exit 1; }
 
       - name: Scarica sorgente privato
-        uses: actions/checkout@v5
+        uses: actions/checkout@v7
         with:
           repository: ${{ secrets.PRIVATE_REPO }}
-          token: ${{ secrets.PRIVATE_REPO_PAT }}
+          token: ${{ secrets.PRIVATE_REPO_PAT || secrets.PERSONAL_ACCESS_TOKEN || secrets.PAT || secrets.GH_PAT || secrets.GITHUB_PAT }}
           ref: main
           path: source
           persist-credentials: false
@@ -49,21 +49,6 @@ jobs:
           node-version: '22'
           cache: npm
           cache-dependency-path: source/package-lock.json
-
-      - name: Carica configurazione originale senza pubblicarla
-        working-directory: source
-        shell: bash
-        run: |
-          node <<'NODE'
-          const fs=require('node:fs');
-          const text=fs.readFileSync('.github/workflows/firebase-deploy.yml','utf8');
-          const project=text.match(/FIREBASE_PROJECT_ID:\s*([^\s]+)/)?.[1];
-          const site=text.match(/SITE_URL:\s*(https:\/\/[^\s]+)/)?.[1];
-          if(!project || !site) throw new Error('Configurazione deploy originale non trovata');
-          console.log(`::add-mask::${project}`);
-          console.log(`::add-mask::${site}`);
-          fs.appendFileSync(process.env.GITHUB_ENV, `FIREBASE_PROJECT_ID=${project}\nSITE_URL=${site}\n`);
-          NODE
 
       - name: Genera Story Instagram 9:16 con safe area
         working-directory: source
@@ -80,44 +65,56 @@ jobs:
           dims=$(ffprobe -v error -select_streams v:0 -show_entries stream=width,height -of csv=s=x:p=0 "$out")
           type=$(file -b --mime-type "$out")
           size=$(wc -c < "$out")
+          echo "Story Instagram: ${dims}, ${size} byte"
           test "$dims" = "1080x1920"
           test "$type" = "image/png"
           test "$size" -gt 25000
 
-      - name: Valida asset ufficiali
+      - name: Valida PNG Story promozionale
         working-directory: source
-        shell: bash
         run: |
           set -euo pipefail
           for story in assets/Story-Promo_instagram-facebook.png assets/Story-Promo_instagram-safe.png; do
             test -f "$story"
-            test "$(file -b --mime-type "$story")" = "image/png"
-            test "$(wc -c < "$story")" -gt 25000
+            type=$(file -b --mime-type "$story")
+            info=$(file -b "$story")
+            size=$(wc -c < "$story")
+            echo "$story: $info"
+            echo "Dimensione: $size byte"
+            test "$type" = "image/png"
+            test "$size" -gt 25000
           done
+
+      - name: Valida favicon e icone ufficiali
+        working-directory: source
+        run: |
+          set -euo pipefail
           for file in favicon.ico favicon-32x32.png favicon-16x16.png apple-touch-icon.png android-chrome-192x192.png android-chrome-512x512.png; do
             test -s "assets/$file"
+            echo "$file: $(file -b "assets/$file")"
           done
           test -s assets/site.webmanifest
+          echo "Favicon e icone dirette in assets validate correttamente"
 
-      - name: Installa e testa
-        working-directory: source
-        run: npm ci && npm test
+      - working-directory: source
+        run: npm ci
 
-      - name: Autentica Google Cloud con WIF
-        uses: google-github-actions/auth@v3
+      - working-directory: source
+        run: npm test
+
+      - uses: google-github-actions/auth@v3
         with:
           workload_identity_provider: ${{ vars.FIREBASE_WIF_PROVIDER }}
           service_account: ${{ vars.FIREBASE_DEPLOY_SERVICE_ACCOUNT }}
 
-      - name: Deploy produzione
-        working-directory: source
+      - working-directory: source
         run: npm run deploy
 
       - name: Verifica SEO pubblicato
         working-directory: source
         env:
-          SITE_URL: ${{ env.SITE_URL }}
-          FIREBASE_PROJECT_ID: ${{ env.FIREBASE_PROJECT_ID }}
+          SITE_URL: https://calabriavera.com
+          FIREBASE_PROJECT_ID: calabriavera-e08d4
         run: node tools/verify-seo-deploy.mjs
 
   admin-maintenance:
@@ -129,50 +126,58 @@ jobs:
     timeout-minutes: 10
     env:
       PRIVATE_REPO: ${{ secrets.PRIVATE_REPO }}
-      PRIVATE_REPO_PAT: ${{ secrets.PRIVATE_REPO_PAT }}
+      PRIVATE_REPO_PAT: ${{ secrets.PRIVATE_REPO_PAT || secrets.PERSONAL_ACCESS_TOKEN || secrets.PAT || secrets.GH_PAT || secrets.GITHUB_PAT }}
+
     steps:
+      - name: Verifica accesso sorgente privato
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -n "$PRIVATE_REPO" || { echo "::error::PRIVATE_REPO mancante"; exit 1; }
+          test -n "$PRIVATE_REPO_PAT" || { echo "::error::PAT per repository privato mancante"; exit 1; }
+
       - name: Scarica sorgente privato
-        uses: actions/checkout@v5
+        uses: actions/checkout@v7
         with:
           repository: ${{ secrets.PRIVATE_REPO }}
-          token: ${{ secrets.PRIVATE_REPO_PAT }}
+          token: ${{ secrets.PRIVATE_REPO_PAT || secrets.PERSONAL_ACCESS_TOKEN || secrets.PAT || secrets.GH_PAT || secrets.GITHUB_PAT }}
           ref: main
           path: source
           persist-credentials: false
+
       - uses: actions/setup-node@v7
         with:
           node-version: '22'
-      - name: Carica progetto originale senza pubblicarlo
-        working-directory: source
-        run: |
-          node <<'NODE'
-          const fs=require('node:fs');
-          const text=fs.readFileSync('.github/workflows/firebase-deploy.yml','utf8');
-          const project=text.match(/FIREBASE_PROJECT_ID:\s*([^\s]+)/)?.[1];
-          if(!project) throw new Error('Progetto originale non trovato');
-          console.log(`::add-mask::${project}`);
-          fs.appendFileSync(process.env.GITHUB_ENV, `FIREBASE_PROJECT_ID=${project}\n`);
-          NODE
+
       - working-directory: source
         run: npm --prefix tools ci --no-audit --no-fund
-      - name: Autentica Google Cloud con WIF
-        uses: google-github-actions/auth@v3
+
+      - uses: google-github-actions/auth@v3
         with:
           workload_identity_provider: ${{ vars.FIREBASE_WIF_PROVIDER }}
           service_account: ${{ vars.FIREBASE_DEPLOY_SERVICE_ACCOUNT }}
+
       - name: Esegue manutenzione amministrativa
         working-directory: source
+        env:
+          FIREBASE_PROJECT_ID: calabriavera-e08d4
         shell: bash
         run: |
           set -euo pipefail
           run_admin_task() {
-            local label="$1"; shift
+            local label="$1"
+            shift
             local output code
-            set +e; output="$("$@" 2>&1)"; code=$?; set -e
+            set +e
+            output="$("$@" 2>&1)"
+            code=$?
+            set -e
             printf '%s\n' "$output"
-            if [ "$code" -eq 0 ]; then return 0; fi
+            if [ "$code" -eq 0 ]; then
+              return 0
+            fi
             if printf '%s' "$output" | grep -Eqi 'RESOURCE_EXHAUSTED|Quota exceeded|FIRESTORE_429|ADMIN_FIRESTORE_429|(^|[^0-9])429([^0-9]|$)'; then
-              echo "::warning::${label} rinviata per quota temporaneamente esaurita."
+              echo "::warning::${label} rinviata: quota Firestore temporaneamente esaurita. La prossima manutenzione programmata riproverà automaticamente."
               return 0
             fi
             return "$code"
