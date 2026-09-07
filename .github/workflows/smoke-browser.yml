@@ -1,8 +1,9 @@
-name: Browser smoke test
+# Smoke test reale della produzione dopo ogni deploy Firebase riuscito su main.
+name: Production - Browser smoke test
 
 on:
   workflow_run:
-    workflows: ["Firebase deploy"]
+    workflows: ["Firebase - Deploy CalabriaVera"]
     types: [completed]
   workflow_dispatch:
 
@@ -15,7 +16,7 @@ concurrency:
 
 jobs:
   smoke:
-    if: github.event_name == 'workflow_dispatch' || github.event.workflow_run.conclusion == 'success'
+    if: github.event_name == 'workflow_dispatch' || (github.event.workflow_run.conclusion == 'success' && github.event.workflow_run.head_branch == 'main' && github.event.workflow_run.event != 'schedule')
     runs-on: ubuntu-latest
     timeout-minutes: 15
     env:
@@ -51,6 +52,7 @@ jobs:
           const text=fs.readFileSync('.github/workflows/smoke-browser.yml','utf8');
           const site=text.match(/SMOKE_BASE_URL:\s*(https:\/\/[^\s]+)/)?.[1];
           if(!site) throw new Error('URL smoke originale non trovato');
+          console.log(`::add-mask::${site}`);
           fs.appendFileSync(process.env.GITHUB_ENV, `SMOKE_BASE_URL=${site}\n`);
           NODE
 
@@ -61,7 +63,7 @@ jobs:
           npm install --prefix /tmp/cv-smoke --no-package-lock --no-save playwright@1.62.1
           /tmp/cv-smoke/node_modules/.bin/playwright install --with-deps chromium
 
-      - name: Verifica produzione nel browser reale
+      - name: Verifica CalabriaVera nel browser reale
         working-directory: source
         env:
           PLAYWRIGHT_MODULE: /tmp/cv-smoke/node_modules/playwright
@@ -69,7 +71,7 @@ jobs:
           SMOKE_TEST_PASSWORD: ${{ secrets.SMOKE_TEST_PASSWORD }}
         run: node tests/smoke-browser.cjs
 
-      - name: Verifica routing da Catalogo e Mappa
+      - name: Verifica Le Ninfee da Catalogo e Mappa
         working-directory: source
         env:
           PLAYWRIGHT_MODULE: /tmp/cv-smoke/node_modules/playwright
