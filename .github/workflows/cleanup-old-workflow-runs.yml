@@ -1,0 +1,37 @@
+name: Cleanup old workflow runs
+
+on:
+  schedule:
+    - cron: "0 3 * * 0"
+  workflow_dispatch:
+
+permissions:
+  actions: write
+  contents: read
+
+concurrency:
+  group: cleanup-old-workflow-runs
+  cancel-in-progress: false
+
+jobs:
+  cleanup:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Elimina run vecchie mantenendo le piu recenti
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          cutoff=$(date -d '30 days ago' -u +%Y-%m-%dT%H:%M:%SZ)
+          mapfile -t runs < <(gh api --paginate "repos/$REPO/actions/runs?per_page=100" --jq '.workflow_runs[] | [.id, .created_at] | @tsv')
+          if (( ${#runs[@]} <= 30 )); then exit 0; fi
+          for i in "${!runs[@]}"; do
+            IFS=$'\t' read -r run_id created_at <<< "${runs[$i]}"
+            if (( i < 30 )); then continue; fi
+            if [[ "$created_at" < "$cutoff" ]]; then
+              gh api --method DELETE "repos/$REPO/actions/runs/$run_id"
+            fi
+          done
