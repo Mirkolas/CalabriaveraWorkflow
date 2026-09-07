@@ -1,0 +1,73 @@
+name: Browser smoke test
+
+on:
+  workflow_run:
+    workflows: ["Firebase deploy"]
+    types: [completed]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: browser-smoke-production
+  cancel-in-progress: true
+
+jobs:
+  smoke:
+    if: github.event_name == 'workflow_dispatch' || github.event.workflow_run.conclusion == 'success'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      PRIVATE_REPO: ${{ secrets.PRIVATE_REPO }}
+      PRIVATE_REPO_PAT: ${{ secrets.PRIVATE_REPO_PAT }}
+      SITE_URL: ${{ secrets.SITE_URL }}
+
+    steps:
+      - name: Verifica configurazione protetta
+        shell: bash
+        run: |
+          set -euo pipefail
+          for name in PRIVATE_REPO PRIVATE_REPO_PAT SITE_URL; do
+            if [ -z "${!name:-}" ]; then
+              echo "::error::Secret richiesto non configurato: $name"
+              exit 1
+            fi
+          done
+
+      - name: Scarica sorgente privato
+        uses: actions/checkout@v5
+        with:
+          repository: ${{ secrets.PRIVATE_REPO }}
+          token: ${{ secrets.PRIVATE_REPO_PAT }}
+          ref: main
+          path: source
+          persist-credentials: false
+
+      - name: Configura Node.js
+        uses: actions/setup-node@v5
+        with:
+          node-version: "22"
+
+      - name: Installa Playwright e Chromium
+        run: |
+          set -euo pipefail
+          mkdir -p /tmp/browser-smoke
+          npm install --prefix /tmp/browser-smoke --no-package-lock --no-save playwright@1.62.1
+          /tmp/browser-smoke/node_modules/.bin/playwright install --with-deps chromium
+
+      - name: Smoke test autenticato
+        working-directory: source
+        env:
+          PLAYWRIGHT_MODULE: /tmp/browser-smoke/node_modules/playwright
+          SMOKE_BASE_URL: ${{ secrets.SITE_URL }}
+          SMOKE_TEST_EMAIL: ${{ secrets.SMOKE_TEST_EMAIL }}
+          SMOKE_TEST_PASSWORD: ${{ secrets.SMOKE_TEST_PASSWORD }}
+        run: node tests/smoke-browser.cjs
+
+      - name: Smoke test routing
+        working-directory: source
+        env:
+          PLAYWRIGHT_MODULE: /tmp/browser-smoke/node_modules/playwright
+          SMOKE_BASE_URL: ${{ secrets.SITE_URL }}
+        run: node tests/smoke-activity-routing.cjs
