@@ -1,0 +1,50 @@
+name: WIF access test
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/wif-access-test.yml'
+
+permissions:
+  contents: read
+  id-token: write
+
+jobs:
+  backup-wif:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Maschera configurazione WIF
+        shell: bash
+        env:
+          PROVIDER: ${{ vars.FIREBASE_WIF_PROVIDER }}
+          SERVICE_ACCOUNT: ${{ vars.FIREBASE_BACKUP_SERVICE_ACCOUNT }}
+        run: |
+          echo "::add-mask::$PROVIDER"
+          echo "::add-mask::$SERVICE_ACCOUNT"
+      - name: Verifica impersonificazione backup
+        uses: google-github-actions/auth@v3
+        with:
+          workload_identity_provider: ${{ vars.FIREBASE_WIF_PROVIDER }}
+          service_account: ${{ vars.FIREBASE_BACKUP_SERVICE_ACCOUNT }}
+          token_format: access_token
+          access_token_lifetime: 300s
+
+  restore-wif:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Maschera configurazione WIF
+        shell: bash
+        env:
+          PROVIDER: ${{ vars.FIREBASE_WIF_PROVIDER }}
+          SERVICE_ACCOUNT: ${{ vars.FIREBASE_RESTORE_SERVICE_ACCOUNT }}
+        run: |
+          echo "::add-mask::$PROVIDER"
+          echo "::add-mask::$SERVICE_ACCOUNT"
+      - name: Verifica impersonificazione restore
+        uses: google-github-actions/auth@v3
+        with:
+          workload_identity_provider: ${{ vars.FIREBASE_WIF_PROVIDER }}
+          service_account: ${{ vars.FIREBASE_RESTORE_SERVICE_ACCOUNT }}
+          token_format: access_token
+          access_token_lifetime: 300s
