@@ -18,7 +18,7 @@ jobs:
   smoke:
     if: github.event_name == 'workflow_dispatch' || (github.event.workflow_run.conclusion == 'success' && github.event.workflow_run.head_branch == 'main' && github.event.workflow_run.event != 'schedule')
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 12
     env:
       PRIVATE_REPO: ${{ secrets.PRIVATE_REPO }}
       PRIVATE_REPO_PAT: ${{ secrets.PRIVATE_REPO_PAT || secrets.PERSONAL_ACCESS_TOKEN || secrets.PAT || secrets.GH_PAT || secrets.GITHUB_PAT }}
@@ -32,7 +32,7 @@ jobs:
           test -n "$PRIVATE_REPO_PAT" || { echo "::error::PAT per repository privato mancante"; exit 1; }
 
       - name: Scarica sorgente privato
-        uses: actions/checkout@v5
+        uses: actions/checkout@v7
         with:
           repository: ${{ secrets.PRIVATE_REPO }}
           token: ${{ secrets.PRIVATE_REPO_PAT || secrets.PERSONAL_ACCESS_TOKEN || secrets.PAT || secrets.GH_PAT || secrets.GITHUB_PAT }}
@@ -43,18 +43,6 @@ jobs:
       - uses: actions/setup-node@v7
         with:
           node-version: '22'
-
-      - name: Carica URL originale senza pubblicarlo
-        working-directory: source
-        run: |
-          node <<'NODE'
-          const fs=require('node:fs');
-          const text=fs.readFileSync('.github/workflows/smoke-browser.yml','utf8');
-          const site=text.match(/SMOKE_BASE_URL:\s*(https:\/\/[^\s]+)/)?.[1];
-          if(!site) throw new Error('URL smoke originale non trovato');
-          console.log(`::add-mask::${site}`);
-          fs.appendFileSync(process.env.GITHUB_ENV, `SMOKE_BASE_URL=${site}\n`);
-          NODE
 
       - name: Installa Playwright e Chromium isolati dal progetto
         run: |
@@ -67,6 +55,7 @@ jobs:
         working-directory: source
         env:
           PLAYWRIGHT_MODULE: /tmp/cv-smoke/node_modules/playwright
+          SMOKE_BASE_URL: https://calabriavera.com
           SMOKE_TEST_EMAIL: ${{ secrets.SMOKE_TEST_EMAIL }}
           SMOKE_TEST_PASSWORD: ${{ secrets.SMOKE_TEST_PASSWORD }}
         run: node tests/smoke-browser.cjs
@@ -75,4 +64,5 @@ jobs:
         working-directory: source
         env:
           PLAYWRIGHT_MODULE: /tmp/cv-smoke/node_modules/playwright
+          SMOKE_BASE_URL: https://calabriavera.com
         run: node tests/smoke-activity-routing.cjs
