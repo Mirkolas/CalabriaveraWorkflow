@@ -42,7 +42,6 @@ jobs:
     env:
       PRIVATE_REPO: ${{ secrets.PRIVATE_REPO }}
       PRIVATE_REPO_PAT: ${{ secrets.PRIVATE_REPO_PAT }}
-      FIREBASE_SERVICE_ACCOUNT_JSON: ${{ secrets.FIREBASE_SERVICE_ACCOUNT_JSON }}
 
     steps:
       - name: Verifica accesso sorgente privato
@@ -69,14 +68,7 @@ jobs:
         working-directory: source
         run: npm ci && npm --prefix tools ci --no-audit --no-fund && npm run build && npm run test:backup
 
-      - name: Autentica Google Cloud con JSON
-        if: env.FIREBASE_SERVICE_ACCOUNT_JSON != ''
-        uses: google-github-actions/auth@v3
-        with:
-          credentials_json: ${{ env.FIREBASE_SERVICE_ACCOUNT_JSON }}
-
       - name: Autentica Google Cloud con WIF
-        if: env.FIREBASE_SERVICE_ACCOUNT_JSON == ''
         uses: google-github-actions/auth@v3
         with:
           workload_identity_provider: ${{ vars.FIREBASE_WIF_PROVIDER }}
