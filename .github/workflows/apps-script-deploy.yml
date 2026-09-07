@@ -91,14 +91,14 @@ jobs:
         if: vars.APPS_SCRIPT_ENABLED == 'true'
         working-directory: source/apps-script
         env:
-          GITHUB_SHA: ${{ env.SOURCE_SHA }}
+          SOURCE_SHA: ${{ env.SOURCE_SHA }}
         run: |
           if ! npx --yes @google/clasp@3.4.1 push --force > /tmp/clasp-push.log 2>&1; then
             node ../scripts/clasp-error.cjs /tmp/clasp-push.log
             echo "::error::Aggiornamento Apps Script non riuscito."
             exit 1
           fi
-          if ! npx --yes @google/clasp@3.4.1 deploy --deploymentId AKfycbybzwBASQBXjcITav3u40hM12SSezzBdBL9UyIJI-ld1eGNQ8Uly96iOdO4E_bVIbVMGQ --description "GitHub Actions ${GITHUB_SHA}" > /tmp/clasp-deploy.log 2>&1; then
+          if ! npx --yes @google/clasp@3.4.1 deploy --deploymentId AKfycbybzwBASQBXjcITav3u40hM12SSezzBdBL9UyIJI-ld1eGNQ8Uly96iOdO4E_bVIbVMGQ --description "GitHub Actions ${SOURCE_SHA}" > /tmp/clasp-deploy.log 2>&1; then
             node ../scripts/clasp-error.cjs /tmp/clasp-deploy.log
             echo "::error::Codice aggiornato ma implementazione non riuscita."
             exit 1
