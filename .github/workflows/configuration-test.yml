@@ -49,28 +49,3 @@ jobs:
           npm run test:backup
           npm run validate
           npm run build
-
-      - name: Verifica riferimenti originali senza mostrare valori
-        env:
-          FIREBASE_WIF_PROVIDER: ${{ vars.FIREBASE_WIF_PROVIDER }}
-          FIREBASE_DEPLOY_SERVICE_ACCOUNT: ${{ vars.FIREBASE_DEPLOY_SERVICE_ACCOUNT }}
-          FIREBASE_BACKUP_SERVICE_ACCOUNT: ${{ vars.FIREBASE_BACKUP_SERVICE_ACCOUNT }}
-          FIREBASE_RESTORE_SERVICE_ACCOUNT: ${{ vars.FIREBASE_RESTORE_SERVICE_ACCOUNT }}
-          FIREBASE_BLOG_WIF_PROVIDER: ${{ vars.FIREBASE_BLOG_WIF_PROVIDER }}
-          FIREBASE_BLOG_SERVICE_ACCOUNT: ${{ vars.FIREBASE_BLOG_SERVICE_ACCOUNT }}
-          CLASPRC_JSON: ${{ secrets.CLASPRC_JSON }}
-          CALABRIAVERA_BACKUP_ENCRYPTION_KEY: ${{ secrets.CALABRIAVERA_BACKUP_ENCRYPTION_KEY }}
-          FIREBASE_AUTH_HASH_CONFIG: ${{ secrets.FIREBASE_AUTH_HASH_CONFIG }}
-        shell: bash
-        run: |
-          set -euo pipefail
-          missing=0
-          for name in FIREBASE_WIF_PROVIDER FIREBASE_DEPLOY_SERVICE_ACCOUNT FIREBASE_BACKUP_SERVICE_ACCOUNT FIREBASE_RESTORE_SERVICE_ACCOUNT FIREBASE_BLOG_WIF_PROVIDER FIREBASE_BLOG_SERVICE_ACCOUNT CLASPRC_JSON CALABRIAVERA_BACKUP_ENCRYPTION_KEY FIREBASE_AUTH_HASH_CONFIG; do
-            if [ -z "${!name:-}" ]; then
-              echo "::warning::Configurazione originale non valorizzata: $name"
-              missing=1
-            fi
-          done
-          if [ "$missing" -eq 0 ]; then echo "Variabili e secret principali del privato risultano disponibili."; fi
-
-# Retest after PRIVATE_REPO_PAT setup
