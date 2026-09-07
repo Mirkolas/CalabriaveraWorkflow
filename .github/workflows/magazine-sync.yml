@@ -37,6 +37,9 @@ jobs:
     env:
       PRIVATE_REPO: ${{ secrets.PRIVATE_REPO }}
       PRIVATE_REPO_PAT: ${{ secrets.PRIVATE_REPO_PAT }}
+      FIREBASE_PROJECT_ID: calabriavera-e08d4
+      SITE_URL: https://calabriavera.com
+      ADMIN_ALERT_EMAIL: info.calabriavera@gmail.com
 
     steps:
       - name: Verifica accesso sorgente privato
@@ -58,23 +61,6 @@ jobs:
       - uses: actions/setup-node@v7
         with:
           node-version: '22'
-
-      - name: Carica configurazione originale senza pubblicarla
-        working-directory: source
-        shell: bash
-        run: |
-          node <<'NODE'
-          const fs=require('node:fs');
-          const text=fs.readFileSync('.github/workflows/magazine-sync.yml','utf8');
-          const project=text.match(/FIREBASE_PROJECT_ID:\s*([^\s]+)/)?.[1];
-          const site=text.match(/SITE_URL:\s*(https:\/\/[^\s]+)/)?.[1];
-          const admin=text.match(/ADMIN_ALERT_EMAIL:\s*([^\s]+)/)?.[1];
-          if(!project || !site || !admin) throw new Error('Configurazione originale automazioni non trovata');
-          console.log(`::add-mask::${project}`);
-          console.log(`::add-mask::${site}`);
-          console.log(`::add-mask::${admin}`);
-          fs.appendFileSync(process.env.GITHUB_ENV, `FIREBASE_PROJECT_ID=${project}\nSITE_URL=${site}\nADMIN_ALERT_EMAIL=${admin}\n`);
-          NODE
 
       - name: Autentica Google Cloud con WIF
         uses: google-github-actions/auth@v3
