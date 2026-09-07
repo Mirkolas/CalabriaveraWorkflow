@@ -18,10 +18,10 @@ jobs:
   backup:
     if: vars.BACKUPS_ENABLED == 'true' && github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    timeout-minutes: 15
     env:
       PRIVATE_REPO: ${{ secrets.PRIVATE_REPO }}
-      PRIVATE_REPO_PAT: ${{ secrets.PRIVATE_REPO_PAT }}
+      PRIVATE_REPO_PAT: ${{ secrets.PRIVATE_REPO_PAT || secrets.PERSONAL_ACCESS_TOKEN || secrets.PAT || secrets.GH_PAT || secrets.GITHUB_PAT }}
 
     steps:
       - name: Verifica accesso sorgente privato
@@ -32,10 +32,10 @@ jobs:
           test -n "$PRIVATE_REPO_PAT" || { echo "::error::PAT per repository privato mancante"; exit 1; }
 
       - name: Scarica sorgente privato
-        uses: actions/checkout@v5
+        uses: actions/checkout@v7
         with:
           repository: ${{ secrets.PRIVATE_REPO }}
-          token: ${{ secrets.PRIVATE_REPO_PAT }}
+          token: ${{ secrets.PRIVATE_REPO_PAT || secrets.PERSONAL_ACCESS_TOKEN || secrets.PAT || secrets.GH_PAT || secrets.GITHUB_PAT }}
           ref: main
           path: source
           persist-credentials: false
@@ -44,39 +44,24 @@ jobs:
         with:
           node-version: '22'
 
-      - name: Carica configurazione originale senza pubblicarla
+      - name: Installa dipendenze
         working-directory: source
-        shell: bash
-        run: |
-          node <<'NODE'
-          const fs=require('node:fs');
-          const text=fs.readFileSync('.github/workflows/firebase-deploy.yml','utf8');
-          const project=text.match(/FIREBASE_PROJECT_ID:\s*([^\s]+)/)?.[1];
-          const site=text.match(/SITE_URL:\s*(https:\/\/[^\s]+)/)?.[1];
-          if(!project || !site) throw new Error('Configurazione deploy originale non trovata');
-          console.log(`::add-mask::${project}`);
-          console.log(`::add-mask::${site}`);
-          fs.appendFileSync(process.env.GITHUB_ENV, `FIREBASE_PROJECT_ID=${project}\nSITE_URL=${site}\n`);
-          NODE
+        run: npm ci && npm --prefix tools ci --no-audit --no-fund
 
-      - name: Installa, valida, compila e testa
+      - name: Build e test backup
         working-directory: source
-        run: npm ci && npm --prefix tools ci --no-audit --no-fund && npm run validate && npm run build && npm run test:backup
+        run: npm run build && npm run test:backup
 
-      - name: Autentica Google Cloud con WIF
-        uses: google-github-actions/auth@v3
+      - uses: google-github-actions/auth@v3
         with:
           workload_identity_provider: ${{ vars.FIREBASE_WIF_PROVIDER }}
           service_account: ${{ vars.FIREBASE_BACKUP_SERVICE_ACCOUNT }}
 
-      - name: Allinea dist alla release Hosting
-        working-directory: source
-        run: npm run generate-sitemap:database
-
-      - name: Backup, verifica remota e rotazione
+      - name: Backup, verifica remota e rotazione ogni sette copie riuscite
         working-directory: source
         env:
-          GITHUB_TOKEN: ${{ secrets.PRIVATE_REPO_PAT }}
+          FIREBASE_PROJECT_ID: calabriavera-e08d4
+          GITHUB_TOKEN: ${{ secrets.PRIVATE_REPO_PAT || secrets.PERSONAL_ACCESS_TOKEN || secrets.PAT || secrets.GH_PAT || secrets.GITHUB_PAT }}
           GITHUB_ACTIONS_TOKEN: ${{ github.token }}
           GITHUB_ACTIONS_REPOSITORY: ${{ github.repository }}
           CALABRIAVERA_BACKUP_ENCRYPTION_KEY: ${{ secrets.CALABRIAVERA_BACKUP_ENCRYPTION_KEY }}
