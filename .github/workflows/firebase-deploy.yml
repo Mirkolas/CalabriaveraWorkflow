@@ -3,12 +3,17 @@ name: Firebase - Deploy CalabriaVera
 on:
   schedule:
     - cron: '17 */4 * * *'
+    - cron: '27 */4 * * *'
+    - cron: '37 */4 * * *'
+    - cron: '47 */4 * * *'
+    - cron: '57 */4 * * *'
   workflow_dispatch:
   repository_dispatch:
     types: [source-deploy]
 
 permissions:
   contents: read
+  actions: read
   id-token: write
 
 concurrency:
@@ -16,8 +21,16 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
+  retry_gate:
+    uses: ./.github/workflows/scheduled-retry-gate.yml
+    with:
+      workflow_file: firebase-deploy.yml
+      cadence_minutes: 240
+      anchor_offset_minutes: 17
+
   deploy:
-    if: vars.FIREBASE_AUTO_DEPLOY_ENABLED == 'true' && github.ref == 'refs/heads/main' && github.event_name != 'schedule'
+    needs: retry_gate
+    if: needs.retry_gate.outputs.should_run == 'true' && vars.FIREBASE_AUTO_DEPLOY_ENABLED == 'true' && github.ref == 'refs/heads/main' && github.event_name != 'schedule'
     concurrency:
       group: firebase-production
       cancel-in-progress: false
@@ -118,7 +131,8 @@ jobs:
         run: node tools/verify-seo-deploy.mjs
 
   admin-maintenance:
-    if: github.ref == 'refs/heads/main'
+    needs: retry_gate
+    if: needs.retry_gate.outputs.should_run == 'true' && github.ref == 'refs/heads/main'
     concurrency:
       group: firebase-admin-maintenance
       cancel-in-progress: true
