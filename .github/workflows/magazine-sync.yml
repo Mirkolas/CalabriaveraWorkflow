@@ -3,6 +3,10 @@ name: Blog automatico - RSS e OpenData
 on:
   schedule:
     - cron: '17 */2 * * *'
+    - cron: '27 */2 * * *'
+    - cron: '37 */2 * * *'
+    - cron: '47 */2 * * *'
+    - cron: '57 */2 * * *'
   workflow_dispatch:
     inputs:
       mode:
@@ -23,6 +27,7 @@ on:
 
 permissions:
   contents: read
+  actions: read
   id-token: write
 
 concurrency:
@@ -30,8 +35,16 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
+  retry_gate:
+    uses: ./.github/workflows/scheduled-retry-gate.yml
+    with:
+      workflow_file: magazine-sync.yml
+      cadence_minutes: 120
+      anchor_offset_minutes: 17
+
   import:
-    if: vars.BLOG_AUTOMATION_DISABLED != 'true' && github.ref == 'refs/heads/main'
+    needs: retry_gate
+    if: needs.retry_gate.outputs.should_run == 'true' && vars.BLOG_AUTOMATION_DISABLED != 'true' && github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     timeout-minutes: 24
     env:
