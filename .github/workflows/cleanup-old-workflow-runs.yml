@@ -2,7 +2,11 @@ name: Cleanup old workflow runs
 
 on:
   schedule:
-    - cron: "0 3 * * 0" # ogni domenica alle 03:00 UTC
+    - cron: "0 3 * * 0" # tentativo 1
+    - cron: "10 3 * * 0" # tentativo 2
+    - cron: "20 3 * * 0" # tentativo 3
+    - cron: "30 3 * * 0" # tentativo 4
+    - cron: "40 3 * * 0" # tentativo 5
   workflow_dispatch:
 
 permissions:
@@ -14,7 +18,16 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
+  retry_gate:
+    uses: ./.github/workflows/scheduled-retry-gate.yml
+    with:
+      workflow_file: cleanup-old-workflow-runs.yml
+      cadence_minutes: 10080
+      anchor_offset_minutes: 4500
+
   cleanup:
+    needs: retry_gate
+    if: needs.retry_gate.outputs.should_run == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 10
 
