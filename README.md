@@ -50,17 +50,36 @@ Copia con lo stesso nome e valore del repository privato:
 
 Non servono i vecchi secret aggiuntivi `FIREBASE_PROJECT_ID`, `SITE_URL`, `APPS_SCRIPT_ID`, `APPS_SCRIPT_DEPLOYMENT_ID`, `ADMIN_ALERT_EMAIL`, `PROMO_FACEBOOK_STORY_IMAGE_URL`, `PROMO_INSTAGRAM_STORY_IMAGE_URL`, `BACKUP_ENCRYPTION_KEY` o service-account JSON creati durante la prima migrazione: non fanno parte della configurazione originale.
 
+## Tentativi schedulati protetti
+
+Tutti i workflow che usano `schedule` hanno **cinque occasioni di esecuzione per ogni campagna logica**. Il controllo condiviso e in `.github/workflows/scheduled-retry-gate.yml`.
+
+Il gate calcola la campagna corrente, legge tramite GitHub Actions API le run schedulate dello stesso workflow e applica queste regole:
+
+- se nella campagna non esiste ancora un successo, il tentativo corrente esegue il lavoro reale;
+- appena un tentativo termina con successo, i tentativi schedulati successivi della stessa campagna terminano senza avviare il lavoro reale;
+- se un tentativo fallisce, il successivo rimane disponibile e riprova;
+- `workflow_dispatch` e `repository_dispatch` non vengono bloccati dal gate;
+- se l'API usata dal gate non e temporaneamente disponibile, il sistema preferisce eseguire il tentativo invece di rischiare di saltare la campagna;
+- le concurrency schedulate non cancellano il tentativo in corso e gli intervalli sono dimensionati rispetto ai timeout dei job, per evitare sovrapposizioni inutili.
+
+Campagne attive:
+
+- `source-watch.yml`: ogni ora, 5 tentativi ai minuti 02, 12, 22, 32 e 42;
+- `seo-sync.yml`: ogni ora, 5 tentativi ai minuti 03, 13, 23, 33 e 43;
+- `magazine-sync.yml`: ogni 2 ore, 5 tentativi distribuiti nell'intera finestra per lasciare terminare un job fino a 24 minuti;
+- `firebase-deploy.yml`: manutenzione schedulata ogni 4 ore, 5 tentativi;
+- `daily-backup.yml`: una campagna giornaliera dalle 02:30 UTC, 5 tentativi;
+- `promo-story.yml`: una campagna giornaliera dalle 06:41 UTC, 5 tentativi;
+- `cleanup-old-workflow-runs.yml`: una campagna settimanale la domenica dalle 03:00 UTC, 5 tentativi.
+
+Gli errori temporanei di quota Firestore nella sincronizzazione SEO e nella manutenzione Firebase vengono considerati retryable: il job termina senza segnare un falso successo, cosi il tentativo successivo della stessa campagna puo riprovare.
+
 ## Rilevamento sorgente privato
 
-`Private source watcher` controlla ogni 15 minuti il commit corrente del branch `main`. Nel repository pubblico conserva soltanto un'impronta SHA-256 e non salva lo SHA originale del sorgente.
+`Private source watcher` usa una campagna oraria con cinque tentativi protetti. Appena un tentativo riesce, gli altri quattro non eseguono nuovamente il controllo. Per non perdere modifiche a causa delle run di retry saltate, il watcher prende come riferimento l'ultima run in cui il job `watch` e stato realmente eseguito con successo, non una semplice run completata dal gate.
 
-Quando rileva una versione nuova avvia:
-
-- `Verify private source`
-- `Firebase deploy`
-- `Apps Script deploy`
-
-I workflow schedulati di backup, SEO e automazioni contenuti continuano con le stesse cadenze del privato.
+Quando rileva modifiche applica gli equivalenti dei trigger del repository privato e avvia solo i workflow necessari.
 
 ## Workload Identity Federation
 
