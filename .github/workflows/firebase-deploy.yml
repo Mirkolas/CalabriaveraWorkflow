@@ -191,8 +191,8 @@ jobs:
               return 0
             fi
             if printf '%s' "$output" | grep -Eqi 'RESOURCE_EXHAUSTED|Quota exceeded|FIRESTORE_429|ADMIN_FIRESTORE_429|(^|[^0-9])429([^0-9]|$)'; then
-              echo "::warning::${label} rinviata: quota Firestore temporaneamente esaurita. La prossima manutenzione programmata riproverà automaticamente."
-              return 0
+              echo "::warning::${label} rinviata: quota Firestore temporaneamente esaurita. Il prossimo tentativo della stessa campagna riproverà automaticamente."
+              return 75
             fi
             return "$code"
           }
