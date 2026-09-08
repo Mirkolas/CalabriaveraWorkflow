@@ -3,6 +3,10 @@ name: Story promozionale CalabriaVera
 on:
   schedule:
     - cron: '41 6 * * *'
+    - cron: '51 6 * * *'
+    - cron: '1 7 * * *'
+    - cron: '11 7 * * *'
+    - cron: '21 7 * * *'
   workflow_dispatch:
     inputs:
       force:
@@ -22,8 +26,16 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
+  retry_gate:
+    uses: ./.github/workflows/scheduled-retry-gate.yml
+    with:
+      workflow_file: promo-story.yml
+      cadence_minutes: 1440
+      anchor_offset_minutes: 401
+
   dispatch:
-    if: github.ref == 'refs/heads/main'
+    needs: retry_gate
+    if: needs.retry_gate.outputs.should_run == 'true' && github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
