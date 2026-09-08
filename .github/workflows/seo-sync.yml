@@ -77,8 +77,8 @@ jobs:
             exit 0
           fi
           if printf '%s' "$output" | grep -Eqi 'RESOURCE_EXHAUSTED|Quota exceeded|HTTP 429|FIRESTORE_429|(^|[^0-9])429([^0-9]|$)'; then
-            echo "::warning::Verifica SEO rinviata: quota Firestore temporaneamente esaurita. Il prossimo controllo programmato riproverà senza pubblicare dati SEO incompleti."
-            exit 0
+            echo "::warning::Verifica SEO rinviata: quota Firestore temporaneamente esaurita. Il prossimo tentativo della stessa campagna riproverà automaticamente."
+            exit 75
           fi
           exit "$code"
 
