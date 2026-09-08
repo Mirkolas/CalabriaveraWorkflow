@@ -1,0 +1,122 @@
+name: Internal - Scheduled retry gate
+
+on:
+  workflow_call:
+    inputs:
+      workflow_file:
+        description: Workflow file name used by the Actions API
+        required: true
+        type: string
+      cadence_minutes:
+        description: Logical interval between scheduled campaigns, in minutes
+        required: true
+        type: number
+      anchor_offset_minutes:
+        description: Campaign start offset in minutes from the Unix epoch
+        required: true
+        type: number
+    outputs:
+      should_run:
+        description: true when this scheduled attempt must execute the real job
+        value: ${{ jobs.gate.outputs.should_run }}
+      campaign:
+        description: Logical campaign identifier
+        value: ${{ jobs.gate.outputs.campaign }}
+
+permissions:
+  actions: read
+  contents: read
+
+jobs:
+  gate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 2
+    outputs:
+      should_run: ${{ steps.guard.outputs.should_run }}
+      campaign: ${{ steps.guard.outputs.campaign }}
+    steps:
+      - name: Ferma i tentativi successivi dopo il primo successo
+        id: guard
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          EVENT_NAME: ${{ github.event_name }}
+          RUN_ID: ${{ github.run_id }}
+          WORKFLOW_FILE: ${{ inputs.workflow_file }}
+          CADENCE_MINUTES: ${{ inputs.cadence_minutes }}
+          ANCHOR_OFFSET_MINUTES: ${{ inputs.anchor_offset_minutes }}
+        run: |
+          set -euo pipefail
+
+          # Dispatch manuali e repository_dispatch non fanno parte dei tentativi schedulati.
+          if [ "$EVENT_NAME" != "schedule" ]; then
+            echo "should_run=true" >> "$GITHUB_OUTPUT"
+            echo "campaign=manual" >> "$GITHUB_OUTPUT"
+            echo "Evento $EVENT_NAME: esecuzione consentita senza deduplicazione schedulata."
+            exit 0
+          fi
+
+          cadence="$CADENCE_MINUTES"
+          anchor="$ANCHOR_OFFSET_MINUTES"
+          if ! [[ "$cadence" =~ ^[0-9]+$ ]] || [ "$cadence" -le 0 ]; then
+            echo "::warning::Cadenza non valida ($cadence): per sicurezza eseguo il tentativo."
+            echo "should_run=true" >> "$GITHUB_OUTPUT"
+            echo "campaign=invalid-cadence" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          if ! [[ "$anchor" =~ ^-?[0-9]+$ ]]; then
+            echo "::warning::Anchor non valido ($anchor): per sicurezza eseguo il tentativo."
+            echo "should_run=true" >> "$GITHUB_OUTPUT"
+            echo "campaign=invalid-anchor" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          now_epoch="$(date -u +%s)"
+          now_minutes=$((now_epoch / 60))
+          campaign=$(((now_minutes - anchor) / cadence))
+          campaign_start_minutes=$((campaign * cadence + anchor))
+          campaign_end_minutes=$((campaign_start_minutes + cadence))
+          campaign_start="$(date -u -d "@$((campaign_start_minutes * 60))" '+%Y-%m-%dT%H:%M:%SZ')"
+          campaign_end="$(date -u -d "@$((campaign_end_minutes * 60))" '+%Y-%m-%dT%H:%M:%SZ')"
+
+          echo "campaign=$campaign" >> "$GITHUB_OUTPUT"
+          echo "Campagna schedulata $campaign: $campaign_start -> $campaign_end"
+
+          # Se l'API Actions ha un problema, non blocchiamo il backup/deploy/automazione:
+          # meglio eseguire un tentativo in più che perdere la campagna.
+          set +e
+          runs_json="$(gh api \
+            -H "Accept: application/vnd.github+json" \
+            -H "X-GitHub-Api-Version: 2022-11-28" \
+            "repos/$REPO/actions/workflows/$WORKFLOW_FILE/runs?branch=main&event=schedule&per_page=100" 2>/tmp/retry-gate.err)"
+          api_code=$?
+          set -e
+
+          if [ "$api_code" -ne 0 ]; then
+            echo "::warning::Impossibile verificare i successi precedenti; eseguo il tentativo corrente."
+            cat /tmp/retry-gate.err || true
+            echo "should_run=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          previous_success="$(printf '%s' "$runs_json" | jq -r \
+            --arg current "$RUN_ID" \
+            --arg start "$campaign_start" \
+            --arg end "$campaign_end" '
+              .workflow_runs[]
+              | select((.id | tostring) != $current)
+              | select(.event == "schedule")
+              | select(.conclusion == "success")
+              | select(.created_at >= $start and .created_at < $end)
+              | [.id, .created_at] | @tsv
+            ' | head -n 1)"
+
+          if [ -n "$previous_success" ]; then
+            echo "should_run=false" >> "$GITHUB_OUTPUT"
+            echo "Successo già registrato nella stessa campagna: $previous_success"
+            echo "Questo tentativo termina senza avviare il lavoro reale."
+          else
+            echo "should_run=true" >> "$GITHUB_OUTPUT"
+            echo "Nessun successo precedente nella campagna: eseguo questo tentativo."
+          fi
