@@ -2,7 +2,11 @@ name: SEO - Sincronizza attività e sitemap
 
 on:
   schedule:
-    - cron: '3-53/10 * * * *'
+    - cron: '3 * * * *'
+    - cron: '13 * * * *'
+    - cron: '23 * * * *'
+    - cron: '33 * * * *'
+    - cron: '43 * * * *'
   workflow_dispatch:
   repository_dispatch:
     types: [source-seo-push]
@@ -16,8 +20,16 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
+  retry_gate:
+    uses: ./.github/workflows/scheduled-retry-gate.yml
+    with:
+      workflow_file: seo-sync.yml
+      cadence_minutes: 60
+      anchor_offset_minutes: 3
+
   sync:
-    if: vars.FIREBASE_AUTO_DEPLOY_ENABLED == 'true' && github.ref == 'refs/heads/main'
+    needs: retry_gate
+    if: needs.retry_gate.outputs.should_run == 'true' && vars.FIREBASE_AUTO_DEPLOY_ENABLED == 'true' && github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     timeout-minutes: 5
     env:
