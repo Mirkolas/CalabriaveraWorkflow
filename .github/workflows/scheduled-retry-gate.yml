@@ -104,13 +104,15 @@ jobs:
             --arg current "$RUN_ID" \
             --arg start "$campaign_start" \
             --arg end "$campaign_end" '
-              .workflow_runs[]
-              | select((.id | tostring) != $current)
-              | select(.event == "schedule")
-              | select(.conclusion == "success")
-              | select(.created_at >= $start and .created_at < $end)
-              | [.id, .created_at] | @tsv
-            ' | head -n 1)"
+              first(
+                .workflow_runs[]
+                | select((.id | tostring) != $current)
+                | select(.event == "schedule")
+                | select(.conclusion == "success")
+                | select(.created_at >= $start and .created_at < $end)
+                | [.id, .created_at] | @tsv
+              ) // empty
+            ')"
 
           if [ -n "$previous_success" ]; then
             echo "should_run=false" >> "$GITHUB_OUTPUT"
