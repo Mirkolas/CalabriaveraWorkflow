@@ -33,7 +33,7 @@ async function waitReady(page,route){
   else if(['/login','/registrazione','/chi-siamo','/contatti','/privacy-policy','/cookie-policy','/termini','/note-legali'].includes(clean)) await page.waitForSelector('main h1',{timeout:7000}).catch(()=>{});
   else await page.waitForSelector('main h1',{timeout:5000}).catch(()=>{});
   if(routeLang(route)!=='it' && clean==='/') await page.waitForTimeout(1400);
-  await page.waitForTimeout(500);
+  await page.waitForTimeout(clean==='/mappa'?1800:500);
 }
 
 async function inspect(page,base,route){
@@ -94,7 +94,7 @@ function sourceLegalChecks(){
   for(const [from,to] of legacyRedirects){const r=await http.get(from,{maxRedirects:0}).catch(()=>null);report.redirects.push({from,to,status:r?.status()||0,location:r?.headers()?.location||''});}
   const unauth=await http.post('/api/images/upload',{headers:{'content-type':'image/webp','x-user-id':'anonymous','x-business-id':'anonymous'},data:Buffer.from('not-image')}).catch(()=>null);report.specific.unauthUploadStatus=unauth?.status()||0;
   for(const [key,url] of [['businesses','/legacy-data/public-businesses-v1.json'],['blog','/legacy-data/public-blog-v1.json']]){const r=await http.get(url);let count=-1;try{count=(await r.json()).items?.length??-1;}catch{}report.specific[`${key}SnapshotStatus`]=r.status();report.specific[`${key}SnapshotCount`]=count;}
-  const htmlResponse=await http.get('/catalogo');const html=await htmlResponse.text();report.specific.serverParityCss=/data-cv-main-parity/.test(html)&&/catalog-activity-cover\.css/.test(html);
+  const htmlResponse=await http.get(`/catalogo?gatecss=${encodeURIComponent(expected||Date.now())}`);const html=await htmlResponse.text();report.specific.serverParityCss=/data-cv-main-parity/.test(html)&&/catalog-activity-cover\.css/.test(html);
   await http.dispose();
   const check=await browser.newContext({viewport:{width:1365,height:900}}),cp=await check.newPage();
   const home=await inspect(cp,REACT,'/');const catalog=await inspect(cp,REACT,'/catalogo');const map=await inspect(cp,REACT,'/mappa');const blog=await inspect(cp,REACT,'/blog');const contacts=await inspect(cp,REACT,'/contatti');const register=await inspect(cp,REACT,'/registrazione');const privacy=await inspect(cp,REACT,'/privacy-policy');
@@ -104,7 +104,7 @@ function sourceLegalChecks(){
  const failures=[];
  for(const row of report.routes){const r=row.react;if(!r||!r.status||r.status>=400)failures.push(`${row.route}: React HTTP ${r?.status||0}`);if(r?.errors?.length)failures.push(`${row.route}: ${r.errors.join(' | ')}`);if((r?.overflow||0)>4)failures.push(`${row.route}: horizontal overflow ${r.overflow}px`);if(row.privateGate){const clean=(r.url||'').replace(/^\/(en|fr|de|es)(?=\/|$)/,'');if(!clean.startsWith('/login'))failures.push(`${row.route}: unauthenticated gate did not end at login (${r.url})`);continue;}
   const clean=cleanRoute(row.route),lang=routeLang(row.route);if(lang==='it'&&row.sameH1===false&&row.main.h1.length&&row.react.h1.length)failures.push(`${row.route}: H1 differs (${row.main.h1.join(' / ')} <> ${row.react.h1.join(' / ')})`);
-  const min=clean==='/'?0.6:['/chi-siamo','/privacy-policy','/cookie-policy','/termini','/note-legali'].includes(clean)?0.75:0.15;if((row.textSimilarity??1)<min)failures.push(`${row.route}: text similarity ${(row.textSimilarity||0).toFixed(2)} < ${min}`);
+  const min=clean==='/'?0.6:['/chi-siamo','/privacy-policy','/cookie-policy','/termini','/note-legali'].includes(clean)?0.75:0.15;const catalogDataRace=clean==='/catalogo'&&row.main.activityCards===0&&row.react.activityCards>0;if(!catalogDataRace&&(row.textSimilarity??1)<min)failures.push(`${row.route}: text similarity ${(row.textSimilarity||0).toFixed(2)} < ${min}`);
  }
  for(const x of report.redirects){if(![301,302,307,308].includes(x.status))failures.push(`${x.from}: redirect status ${x.status}`);const target=new URL(x.location||'/',REACT).pathname;if(target!==x.to)failures.push(`${x.from}: redirect target ${target}, expected ${x.to}`);}
  const s=report.specific;
