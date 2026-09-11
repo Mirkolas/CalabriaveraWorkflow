@@ -15,6 +15,7 @@ concurrency:
   cancel-in-progress: true
 
 # The version gate below prevents browser tests from running against an older Cloudflare deployment.
+# This run also validates the latest detail first-paint changes from react-migration.
 jobs:
   smoke:
     runs-on: ubuntu-latest
