@@ -1,0 +1,115 @@
+name: React migration - local tourism asset
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/react-tourism-asset-fix.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  patch-private-branch:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      PRIVATE_REPO: ${{ secrets.PRIVATE_REPO }}
+      PRIVATE_REPO_PAT: ${{ secrets.PRIVATE_REPO_PAT || secrets.PERSONAL_ACCESS_TOKEN || secrets.PAT || secrets.GH_PAT || secrets.GITHUB_PAT }}
+
+    steps:
+      - name: Verifica accesso
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -n "$PRIVATE_REPO" || { echo "::error::PRIVATE_REPO mancante"; exit 1; }
+          test -n "$PRIVATE_REPO_PAT" || { echo "::error::PAT mancante"; exit 1; }
+
+      - name: Checkout branch React privata
+        uses: actions/checkout@v7
+        with:
+          repository: ${{ secrets.PRIVATE_REPO }}
+          token: ${{ secrets.PRIVATE_REPO_PAT || secrets.PERSONAL_ACCESS_TOKEN || secrets.PAT || secrets.GH_PAT || secrets.GITHUB_PAT }}
+          ref: react-migration
+          path: source
+          persist-credentials: true
+          fetch-depth: 0
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version: '22'
+
+      - name: Copia il dataset turismo nel build React
+        working-directory: source
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p frontend-react/scripts
+          cat > frontend-react/scripts/copy-legacy-assets.mjs <<'EOF'
+          import { copyFileSync, existsSync, mkdirSync } from "node:fs";
+          import { dirname, resolve } from "node:path";
+          import { fileURLToPath } from "node:url";
+
+          const scriptDir = dirname(fileURLToPath(import.meta.url));
+          const repoRoot = resolve(scriptDir, "../..");
+          const reactRoot = resolve(scriptDir, "..");
+          const source = resolve(repoRoot, "assets/js/tourism-data-core.js");
+          const targetDir = resolve(reactRoot, "public/legacy-assets");
+          const target = resolve(targetDir, "tourism-data-core.js");
+
+          if (!existsSync(source)) throw new Error(`Asset turismo sorgente non trovato: ${source}`);
+          mkdirSync(targetDir, { recursive: true });
+          copyFileSync(source, target);
+          console.log(`Asset turismo copiato: ${target}`);
+          EOF
+
+          python3 - <<'PY'
+          import json
+          from pathlib import Path
+
+          package_path = Path('frontend-react/package.json')
+          package = json.loads(package_path.read_text(encoding='utf-8'))
+          package['scripts']['build'] = 'node scripts/write-build-version.mjs && node scripts/copy-legacy-assets.mjs && tsc --noEmit && vite build'
+          package_path.write_text(json.dumps(package, ensure_ascii=False, indent=2) + '\n', encoding='utf-8')
+
+          worker_path = Path('frontend-react/worker.ts')
+          text = worker_path.read_text(encoding='utf-8')
+          old = '''      const modulePath = LEGACY_MODULES.get(url.pathname);
+                if (modulePath) return proxy(request, modulePath, "text/javascript,application/javascript", 86400);'''
+          new = '''      const modulePath = LEGACY_MODULES.get(url.pathname);
+                if (modulePath) {
+                  const localAsset = await env.ASSETS.fetch(request);
+                  if (localAsset.ok) return localAsset;
+                  return proxy(request, modulePath, "text/javascript,application/javascript", 86400);
+                }'''
+          if old not in text:
+              raise SystemExit('Route modulo legacy attesa non trovata: patch interrotta')
+          worker_path.write_text(text.replace(old, new, 1), encoding='utf-8')
+          PY
+
+          git diff --check
+
+      - name: TypeScript e build Vite
+        working-directory: source/frontend-react
+        shell: bash
+        run: |
+          set -euo pipefail
+          npm install --no-audit --no-fund
+          npm run build
+          test -s dist/legacy-assets/tourism-data-core.js
+
+      - name: Pubblica fix su react-migration
+        working-directory: source
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name "CalabriaVera Automation"
+          git config user.email "actions@users.noreply.github.com"
+          git add frontend-react/package.json frontend-react/worker.ts frontend-react/scripts/copy-legacy-assets.mjs
+          if git diff --cached --quiet; then
+            echo "Nessuna modifica necessaria."
+            exit 0
+          fi
+          git commit -m "fix: serve tourism data from React build"
+          git push origin HEAD:react-migration
