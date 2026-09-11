@@ -96,6 +96,6 @@ jobs:
           fi
           git -C source config user.name 'CalabriaVera Automation'
           git -C source config user.email 'actions@users.noreply.github.com'
-          git -C source add frontend-react/scripts/copy-legacy-assets.mjs frontend-react/src/lib/language.ts frontend-react/src/components/Layout.tsx frontend-react/public/assets/flags frontend-react/dist/assets/flags
+          git -C source add frontend-react/scripts/copy-legacy-assets.mjs frontend-react/src/lib/language.ts frontend-react/src/components/Layout.tsx
           git -C source commit -m 'fix: restore language flags and final footer parity'
           git -C source push origin HEAD:react-migration
