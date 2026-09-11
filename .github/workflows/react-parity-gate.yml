@@ -86,7 +86,17 @@ jobs:
           PLAYWRIGHT_MODULE: /tmp/cv-parity/node_modules/playwright
           EXPECTED_SHA: ${{ steps.staging.outputs.expected }}
         shell: bash
-        run: node ../automation/scripts/react-parity-audit.cjs
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          from pathlib import Path
+          p = Path('../automation/scripts/react-parity-audit.cjs')
+          s = p.read_text(encoding='utf-8')
+          s = s.replace("const { chromium } = require(process.env.PLAYWRIGHT_MODULE || 'playwright');", "const { chromium, request } = require(process.env.PLAYWRIGHT_MODULE || 'playwright');")
+          s = s.replace('browser.request.newContext', 'request.newContext')
+          p.write_text(s, encoding='utf-8')
+          PY
+          node ../automation/scripts/react-parity-audit.cjs
 
       - name: Upload parity evidence
         if: always()
