@@ -73,22 +73,35 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          count="$(grep -o '"'"'"id"'"'":' source/frontend-react/src/generated/tourism-data-core.ts | wc -l | tr -d ' ')"
-          test "$count" = "52"
-          grep -q 'turismo-isola-dino' source/frontend-react/src/generated/tourism-data-core.ts
-          grep -q 'turismo-paola-san-francesco' source/frontend-react/src/generated/tourism-data-core.ts
-          grep -q 'turismo-catanzaro-centro' source/frontend-react/src/generated/tourism-data-core.ts
-          grep -q 'ui-final-overrides.css?v=20260905-activity-shell-v4' source/frontend-react/src/generated/main-route-css.ts
-          grep -q 'header-unified.css?v=20260905-header-v2' source/frontend-react/src/generated/main-route-css.ts
-          grep -q 'catalog-activity-cover.css?v=20260905-cover-v5' source/frontend-react/src/generated/main-route-css.ts
-          grep -q 'cv-map-toolbar' source/frontend-react/src/pages/MapPage.tsx
-          grep -q 'cv-map-cluster-shell' source/frontend-react/src/pages/MapPage.tsx
-          grep -q 'cv-map-pin-shell' source/frontend-react/src/pages/MapPage.tsx
-          grep -q 'id="map-panel"' source/frontend-react/src/pages/MapPage.tsx
-          grep -q 'id="map-fit-results"' source/frontend-react/src/pages/MapPage.tsx
-          grep -q 'id="map-results"' source/frontend-react/src/pages/MapPage.tsx
-          grep -q 'L.control.scale' source/frontend-react/src/pages/MapPage.tsx
-          grep -q '53' source/frontend-react/src/generated/tourism-data-core.ts || true
+          python3 - <<'PY'
+          from pathlib import Path
+          import re
+          tourism = Path('source/frontend-react/src/generated/tourism-data-core.ts').read_text()
+          ids = re.findall(r'"id"\s*:\s*"([^"]+)"', tourism)
+          print(f'Generated tourism records: {len(ids)}')
+          if len(ids) != 52:
+              raise SystemExit(f'expected 52 tourism records, got {len(ids)}')
+          required = {'turismo-isola-dino','turismo-paola-san-francesco','turismo-catanzaro-centro'}
+          missing = sorted(required.difference(ids))
+          if missing:
+              raise SystemExit(f'missing tourism records: {missing}')
+          checks = {
+              'source/frontend-react/src/generated/main-route-css.ts': [
+                  'ui-final-overrides.css?v=20260905-activity-shell-v4',
+                  'header-unified.css?v=20260905-header-v2',
+                  'catalog-activity-cover.css?v=20260905-cover-v5',
+              ],
+              'source/frontend-react/src/pages/MapPage.tsx': [
+                  'cv-map-toolbar','cv-map-cluster-shell','cv-map-pin-shell',
+                  'id="map-panel"','id="map-fit-results"','id="map-results"','L.control.scale',
+              ],
+          }
+          for filename, needles in checks.items():
+              text = Path(filename).read_text()
+              for needle in needles:
+                  if needle not in text:
+                      raise SystemExit(f'{filename}: missing {needle}')
+          PY
           git -C source diff --check
 
       - name: Commit and push only after green build
