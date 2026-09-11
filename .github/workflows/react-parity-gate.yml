@@ -1,0 +1,98 @@
+name: React migration - deterministic parity gate
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/react-parity-gate.yml'
+      - 'scripts/react-parity-audit.cjs'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: react-full-parity-audit
+  cancel-in-progress: true
+
+jobs:
+  parity:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      PRIVATE_REPO: ${{ secrets.PRIVATE_REPO }}
+      PRIVATE_REPO_PAT: ${{ secrets.PRIVATE_REPO_PAT || secrets.PERSONAL_ACCESS_TOKEN || secrets.PAT || secrets.GH_PAT || secrets.GITHUB_PAT }}
+      MAIN_BASE_URL: https://calabriavera.com
+      STAGING_BASE_URL: https://calabriavera.sonotacamirko.workers.dev
+    steps:
+      - name: Verify private repository access
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -n "$PRIVATE_REPO"
+          test -n "$PRIVATE_REPO_PAT"
+
+      - name: Checkout automation repo
+        uses: actions/checkout@v7
+        with:
+          path: automation
+          persist-credentials: false
+
+      - name: Checkout React migration
+        uses: actions/checkout@v7
+        with:
+          repository: ${{ secrets.PRIVATE_REPO }}
+          token: ${{ secrets.PRIVATE_REPO_PAT || secrets.PERSONAL_ACCESS_TOKEN || secrets.PAT || secrets.GH_PAT || secrets.GITHUB_PAT }}
+          ref: react-migration
+          path: source
+          persist-credentials: false
+          fetch-depth: 0
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version: '24'
+
+      - name: Wait for exact Cloudflare staging commit
+        id: staging
+        shell: bash
+        run: |
+          set -euo pipefail
+          expected="$(git -C source rev-parse HEAD)"
+          echo "expected=$expected" >> "$GITHUB_OUTPUT"
+          echo "Expected staging commit: $expected"
+          for attempt in {1..72}; do
+            actual="$(curl --fail --silent --show-error --max-time 15 "$STAGING_BASE_URL/build-version.txt?gate=$attempt" 2>/dev/null | tr -d '\r\n' || true)"
+            if [ "$actual" = "$expected" ]; then
+              echo "Cloudflare staging is on $expected"
+              exit 0
+            fi
+            echo "Waiting for staging ($attempt/72): ${actual:-no version}"
+            sleep 10
+          done
+          echo "::error::Cloudflare did not publish $expected"
+          exit 1
+
+      - name: Install isolated Chromium
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p /tmp/cv-parity
+          npm install --prefix /tmp/cv-parity --no-package-lock --no-save playwright@1.62.1
+          /tmp/cv-parity/node_modules/.bin/playwright install --with-deps chromium
+
+      - name: Run deterministic parity audit
+        working-directory: source
+        env:
+          PLAYWRIGHT_MODULE: /tmp/cv-parity/node_modules/playwright
+          EXPECTED_SHA: ${{ steps.staging.outputs.expected }}
+        shell: bash
+        run: node ../automation/scripts/react-parity-audit.cjs
+
+      - name: Upload parity evidence
+        if: always()
+        uses: actions/upload-artifact@v6
+        with:
+          name: react-parity-gate
+          path: source/parity-audit-fast
+          if-no-files-found: warn
+          retention-days: 5
