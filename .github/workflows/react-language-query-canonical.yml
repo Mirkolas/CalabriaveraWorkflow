@@ -50,18 +50,19 @@ jobs:
           worker = Path('frontend-react/worker.ts')
           text = worker.read_text(encoding='utf-8')
           marker = 'function isPrivateRoute(path: string) {'
-          helper = '''function languageQueryRedirect(url: URL) {
-            const requested = url.searchParams.get("lang") as Language | null;
-            if (!requested || !(["it", "en", "fr", "de", "es"] as Language[]).includes(requested)) return "";
-            const clean = cleanPath(url.pathname);
-            const next = new URL(url.toString());
-            next.pathname = requested === "it" ? clean : `/${requested}${clean === "/" ? "/" : clean}`;
-            next.searchParams.delete("lang");
-            return `${next.pathname}${next.search}${next.hash}` || "/";
-          }
-
-          '''
-          helper = helper.replace('\n          ', '\n').lstrip()
+          helper_lines = [
+              'function languageQueryRedirect(url: URL) {',
+              '  const requested = url.searchParams.get("lang") as Language | null;',
+              '  if (!requested || !(["it", "en", "fr", "de", "es"] as Language[]).includes(requested)) return "";',
+              '  const clean = cleanPath(url.pathname);',
+              '  const next = new URL(url.toString());',
+              '  next.pathname = requested === "it" ? clean : `/${requested}${clean === "/" ? "/" : clean}`;',
+              '  next.searchParams.delete("lang");',
+              '  return `${next.pathname}${next.search}${next.hash}` || "/";',
+              '}',
+              '',
+          ]
+          helper = '\n'.join(helper_lines) + '\n'
           if 'function languageQueryRedirect(url: URL)' not in text:
               if marker not in text:
                   raise SystemExit('Marker isPrivateRoute non trovato')
@@ -77,21 +78,22 @@ jobs:
           smoke = Path('tests/react-staging-smoke.cjs')
           test = smoke.read_text(encoding='utf-8')
           anchor = "    assert(/noindex/i.test(String(robots || '')), 'Staging workers.dev deve restare noindex');\n"
-          addition = """
-
-    await page.evaluate(() => {
-      localStorage.setItem('cv-lang', 'en');
-      localStorage.setItem('cv-language', 'en');
-    });
-    await open(page, '/');
-    assert((await page.locator('html').getAttribute('lang')) === 'it', 'Home root: la lingua salvata non deve cambiare la URL italiana');
-
-    const langRedirect = await page.goto(`${base}/?lang=en`, { waitUntil: 'domcontentloaded', timeout: 20000 });
-    assert(langRedirect && langRedirect.status() < 400, 'Redirect ?lang=en non raggiungibile');
-    const langUrl = new URL(page.url());
-    assert(langUrl.pathname === '/en/', `Redirect ?lang=en errato: ${page.url()}`);
-    assert(!langUrl.searchParams.has('lang'), 'Redirect lingua deve rimuovere il parametro lang');
-"""
+          addition_lines = [
+              '',
+              '    await page.evaluate(() => {',
+              "      localStorage.setItem('cv-lang', 'en');",
+              "      localStorage.setItem('cv-language', 'en');",
+              '    });',
+              "    await open(page, '/');",
+              "    assert((await page.locator('html').getAttribute('lang')) === 'it', 'Home root: la lingua salvata non deve cambiare la URL italiana');",
+              '',
+              "    const langRedirect = await page.goto(`${base}/?lang=en`, { waitUntil: 'domcontentloaded', timeout: 20000 });",
+              "    assert(langRedirect && langRedirect.status() < 400, 'Redirect ?lang=en non raggiungibile');",
+              '    const langUrl = new URL(page.url());',
+              "    assert(langUrl.pathname === '/en/', `Redirect ?lang=en errato: ${page.url()}`);",
+              "    assert(!langUrl.searchParams.has('lang'), 'Redirect lingua deve rimuovere il parametro lang');",
+          ]
+          addition = '\n'.join(addition_lines) + '\n'
           if 'Home root: la lingua salvata non deve cambiare' not in test:
               if anchor not in test:
                   raise SystemExit('Anchor smoke Home non trovato')
