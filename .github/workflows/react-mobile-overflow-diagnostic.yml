@@ -1,0 +1,74 @@
+name: React migration - mobile overflow diagnostic
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/react-mobile-overflow-diagnostic.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  diagnose:
+    runs-on: ubuntu-latest
+    timeout-minutes: 12
+    env:
+      STAGING: https://calabriavera.sonotacamirko.workers.dev
+    steps:
+      - uses: actions/setup-node@v7
+        with:
+          node-version: '24'
+      - name: Inspect raw server HTML
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo '--- headers /catalogo ---'
+          curl -sS -D /tmp/headers -o /tmp/catalogo.html "$STAGING/catalogo?diag=$(date +%s)"
+          cat /tmp/headers
+          echo '--- parity markers ---'
+          grep -o 'data-cv-main-parity' /tmp/catalogo.html | head || true
+          grep -o '/assets/css/catalog-activity-cover.css' /tmp/catalogo.html | head || true
+          echo '--- head tail ---'
+          python3 - <<'PY'
+          import re
+          s=open('/tmp/catalogo.html',encoding='utf-8').read()
+          m=re.search(r'<head[\s\S]*?</head>',s,re.I)
+          print((m.group(0) if m else s[:5000])[-5000:])
+          PY
+      - name: Install Chromium
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p /tmp/cvdiag
+          npm install --prefix /tmp/cvdiag --no-package-lock --no-save playwright@1.62.1
+          /tmp/cvdiag/node_modules/.bin/playwright install --with-deps chromium
+      - name: Find overflowing elements
+        shell: bash
+        env:
+          PLAYWRIGHT: /tmp/cvdiag/node_modules/playwright
+        run: |
+          set -euo pipefail
+          node <<'NODE'
+          const { chromium } = require(process.env.PLAYWRIGHT);
+          (async()=>{
+            const browser=await chromium.launch({headless:true});
+            for(const route of ['/', '/mappa', '/chi-siamo']){
+              const ctx=await browser.newContext({viewport:{width:390,height:844}}); const page=await ctx.newPage();
+              await page.goto(process.env.STAGING+route,{waitUntil:'domcontentloaded',timeout:20000});
+              await page.waitForTimeout(1800);
+              const result=await page.evaluate(()=>{
+                const vw=document.documentElement.clientWidth;
+                const rows=[...document.querySelectorAll('body *')].map((el)=>{
+                  const r=el.getBoundingClientRect(); const cs=getComputedStyle(el);
+                  return {tag:el.tagName.toLowerCase(),id:el.id,cls:String(el.className||'').slice(0,160),left:Math.round(r.left),right:Math.round(r.right),width:Math.round(r.width),scrollWidth:el.scrollWidth,position:cs.position,display:cs.display,transform:cs.transform};
+                }).filter(x=>x.right>vw+2 || x.left<-2 || x.scrollWidth>x.width+4).sort((a,b)=>Math.max(b.right-vw,b.scrollWidth-b.width)-Math.max(a.right-vw,a.scrollWidth-a.width)).slice(0,30);
+                return {vw,docClient:document.documentElement.clientWidth,docScroll:document.documentElement.scrollWidth,bodyClient:document.body.clientWidth,bodyScroll:document.body.scrollWidth,rows};
+              });
+              console.log('\n===',route,'==='); console.log(JSON.stringify(result,null,2));
+              await ctx.close();
+            }
+            await browser.close();
+          })().catch(e=>{console.error(e);process.exit(1)});
+          NODE
