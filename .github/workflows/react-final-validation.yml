@@ -41,7 +41,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          test "$(git -C source rev-parse HEAD)" = "176e190d29b20e2b430068a5c33450e15b7af277"
+          test "$(git -C source rev-parse HEAD)" = "ce65efff3fd46a0ae44dced4d7991a8154b1c559"
       - uses: actions/setup-node@v7
         with:
           node-version: '24'
@@ -79,4 +79,7 @@ jobs:
           grep -q 'catalog-activity-cover.css' source/frontend-react/dist/catalogo/index.html
           grep -q 'cv-react-magazine' source/frontend-react/dist/blog/index.html
           grep -q 'data-cv-main-parity' source/frontend-react/dist/catalogo/index.html
+          for lang in it en fr de es; do test -s "source/frontend-react/dist/assets/flags/$lang.svg"; done
+          grep -q 'footerActivities: "Attività"' source/frontend-react/src/lib/language.ts
+          grep -q 'social-links' source/frontend-react/src/components/Layout.tsx
           git -C source diff --check
