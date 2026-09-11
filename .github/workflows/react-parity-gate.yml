@@ -1,6 +1,6 @@
 name: React migration - deterministic parity gate
 
-# Gate revision: react-migration 176e190d29b20e2b430068a5c33450e15b7af277
+# Gate revision: react-migration e8d9997e12fca448001146f94e71c61a1d7995ad
 on:
   push:
     branches: [main]
@@ -81,22 +81,7 @@ jobs:
           npm install --prefix /tmp/cv-parity --no-package-lock --no-save playwright@1.62.1
           /tmp/cv-parity/node_modules/.bin/playwright install --with-deps chromium
 
-      - name: Prepare data-ready audit
-        shell: bash
-        run: |
-          set -euo pipefail
-          cp automation/scripts/react-parity-audit-v2.cjs /tmp/react-parity-audit.cjs
-          python3 - <<'PY'
-          from pathlib import Path
-          p=Path('/tmp/react-parity-audit.cjs')
-          s=p.read_text()
-          old="const min=clean==='/'?0.6:['/chi-siamo','/privacy-policy','/cookie-policy','/termini','/note-legali'].includes(clean)?0.75:0.15;if((row.textSimilarity??1)<min)failures.push(`${row.route}: text similarity ${(row.textSimilarity||0).toFixed(2)} < ${min}`);"
-          new="const mainStillLoading=(clean==='/catalogo'&&row.main.activityCards===0&&row.react.activityCards>0)||(clean==='/blog'&&row.main.blogCards===0&&row.react.blogCards>0);const min=clean==='/'?0.6:['/chi-siamo','/privacy-policy','/cookie-policy','/termini','/note-legali'].includes(clean)?0.75:0.15;if(!mainStillLoading&&(row.textSimilarity??1)<min)failures.push(`${row.route}: text similarity ${(row.textSimilarity||0).toFixed(2)} < ${min}`);"
-          if old not in s: raise SystemExit('audit similarity marker missing')
-          p.write_text(s.replace(old,new,1))
-          PY
-
-      - name: Run data-ready parity audit
+      - name: Run data-ready parity audit v3
         working-directory: source
         env:
           PLAYWRIGHT_MODULE: /tmp/cv-parity/node_modules/playwright
@@ -104,7 +89,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          node /tmp/react-parity-audit.cjs
+          node ../automation/scripts/react-parity-audit-v2.cjs
 
       - name: Upload parity evidence
         if: always()
