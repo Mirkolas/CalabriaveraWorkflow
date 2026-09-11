@@ -1,0 +1,151 @@
+name: React migration - browser public business snapshot
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/react-browser-business-snapshot.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: react-browser-business-snapshot
+  cancel-in-progress: true
+
+jobs:
+  capture-build-push:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    env:
+      PRIVATE_REPO: ${{ secrets.PRIVATE_REPO }}
+      PRIVATE_REPO_PAT: ${{ secrets.PRIVATE_REPO_PAT || secrets.PERSONAL_ACCESS_TOKEN || secrets.PAT || secrets.GH_PAT || secrets.GITHUB_PAT }}
+      MAIN_BASE_URL: https://calabriavera.com
+    steps:
+      - name: Verify private access
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -n "$PRIVATE_REPO"
+          test -n "$PRIVATE_REPO_PAT"
+      - uses: actions/checkout@v7
+        with:
+          path: automation
+          persist-credentials: false
+      - uses: actions/checkout@v7
+        with:
+          repository: ${{ secrets.PRIVATE_REPO }}
+          token: ${{ secrets.PRIVATE_REPO_PAT || secrets.PERSONAL_ACCESS_TOKEN || secrets.PAT || secrets.GH_PAT || secrets.GITHUB_PAT }}
+          ref: react-migration
+          path: source
+          fetch-depth: 0
+          persist-credentials: true
+      - uses: actions/setup-node@v7
+        with:
+          node-version: '24'
+          cache: npm
+          cache-dependency-path: source/frontend-react/package-lock.json
+      - name: Assert expected migration base
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git -C source rev-parse HEAD)" = "e8d9997e12fca448001146f94e71c61a1d7995ad"
+      - name: Install isolated Chromium
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p /tmp/cvbiz
+          npm install --prefix /tmp/cvbiz --no-package-lock --no-save playwright@1.62.1
+          /tmp/cvbiz/node_modules/.bin/playwright install --with-deps chromium
+      - name: Capture public businesses using main browser Firebase module
+        shell: bash
+        env:
+          PLAYWRIGHT: /tmp/cvbiz/node_modules/playwright
+        run: |
+          set -euo pipefail
+          node <<'NODE'
+          const fs=require('fs');
+          const { chromium }=require(process.env.PLAYWRIGHT);
+          const PUBLIC_FIELDS=new Set([
+            'id','status','slug','name','description','translations','provincia','province','comune','municipality','category','categoria','subcategory',
+            'imageUrl','imageSrcset','imageSizes','rating','reviewCount','verified','priceMin','services','lat','lng','createdAt','updatedAt',
+            'unavailableDates','blockedDates','availableDates','availabilityDates','availability','openDays','openingDays','availableWeekdays','openingHours',
+            'availableFrom','startDate','availableUntil','endDate'
+          ]);
+          function sanitize(row){
+            const out={};
+            for(const [k,v] of Object.entries(row||{})) if(PUBLIC_FIELDS.has(k)) out[k]=v;
+            return out;
+          }
+          (async()=>{
+            const browser=await chromium.launch({headless:true});
+            let best=[];
+            let lastError='';
+            try{
+              for(let attempt=1;attempt<=6;attempt++){
+                const ctx=await browser.newContext({viewport:{width:1365,height:900}});
+                const page=await ctx.newPage();
+                const errors=[];
+                page.on('console',m=>{if(m.type()==='error') errors.push(m.text())});
+                try{
+                  await page.goto(process.env.MAIN_BASE_URL+'/catalogo',{waitUntil:'domcontentloaded',timeout:20000});
+                  await page.waitForTimeout(800+attempt*350);
+                  const result=await page.evaluate(async()=>{
+                    const mod=await import('/assets/js/firestore.js');
+                    const response=await mod.queryBusinessesFresh({},300,null);
+                    return {items:Array.isArray(response?.items)?response.items:[],total:Number(response?.total||0),source:String(response?.source||'')};
+                  });
+                  console.log(`attempt=${attempt} items=${result.items.length} total=${result.total} source=${result.source}`);
+                  if(result.items.length>best.length) best=result.items;
+                  if(best.length>=20) break;
+                  if(errors.length) console.log('browser-errors='+errors.slice(-4).join(' || '));
+                }catch(error){
+                  lastError=String(error?.message||error);
+                  console.log(`attempt=${attempt} failed: ${lastError}`);
+                }finally{await ctx.close();}
+                await new Promise(r=>setTimeout(r,Math.min(8000,attempt*1800)));
+              }
+            }finally{await browser.close();}
+            if(best.length<20) throw new Error(`main Firebase public dataset unavailable/incomplete: ${best.length}; ${lastError}`);
+            const items=best.map(sanitize).filter(x=>x.id&&x.status==='approved');
+            if(items.length<20) throw new Error(`sanitized approved dataset unexpectedly small: ${items.length}`);
+            const ids=new Set(items.map(x=>String(x.id)));
+            if(ids.size!==items.length) throw new Error('duplicate ids after browser capture');
+            fs.mkdirSync('source/frontend-react/public/assets/data',{recursive:true});
+            fs.writeFileSync('source/frontend-react/public/assets/data/public-businesses-v1.json',JSON.stringify({version:3,generatedAt:new Date().toISOString(),items}));
+            console.log(`captured approved public businesses=${items.length}; React + tourism expected=${items.length+24}`);
+          })().catch(e=>{console.error(e);process.exit(1)});
+          NODE
+      - name: Build React migration
+        working-directory: source/frontend-react
+        shell: bash
+        run: |
+          set -euo pipefail
+          npm ci
+          npm run build
+      - name: Validate browser snapshot output
+        shell: bash
+        run: |
+          set -euo pipefail
+          node <<'NODE'
+          const fs=require('fs');
+          for(const p of ['source/frontend-react/public/assets/data/public-businesses-v1.json','source/frontend-react/dist/assets/data/public-businesses-v1.json']){
+            const j=JSON.parse(fs.readFileSync(p,'utf8'));
+            if(!Array.isArray(j.items)||j.items.length<20) throw new Error(`${p}: incomplete businesses`);
+            for(const row of j.items){
+              for(const forbidden of ['ownerId','phone','whatsapp','email','address']) if(forbidden in row) throw new Error(`${p}: private field ${forbidden}`);
+            }
+          }
+          NODE
+          git -C source diff --check
+      - name: Commit and push only after green build
+        shell: bash
+        run: |
+          set -euo pipefail
+          if git -C source diff --quiet; then exit 0; fi
+          git -C source config user.name 'CalabriaVera Automation'
+          git -C source config user.email 'actions@users.noreply.github.com'
+          git -C source add frontend-react/public/assets/data/public-businesses-v1.json
+          git -C source commit -m 'fix: bundle current public business dataset'
+          git -C source push origin HEAD:react-migration
