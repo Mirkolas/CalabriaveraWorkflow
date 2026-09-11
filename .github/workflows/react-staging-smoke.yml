@@ -14,12 +14,12 @@ concurrency:
   group: react-staging-browser-smoke
   cancel-in-progress: true
 
-# The version gate below prevents browser tests from running against an older Cloudflare deployment.
-# This run also validates the latest detail first-paint changes from react-migration.
+# The version gate prevents browser tests from running against an older Cloudflare deployment.
+# Use Node 24 to stay aligned with the current Cloudflare build environment.
 jobs:
   smoke:
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 18
     env:
       PRIVATE_REPO: ${{ secrets.PRIVATE_REPO }}
       PRIVATE_REPO_PAT: ${{ secrets.PRIVATE_REPO_PAT || secrets.PERSONAL_ACCESS_TOKEN || secrets.PAT || secrets.GH_PAT || secrets.GITHUB_PAT }}
@@ -44,7 +44,7 @@ jobs:
 
       - uses: actions/setup-node@v7
         with:
-          node-version: '22'
+          node-version: '24'
 
       - name: Attendi il deployment Cloudflare della commit verificata
         shell: bash
@@ -52,13 +52,13 @@ jobs:
           set -euo pipefail
           EXPECTED_SHA="$(git -C source rev-parse HEAD)"
           echo "Commit attesa: $EXPECTED_SHA"
-          for attempt in {1..30}; do
+          for attempt in {1..45}; do
             DEPLOYED_SHA="$(curl --fail --silent --show-error --max-time 15 "$SMOKE_BASE_URL/build-version.txt?check=$attempt" 2>/dev/null | tr -d '\r\n' || true)"
             if [ "$DEPLOYED_SHA" = "$EXPECTED_SHA" ]; then
               echo "Staging aggiornato alla commit $EXPECTED_SHA"
               exit 0
             fi
-            echo "Staging non ancora aggiornato ($attempt/30): ${DEPLOYED_SHA:-nessuna versione}"
+            echo "Staging non ancora aggiornato ($attempt/45): ${DEPLOYED_SHA:-nessuna versione}"
             sleep 10
           done
           echo "::error::Cloudflare non ha pubblicato la commit $EXPECTED_SHA entro il tempo previsto"
