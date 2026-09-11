@@ -1,0 +1,117 @@
+name: Fix R2 editor validation with Java 21
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/fix-r2-java21.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  fix-and-run:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      PRIVATE_REPO: ${{ secrets.PRIVATE_REPO }}
+      PRIVATE_REPO_PAT: ${{ secrets.PRIVATE_REPO_PAT || secrets.PERSONAL_ACCESS_TOKEN || secrets.PAT || secrets.GH_PAT }}
+    steps:
+      - name: Checkout automation repo
+        uses: actions/checkout@v7
+        with:
+          persist-credentials: true
+
+      - name: Add Java 21 setup to R2 workflow
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          from pathlib import Path
+          p = Path('.github/workflows/react-r2-editor-wire.yml')
+          s = p.read_text(encoding='utf-8')
+          marker = '      - name: Setup Java 21 for Firestore emulator\n'
+          if marker not in s:
+              needle = "      - uses: actions/setup-node@v7\n        with:\n          node-version: '24'\n"
+              if needle not in s:
+                  raise SystemExit('setup-node block not found')
+              addition = needle + "\n      - name: Setup Java 21 for Firestore emulator\n        uses: actions/setup-java@v5\n        with:\n          distribution: temurin\n          java-version: '21'\n"
+              s = s.replace(needle, addition, 1)
+              p.write_text(s, encoding='utf-8')
+          PY
+          if ! git diff --quiet -- .github/workflows/react-r2-editor-wire.yml; then
+            git config user.name "CalabriaVera Automation"
+            git config user.email "actions@users.noreply.github.com"
+            git add .github/workflows/react-r2-editor-wire.yml
+            git commit -m "ci: use Java 21 for Firestore emulator"
+            git push origin HEAD:main
+          fi
+
+      - name: Extract existing R2 patch
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          from pathlib import Path
+          import base64
+          workflow = Path('.github/workflows/react-r2-editor-wire.yml').read_text(encoding='utf-8')
+          value = None
+          for line in workflow.splitlines():
+              stripped = line.strip()
+              if stripped.startswith('PATCH_B64: '):
+                  value = stripped.split('PATCH_B64: ', 1)[1].strip()
+                  break
+          if not value:
+              raise SystemExit('PATCH_B64 not found')
+          Path('/tmp/cv-r2-editor.py').write_bytes(base64.b64decode(value, validate=True))
+          PY
+
+      - name: Verify private-repo access
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -n "$PRIVATE_REPO" || { echo "::error::PRIVATE_REPO mancante"; exit 1; }
+          test -n "$PRIVATE_REPO_PAT" || { echo "::error::PAT mancante"; exit 1; }
+
+      - name: Checkout React private branch
+        uses: actions/checkout@v7
+        with:
+          repository: ${{ secrets.PRIVATE_REPO }}
+          token: ${{ secrets.PRIVATE_REPO_PAT || secrets.PERSONAL_ACCESS_TOKEN || secrets.PAT || secrets.GH_PAT }}
+          ref: react-migration
+          path: source
+          persist-credentials: true
+          fetch-depth: 0
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version: '24'
+
+      - name: Setup Java 21 for Firestore emulator
+        uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: '21'
+
+      - name: Apply R2 editor patch and validate
+        working-directory: source
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 /tmp/cv-r2-editor.py
+          cd frontend-react
+          npm ci --no-audit --no-fund
+          npm run build
+          cd ..
+          npx --yes firebase-tools@15.22.1 emulators:exec --project demo-calabriavera --only firestore "echo Firestore-rules-OK"
+          git diff --check
+          git config user.name "CalabriaVera Automation"
+          git config user.email "actions@users.noreply.github.com"
+          git add frontend-react/src/lib/business-editor.ts firestore.rules
+          if git diff --cached --quiet; then
+            echo "Nessuna modifica necessaria."
+            exit 0
+          fi
+          git commit -m "feat: route new business images through R2 safely"
+          git push origin HEAD:react-migration
