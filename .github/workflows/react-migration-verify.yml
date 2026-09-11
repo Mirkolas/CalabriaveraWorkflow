@@ -16,6 +16,7 @@ concurrency:
   group: react-migration-verify
   cancel-in-progress: true
 
+# This workflow always validates the latest react-migration head from the private source repository.
 jobs:
   build:
     runs-on: ubuntu-latest
