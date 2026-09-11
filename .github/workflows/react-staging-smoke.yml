@@ -1,0 +1,73 @@
+name: React staging - Browser smoke test
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/react-staging-smoke.yml'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: react-staging-browser-smoke
+  cancel-in-progress: true
+
+jobs:
+  smoke:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      PRIVATE_REPO: ${{ secrets.PRIVATE_REPO }}
+      PRIVATE_REPO_PAT: ${{ secrets.PRIVATE_REPO_PAT || secrets.PERSONAL_ACCESS_TOKEN || secrets.PAT || secrets.GH_PAT || secrets.GITHUB_PAT }}
+      SMOKE_BASE_URL: https://calabriavera.sonotacamirko.workers.dev
+
+    steps:
+      - name: Verifica accesso sorgente privato
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -n "$PRIVATE_REPO" || { echo "::error::PRIVATE_REPO mancante"; exit 1; }
+          test -n "$PRIVATE_REPO_PAT" || { echo "::error::PAT per repository privato mancante"; exit 1; }
+
+      - name: Scarica branch React dal repository privato
+        uses: actions/checkout@v7
+        with:
+          repository: ${{ secrets.PRIVATE_REPO }}
+          token: ${{ secrets.PRIVATE_REPO_PAT || secrets.PERSONAL_ACCESS_TOKEN || secrets.PAT || secrets.GH_PAT || secrets.GITHUB_PAT }}
+          ref: react-migration
+          path: source
+          persist-credentials: false
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version: '22'
+
+      - name: Attendi staging Cloudflare
+        shell: bash
+        run: |
+          set -euo pipefail
+          for attempt in {1..12}; do
+            if curl --fail --silent --show-error --max-time 15 "$SMOKE_BASE_URL/" >/dev/null; then
+              exit 0
+            fi
+            echo "Staging non ancora pronto, tentativo $attempt/12"
+            sleep 10
+          done
+          echo "::error::Staging Cloudflare non raggiungibile"
+          exit 1
+
+      - name: Installa Playwright e Chromium isolati dal progetto
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p /tmp/cv-react-smoke
+          npm install --prefix /tmp/cv-react-smoke --no-package-lock --no-save playwright@1.62.1
+          /tmp/cv-react-smoke/node_modules/.bin/playwright install --with-deps chromium
+
+      - name: Verifica staging React nel browser reale
+        working-directory: source
+        env:
+          PLAYWRIGHT_MODULE: /tmp/cv-react-smoke/node_modules/playwright
+        run: node tests/react-staging-smoke.cjs
