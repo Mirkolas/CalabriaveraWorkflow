@@ -1,0 +1,223 @@
+name: React migration - public data fallback
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/react-public-data-fallback.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  patch-private-branch:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      PRIVATE_REPO: ${{ secrets.PRIVATE_REPO }}
+      PRIVATE_REPO_PAT: ${{ secrets.PRIVATE_REPO_PAT || secrets.PERSONAL_ACCESS_TOKEN || secrets.PAT || secrets.GH_PAT || secrets.GITHUB_PAT }}
+
+    steps:
+      - name: Verifica accesso
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -n "$PRIVATE_REPO" || { echo "::error::PRIVATE_REPO mancante"; exit 1; }
+          test -n "$PRIVATE_REPO_PAT" || { echo "::error::PAT mancante"; exit 1; }
+
+      - name: Checkout branch React privata
+        uses: actions/checkout@v7
+        with:
+          repository: ${{ secrets.PRIVATE_REPO }}
+          token: ${{ secrets.PRIVATE_REPO_PAT || secrets.PERSONAL_ACCESS_TOKEN || secrets.PAT || secrets.GH_PAT || secrets.GITHUB_PAT }}
+          ref: react-migration
+          path: source
+          persist-credentials: true
+          fetch-depth: 0
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version: '22'
+
+      - name: Aggiunge fallback Firestore ai dataset pubblici
+        working-directory: source
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          from pathlib import Path
+
+          path = Path('frontend-react/worker.ts')
+          text = path.read_text(encoding='utf-8')
+
+          old = '''async function readDataset(targetPath: string): Promise<Dataset | null> {
+            try {
+              const response = await fetch(`${LEGACY_ORIGIN}${targetPath}`, {
+                headers: { Accept: "application/json" },
+                cf: { cacheEverything: true, cacheTtl: 300 },
+              } as RequestInit);
+              if (!response.ok) return null;
+              const payload = await response.json() as Dataset;
+              return Array.isArray(payload.items) ? payload : null;
+            } catch {
+              return null;
+            }
+          }
+          '''
+
+          new = '''const FIRESTORE_PROJECT_ID = "calabriavera-e08d4";
+          const DATASET_TTL_MS = 5 * 60 * 1000;
+          const datasetMemory = new Map<string, { expiresAt: number; value: Dataset }>();
+          const BUSINESS_PUBLIC_FIELDS = [
+            "status", "slug", "name", "description", "translations", "provincia", "province", "comune", "municipality",
+            "category", "categoria", "subcategory", "imageUrl", "imageSrcset", "imageSizes", "rating", "reviewCount",
+            "verified", "priceMin", "services", "lat", "lng", "createdAt", "updatedAt", "unavailableDates", "blockedDates",
+            "availableDates", "availabilityDates", "availability", "openDays", "openingDays", "availableWeekdays", "openingHours",
+            "availableFrom", "startDate", "availableUntil", "endDate"
+          ];
+          const BLOG_PUBLIC_FIELDS = [
+            "status", "slug", "origin", "externalUrl", "title", "description", "excerpt", "category", "translations", "coverUrl",
+            "createdAt", "publishedAt", "sourcePublishedAt", "importedAt", "sitePublishedAt", "updatedAt", "contentLane", "eventStart",
+            "sourceId", "sourceName", "sourceHomepage", "homepageUrl", "feedUrl", "attribution", "license", "licenseUrl",
+            "imageLicenseVerified", "imageReuseAllowed", "imageAttribution", "imageLicensedUrl", "imageLicenseEvidenceUrl", "imageLicense"
+          ];
+
+          function decodeFirestoreValue(value: Record<string, unknown> = {}): unknown {
+            if ("nullValue" in value) return null;
+            if ("stringValue" in value) return value.stringValue;
+            if ("booleanValue" in value) return Boolean(value.booleanValue);
+            if ("integerValue" in value) return Number(value.integerValue);
+            if ("doubleValue" in value) return Number(value.doubleValue);
+            if ("timestampValue" in value) return value.timestampValue;
+            if ("referenceValue" in value) return value.referenceValue;
+            if ("bytesValue" in value) return value.bytesValue;
+            if ("geoPointValue" in value) return value.geoPointValue;
+            if ("arrayValue" in value) {
+              const arrayValue = value.arrayValue as { values?: Array<Record<string, unknown>> } | undefined;
+              return (arrayValue?.values || []).map((entry) => decodeFirestoreValue(entry));
+            }
+            if ("mapValue" in value) {
+              const mapValue = value.mapValue as { fields?: Record<string, Record<string, unknown>> } | undefined;
+              return Object.fromEntries(Object.entries(mapValue?.fields || {}).map(([key, entry]) => [key, decodeFirestoreValue(entry)]));
+            }
+            return null;
+          }
+
+          function decodeFirestoreDocument(document: { name?: string; fields?: Record<string, Record<string, unknown>> }): Row {
+            const row: Row = { id: String(document.name || "").split("/").pop() || "" };
+            for (const [key, value] of Object.entries(document.fields || {})) row[key] = decodeFirestoreValue(value);
+            return row;
+          }
+
+          function datasetTime(value: unknown) {
+            const parsed = new Date(String(value || "")).getTime();
+            return Number.isFinite(parsed) ? parsed : Number(value || 0) || 0;
+          }
+
+          async function firestoreDataset(targetPath: string): Promise<Dataset | null> {
+            const cached = datasetMemory.get(targetPath);
+            if (cached && cached.expiresAt > Date.now()) return cached.value;
+
+            const business = targetPath.endsWith("public-businesses-v1.json");
+            const blog = targetPath.endsWith("public-blog-v1.json");
+            if (!business && !blog) return null;
+            const collectionId = business ? "businesses" : "blogPosts";
+            const status = business ? "approved" : "published";
+            const fields = business ? BUSINESS_PUBLIC_FIELDS : BLOG_PUBLIC_FIELDS;
+            const endpoint = `https://firestore.googleapis.com/v1/projects/${FIRESTORE_PROJECT_ID}/databases/(default)/documents:runQuery`;
+            try {
+              const response = await fetch(endpoint, {
+                method: "POST",
+                headers: { "Content-Type": "application/json", Accept: "application/json" },
+                body: JSON.stringify({
+                  structuredQuery: {
+                    select: { fields: fields.map((fieldPath) => ({ fieldPath })) },
+                    from: [{ collectionId }],
+                    where: { fieldFilter: { field: { fieldPath: "status" }, op: "EQUAL", value: { stringValue: status } } },
+                    limit: 1000,
+                  },
+                }),
+              });
+              if (!response.ok) return null;
+              const wire = await response.json() as Array<{ document?: { name?: string; fields?: Record<string, Record<string, unknown>> } }>;
+              const items = wire.flatMap((entry) => entry.document ? [decodeFirestoreDocument(entry.document)] : []);
+              if (business) items.sort((a, b) => datasetTime(b.updatedAt || b.createdAt) - datasetTime(a.updatedAt || a.createdAt));
+              else items.sort((a, b) => datasetTime(b.sourcePublishedAt || b.publishedAt || b.importedAt || b.createdAt) - datasetTime(a.sourcePublishedAt || a.publishedAt || a.importedAt || a.createdAt));
+              const value: Dataset = { version: 2, generatedAt: new Date().toISOString(), items };
+              datasetMemory.set(targetPath, { expiresAt: Date.now() + DATASET_TTL_MS, value });
+              return value;
+            } catch {
+              return null;
+            }
+          }
+
+          async function readDataset(targetPath: string): Promise<Dataset | null> {
+            const cached = datasetMemory.get(targetPath);
+            if (cached && cached.expiresAt > Date.now()) return cached.value;
+            try {
+              const response = await fetch(`${LEGACY_ORIGIN}${targetPath}`, {
+                headers: { Accept: "application/json" },
+                cf: { cacheEverything: true, cacheTtl: 300 },
+              } as RequestInit);
+              if (response.ok) {
+                const payload = await response.json() as Dataset;
+                if (Array.isArray(payload.items)) {
+                  datasetMemory.set(targetPath, { expiresAt: Date.now() + DATASET_TTL_MS, value: payload });
+                  return payload;
+                }
+              }
+            } catch { /* fall through to Firestore */ }
+            return firestoreDataset(targetPath);
+          }
+
+          async function publicDatasetResponse(request: Request, targetPath: string) {
+            const payload = await readDataset(targetPath);
+            if (!payload) return proxy(request, targetPath, "application/json", 60);
+            const headers = new Headers({
+              "Content-Type": "application/json; charset=utf-8",
+              "Cache-Control": "public, max-age=120, s-maxage=300, stale-while-revalidate=86400",
+              "X-Content-Type-Options": "nosniff",
+              "X-CalabriaVera-Data-Source": "snapshot-or-firestore",
+            });
+            return new Response(request.method === "HEAD" ? null : JSON.stringify(payload), { status: 200, headers });
+          }
+          '''
+
+          if old not in text:
+              raise SystemExit('Blocco readDataset atteso non trovato: patch interrotta senza modifiche')
+          text = text.replace(old, new, 1)
+
+          old_route = 'if (dataPath) return proxy(request, dataPath, "application/json", 300);'
+          new_route = 'if (dataPath) return publicDatasetResponse(request, dataPath);'
+          if old_route not in text:
+              raise SystemExit('Route PUBLIC_DATA attesa non trovata: patch interrotta senza modifiche')
+          text = text.replace(old_route, new_route, 1)
+
+          path.write_text(text, encoding='utf-8')
+          PY
+
+          git diff --check
+
+      - name: TypeScript e build Vite
+        working-directory: source/frontend-react
+        shell: bash
+        run: |
+          set -euo pipefail
+          npm install --no-audit --no-fund
+          npm run build
+
+      - name: Pubblica fix su react-migration
+        working-directory: source
+        shell: bash
+        run: |
+          set -euo pipefail
+          if git diff --quiet; then
+            echo "Nessuna modifica necessaria."
+            exit 0
+          fi
+          git config user.name "CalabriaVera Automation"
+          git config user.email "actions@users.noreply.github.com"
+          git add frontend-react/worker.ts
+          git commit -m "fix: serve public snapshots with Firestore fallback"
+          git push origin HEAD:react-migration
