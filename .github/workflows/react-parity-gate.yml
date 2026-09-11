@@ -1,5 +1,6 @@
 name: React migration - deterministic parity gate
 
+# Gate revision: react-migration 21b633d6c855de6257e21dfab38517ae6138f7c2
 on:
   push:
     branches: [main]
@@ -88,14 +89,6 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          python3 - <<'PY'
-          from pathlib import Path
-          p = Path('../automation/scripts/react-parity-audit.cjs')
-          s = p.read_text(encoding='utf-8')
-          s = s.replace("const { chromium } = require(process.env.PLAYWRIGHT_MODULE || 'playwright');", "const { chromium, request } = require(process.env.PLAYWRIGHT_MODULE || 'playwright');")
-          s = s.replace('browser.request.newContext', 'request.newContext')
-          p.write_text(s, encoding='utf-8')
-          PY
           node ../automation/scripts/react-parity-audit.cjs
 
       - name: Upload parity evidence
