@@ -1,0 +1,54 @@
+name: React migration - footer DOM diagnostic
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/react-footer-dom-diagnostic.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  inspect:
+    runs-on: ubuntu-latest
+    timeout-minutes: 8
+    steps:
+      - uses: actions/setup-node@v7
+        with:
+          node-version: '24'
+      - name: Install Chromium
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p /tmp/cv-footer
+          npm install --prefix /tmp/cv-footer --no-package-lock --no-save playwright@1.62.1
+          /tmp/cv-footer/node_modules/.bin/playwright install --with-deps chromium
+      - name: Read live public footer DOM
+        env:
+          PLAYWRIGHT_MODULE: /tmp/cv-footer/node_modules/playwright
+        shell: bash
+        run: |
+          set -euo pipefail
+          node <<'NODE'
+          const { chromium } = require(process.env.PLAYWRIGHT_MODULE);
+          (async()=>{
+            const browser=await chromium.launch({headless:true});
+            const page=await browser.newPage({viewport:{width:1365,height:900}});
+            await page.goto('https://calabriavera.com/',{waitUntil:'domcontentloaded',timeout:20000});
+            await page.waitForSelector('.footer',{timeout:10000});
+            await page.waitForTimeout(3500);
+            const result=await page.evaluate(()=>({
+              footer:document.querySelector('.footer')?.outerHTML||'',
+              flag:getComputedStyle(document.querySelector('.cv-language-flag')||document.body).backgroundImage,
+              socials:[...document.querySelectorAll('.footer a[href]')].filter(a=>a.querySelector('svg')||/instagram|facebook|whatsapp/i.test(a.href)).map(a=>({href:a.href,aria:a.getAttribute('aria-label'),title:a.getAttribute('title'),class:a.className}))
+            }));
+            console.log('FLAG',result.flag);
+            console.log('SOCIALS',JSON.stringify(result.socials));
+            console.log('FOOTER_HTML_START');
+            console.log(result.footer);
+            console.log('FOOTER_HTML_END');
+            await browser.close();
+          })().catch(e=>{console.error(e);process.exit(1)});
+          NODE
