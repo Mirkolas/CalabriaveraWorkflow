@@ -55,84 +55,90 @@ jobs:
 
           worker = Path('frontend-react/worker.ts')
           text = worker.read_text(encoding='utf-8')
-          old_env = '''interface Env {
-  ASSETS: { fetch(request: Request): Promise<Response> };
-}'''
-          new_env = '''interface R2ImageBucket {
-  put(key: string, value: ArrayBuffer, options?: { httpMetadata?: { contentType?: string; cacheControl?: string }; customMetadata?: Record<string, string> }): Promise<unknown>;
-}
-
-interface Env {
-  ASSETS: { fetch(request: Request): Promise<Response> };
-  IMAGES: R2ImageBucket;
-}'''
+          old_env = '\n'.join([
+              'interface Env {',
+              '  ASSETS: { fetch(request: Request): Promise<Response> };',
+              '}',
+          ])
+          new_env = '\n'.join([
+              'interface R2ImageBucket {',
+              '  put(key: string, value: ArrayBuffer, options?: { httpMetadata?: { contentType?: string; cacheControl?: string }; customMetadata?: Record<string, string> }): Promise<unknown>;',
+              '}',
+              '',
+              'interface Env {',
+              '  ASSETS: { fetch(request: Request): Promise<Response> };',
+              '  IMAGES: R2ImageBucket;',
+              '}',
+          ])
           if old_env in text:
               text = text.replace(old_env, new_env, 1)
           elif new_env not in text:
               raise SystemExit('Interfaccia Env inattesa')
 
           anchor = 'function safeJson(value: unknown) {'
-          upload = '''const MAX_IMAGE_UPLOAD_BYTES = 450_000;
-const IMAGE_CDN_ORIGIN = "https://img.calabriavera.com";
-
-function apiJson(payload: Record<string, unknown>, status = 200) {
-  return new Response(JSON.stringify(payload), {
-    status,
-    headers: {
-      "Content-Type": "application/json; charset=utf-8",
-      "Cache-Control": "no-store",
-      "X-Content-Type-Options": "nosniff",
-    },
-  });
-}
-
-async function authorizedFirestoreDocument(collection: string, id: string, token: string) {
-  const endpoint = `https://firestore.googleapis.com/v1/projects/${FIRESTORE_PROJECT_ID}/databases/(default)/documents/${collection}/${encodeURIComponent(id)}`;
-  return fetch(endpoint, { headers: { Authorization: `Bearer ${token}`, Accept: "application/json" } });
-}
-
-function isWebP(bytes: Uint8Array) {
-  if (bytes.byteLength < 12) return false;
-  return String.fromCharCode(...bytes.slice(0, 4)) === "RIFF" && String.fromCharCode(...bytes.slice(8, 12)) === "WEBP";
-}
-
-function hexDigest(bytes: ArrayBuffer) {
-  return Array.from(new Uint8Array(bytes), (value) => value.toString(16).padStart(2, "0")).join("");
-}
-
-async function uploadBusinessImage(request: Request, env: Env) {
-  const authorization = request.headers.get("authorization") || "";
-  const token = authorization.match(/^Bearer\\s+(.+)$/i)?.[1] || "";
-  const uid = (request.headers.get("x-user-id") || "").trim();
-  const businessId = (request.headers.get("x-business-id") || "").trim();
-  if (!token || !uid || !businessId) return apiJson({ error: "AUTH_REQUIRED" }, 401);
-  if (!/^[A-Za-z0-9_-]{6,180}$/.test(uid) || !/^[A-Za-z0-9_-]{6,180}$/.test(businessId)) return apiJson({ error: "INVALID_TARGET" }, 400);
-  if ((request.headers.get("content-type") || "").split(";", 1)[0].trim().toLowerCase() !== "image/webp") return apiJson({ error: "IMAGE_TYPE_UNSUPPORTED" }, 415);
-  const declaredSize = Number(request.headers.get("content-length") || 0);
-  if (declaredSize > MAX_IMAGE_UPLOAD_BYTES) return apiJson({ error: "IMAGE_TOO_LARGE" }, 413);
-
-  const userCheck = await authorizedFirestoreDocument("users", uid, token).catch(() => null);
-  if (!userCheck?.ok) return apiJson({ error: "AUTH_REQUIRED" }, 401);
-  const businessResponse = await authorizedFirestoreDocument("businesses", businessId, token).catch(() => null);
-  if (!businessResponse?.ok) return apiJson({ error: "FORBIDDEN" }, 403);
-  const businessWire = await businessResponse.json() as { name?: string; fields?: Record<string, Record<string, unknown>> };
-  const business = decodeFirestoreDocument(businessWire);
-  if (String(business.ownerId || "") !== uid) return apiJson({ error: "FORBIDDEN" }, 403);
-
-  const body = await request.arrayBuffer();
-  if (!body.byteLength || body.byteLength > MAX_IMAGE_UPLOAD_BYTES) return apiJson({ error: "IMAGE_TOO_LARGE" }, 413);
-  if (!isWebP(new Uint8Array(body))) return apiJson({ error: "IMAGE_INVALID" }, 415);
-  const digest = await crypto.subtle.digest("SHA-256", body);
-  const hash = hexDigest(digest);
-  const key = `activities/${businessId}/${hash}-1400.webp`;
-  await env.IMAGES.put(key, body, {
-    httpMetadata: { contentType: "image/webp", cacheControl: "public, max-age=31536000, immutable" },
-    customMetadata: { businessId, ownerId: uid, sha256: hash },
-  });
-  return apiJson({ key, url: `${IMAGE_CDN_ORIGIN}/${key}`, bytes: body.byteLength });
-}
-
-'''
+          upload_lines = [
+              'const MAX_IMAGE_UPLOAD_BYTES = 450_000;',
+              'const IMAGE_CDN_ORIGIN = "https://img.calabriavera.com";',
+              '',
+              'function apiJson(payload: Record<string, unknown>, status = 200) {',
+              '  return new Response(JSON.stringify(payload), {',
+              '    status,',
+              '    headers: {',
+              '      "Content-Type": "application/json; charset=utf-8",',
+              '      "Cache-Control": "no-store",',
+              '      "X-Content-Type-Options": "nosniff",',
+              '    },',
+              '  });',
+              '}',
+              '',
+              'async function authorizedFirestoreDocument(collection: string, id: string, token: string) {',
+              '  const endpoint = `https://firestore.googleapis.com/v1/projects/${FIRESTORE_PROJECT_ID}/databases/(default)/documents/${collection}/${encodeURIComponent(id)}`;',
+              '  return fetch(endpoint, { headers: { Authorization: `Bearer ${token}`, Accept: "application/json" } });',
+              '}',
+              '',
+              'function isWebP(bytes: Uint8Array) {',
+              '  if (bytes.byteLength < 12) return false;',
+              '  return String.fromCharCode(...bytes.slice(0, 4)) === "RIFF" && String.fromCharCode(...bytes.slice(8, 12)) === "WEBP";',
+              '}',
+              '',
+              'function hexDigest(bytes: ArrayBuffer) {',
+              '  return Array.from(new Uint8Array(bytes), (value) => value.toString(16).padStart(2, "0")).join("");',
+              '}',
+              '',
+              'async function uploadBusinessImage(request: Request, env: Env) {',
+              '  const authorization = request.headers.get("authorization") || "";',
+              '  const token = authorization.match(/^Bearer\\s+(.+)$/i)?.[1] || "";',
+              '  const uid = (request.headers.get("x-user-id") || "").trim();',
+              '  const businessId = (request.headers.get("x-business-id") || "").trim();',
+              '  if (!token || !uid || !businessId) return apiJson({ error: "AUTH_REQUIRED" }, 401);',
+              '  if (!/^[A-Za-z0-9_-]{6,180}$/.test(uid) || !/^[A-Za-z0-9_-]{6,180}$/.test(businessId)) return apiJson({ error: "INVALID_TARGET" }, 400);',
+              '  if ((request.headers.get("content-type") || "").split(";", 1)[0].trim().toLowerCase() !== "image/webp") return apiJson({ error: "IMAGE_TYPE_UNSUPPORTED" }, 415);',
+              '  const declaredSize = Number(request.headers.get("content-length") || 0);',
+              '  if (declaredSize > MAX_IMAGE_UPLOAD_BYTES) return apiJson({ error: "IMAGE_TOO_LARGE" }, 413);',
+              '',
+              '  const userCheck = await authorizedFirestoreDocument("users", uid, token).catch(() => null);',
+              '  if (!userCheck?.ok) return apiJson({ error: "AUTH_REQUIRED" }, 401);',
+              '  const businessResponse = await authorizedFirestoreDocument("businesses", businessId, token).catch(() => null);',
+              '  if (!businessResponse?.ok) return apiJson({ error: "FORBIDDEN" }, 403);',
+              '  const businessWire = await businessResponse.json() as { name?: string; fields?: Record<string, Record<string, unknown>> };',
+              '  const business = decodeFirestoreDocument(businessWire);',
+              '  if (String(business.ownerId || "") !== uid) return apiJson({ error: "FORBIDDEN" }, 403);',
+              '',
+              '  const body = await request.arrayBuffer();',
+              '  if (!body.byteLength || body.byteLength > MAX_IMAGE_UPLOAD_BYTES) return apiJson({ error: "IMAGE_TOO_LARGE" }, 413);',
+              '  if (!isWebP(new Uint8Array(body))) return apiJson({ error: "IMAGE_INVALID" }, 415);',
+              '  const digest = await crypto.subtle.digest("SHA-256", body);',
+              '  const hash = hexDigest(digest);',
+              '  const key = `activities/${businessId}/${hash}-1400.webp`;',
+              '  await env.IMAGES.put(key, body, {',
+              '    httpMetadata: { contentType: "image/webp", cacheControl: "public, max-age=31536000, immutable" },',
+              '    customMetadata: { businessId, ownerId: uid, sha256: hash },',
+              '  });',
+              '  return apiJson({ key, url: `${IMAGE_CDN_ORIGIN}/${key}`, bytes: body.byteLength });',
+              '}',
+              '',
+          ]
+          upload = '\n'.join(upload_lines) + '\n'
           if 'async function uploadBusinessImage(' not in text:
               if anchor not in text:
                   raise SystemExit('Anchor safeJson non trovato')
@@ -149,13 +155,15 @@ async function uploadBusinessImage(request: Request, env: Env) {
           smoke = Path('tests/react-staging-smoke.cjs')
           test = smoke.read_text(encoding='utf-8')
           anchor_test = "    await open(page, '/catalogo');\n"
-          addition = '''    const unauthUpload = await page.request.post(`${base}/api/images/upload`, {
-      headers: { 'content-type': 'image/webp', 'x-user-id': 'anonymous', 'x-business-id': 'anonymous' },
-      data: Buffer.from('not-an-image'),
-    });
-    assert(unauthUpload.status() === 401, `Upload R2 senza autenticazione deve essere 401, ricevuto ${unauthUpload.status()}`);
-
-'''
+          addition_lines = [
+              '    const unauthUpload = await page.request.post(`${base}/api/images/upload`, {',
+              "      headers: { 'content-type': 'image/webp', 'x-user-id': 'anonymous', 'x-business-id': 'anonymous' },",
+              "      data: Buffer.from('not-an-image'),",
+              '    });',
+              '    assert(unauthUpload.status() === 401, `Upload R2 senza autenticazione deve essere 401, ricevuto ${unauthUpload.status()}`);',
+              '',
+          ]
+          addition = '\n'.join(addition_lines) + '\n'
           if 'Upload R2 senza autenticazione' not in test:
               if anchor_test not in test:
                   raise SystemExit('Anchor catalogo smoke non trovato')
