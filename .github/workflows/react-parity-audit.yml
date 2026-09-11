@@ -1,0 +1,193 @@
+name: React full parity audit
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/react-parity-audit.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: react-full-parity-audit
+  cancel-in-progress: true
+
+jobs:
+  audit:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    env:
+      PRIVATE_REPO: ${{ secrets.PRIVATE_REPO }}
+      PRIVATE_REPO_PAT: ${{ secrets.PRIVATE_REPO_PAT || secrets.PERSONAL_ACCESS_TOKEN || secrets.PAT || secrets.GH_PAT || secrets.GITHUB_PAT }}
+      MAIN_BASE_URL: https://calabriavera.com
+      STAGING_BASE_URL: https://calabriavera.sonotacamirko.workers.dev
+    steps:
+      - name: Verify private repository access
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -n "$PRIVATE_REPO"
+          test -n "$PRIVATE_REPO_PAT"
+
+      - name: Checkout React migration
+        uses: actions/checkout@v7
+        with:
+          repository: ${{ secrets.PRIVATE_REPO }}
+          token: ${{ secrets.PRIVATE_REPO_PAT || secrets.PERSONAL_ACCESS_TOKEN || secrets.PAT || secrets.GH_PAT || secrets.GITHUB_PAT }}
+          ref: react-migration
+          path: source
+          persist-credentials: false
+          fetch-depth: 0
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version: '24'
+
+      - name: Wait for exact Cloudflare staging commit
+        shell: bash
+        run: |
+          set -euo pipefail
+          expected="$(git -C source rev-parse HEAD)"
+          echo "Expected staging commit: $expected"
+          for attempt in {1..60}; do
+            actual="$(curl --fail --silent --show-error --max-time 15 "$STAGING_BASE_URL/build-version.txt?audit=$attempt" 2>/dev/null | tr -d '\r\n' || true)"
+            if [ "$actual" = "$expected" ]; then
+              echo "Cloudflare staging is on $expected"
+              exit 0
+            fi
+            echo "Waiting for staging ($attempt/60): ${actual:-no version}"
+            sleep 10
+          done
+          echo "::error::Staging did not publish $expected"
+          exit 1
+
+      - name: Install isolated browser audit dependencies
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p /tmp/cv-parity
+          npm install --prefix /tmp/cv-parity --no-package-lock --no-save playwright@1.62.1 pixelmatch@7.1.0 pngjs@7.0.0
+          /tmp/cv-parity/node_modules/.bin/playwright install --with-deps chromium
+
+      - name: Run full parity audit
+        working-directory: source
+        env:
+          PLAYWRIGHT_MODULE: /tmp/cv-parity/node_modules/playwright
+          PIXELMATCH_MODULE: /tmp/cv-parity/node_modules/pixelmatch
+          PNGJS_MODULE: /tmp/cv-parity/node_modules/pngjs
+        shell: bash
+        run: |
+          set -euo pipefail
+          cat > /tmp/cv-parity-audit.cjs <<'NODE'
+          const fs = require('node:fs');
+          const path = require('node:path');
+          const { chromium } = require(process.env.PLAYWRIGHT_MODULE);
+          const { PNG } = require(process.env.PNGJS_MODULE);
+
+          const mainBase = process.env.MAIN_BASE_URL.replace(/\/$/, '');
+          const stagingBase = process.env.STAGING_BASE_URL.replace(/\/$/, '');
+          const out = path.resolve('parity-audit');
+          fs.mkdirSync(out, { recursive: true });
+
+          const routes = [
+            '/', '/catalogo', '/mappa', '/blog',
+            '/attivita?turismo=centro-storico-di-tropea',
+            '/login', '/registrazione', '/profilo', '/preferiti', '/dashboard', '/messaggi', '/aggiungi-attivita',
+            '/chi-siamo', '/contatti', '/privacy-policy', '/cookie-policy', '/termini', '/note-legali',
+            '/admin', '/admin/attivita', '/admin/recensioni', '/admin/blog', '/admin/categorie', '/admin/comuni', '/admin/utenti', '/admin/messaggi', '/admin/seo', '/admin/impostazioni',
+            '/en/', '/en/catalogo', '/fr/', '/de/', '/es/'
+          ];
+
+          const legacyRoutes = ['/index.html','/catalogo.html','/mappa.html','/blog.html','/attivita.html?turismo=centro-storico-di-tropea','/login.html','/registrazione.html','/profilo.html','/preferiti.html','/dashboard.html','/messaggi.html','/aggiungi-attivita.html','/chi-siamo.html','/contatti.html','/privacy-policy.html','/cookie-policy.html','/termini.html','/note-legali.html','/pages/admin/index.html','/pages/admin/attivita.html'];
+
+          const normalize = (s='') => s.replace(/\s+/g,' ').trim();
+          const cleanText = (s='') => normalize(s).replace(/©\s*20\d{2}/g,'© YEAR');
+
+          async function snapshot(page, base, route, viewportName) {
+            const errors = [];
+            const onError = e => errors.push(`pageerror:${e.message || e}`);
+            const onConsole = m => { if (m.type() === 'error') { const t=m.text(); if (!/favicon|ERR_BLOCKED_BY_CLIENT/i.test(t)) errors.push(`console:${t}`); } };
+            page.on('pageerror', onError); page.on('console', onConsole);
+            const response = await page.goto(base + route, { waitUntil: 'networkidle', timeout: 30000 }).catch(() => null);
+            await page.waitForTimeout(700);
+            const data = await page.evaluate(() => ({
+              url: location.pathname + location.search,
+              title: document.title,
+              lang: document.documentElement.lang,
+              h1: [...document.querySelectorAll('h1')].map(x => x.textContent?.trim() || ''),
+              h2: [...document.querySelectorAll('h2')].map(x => x.textContent?.trim() || '').slice(0,12),
+              buttons: [...document.querySelectorAll('button')].map(x => x.textContent?.trim() || '').filter(Boolean).slice(0,40),
+              inputs: [...document.querySelectorAll('input,select,textarea')].map(x => ({tag:x.tagName.toLowerCase(), type:x.getAttribute('type')||'', name:x.getAttribute('name')||'', aria:x.getAttribute('aria-label')||''})),
+              internalLinks: [...document.querySelectorAll('a[href]')].map(x => x.getAttribute('href') || '').filter(h => h.startsWith('/')).map(h => h.replace(/\/$/,'')).filter(Boolean),
+              text: document.body.innerText,
+              width: document.documentElement.scrollWidth,
+              clientWidth: document.documentElement.clientWidth
+            }));
+            const status = response ? response.status() : 0;
+            const safe = route.replace(/[^a-z0-9]+/gi,'_').replace(/^_+|_+$/g,'') || 'home';
+            const file = path.join(out, `${viewportName}-${base===mainBase?'main':'react'}-${safe}.png`);
+            await page.screenshot({ path:file, fullPage:true });
+            page.off('pageerror', onError); page.off('console', onConsole);
+            return { ...data, status, errors, screenshot:file, text:cleanText(data.text) };
+          }
+
+          function textSimilarity(a,b) {
+            const words = s => new Set(s.toLowerCase().split(/[^a-zà-ÿ0-9]+/i).filter(x => x.length>2));
+            const A=words(a), B=words(b); if (!A.size && !B.size) return 1;
+            let intersection=0; for (const x of A) if (B.has(x)) intersection++;
+            return intersection / Math.max(1, new Set([...A,...B]).size);
+          }
+
+          function structureScore(a,b) {
+            const sameH1 = cleanText(a.h1.join('|')) === cleanText(b.h1.join('|'));
+            const inputA = a.inputs.map(x=>`${x.tag}:${x.type}:${x.name}`).sort().join('|');
+            const inputB = b.inputs.map(x=>`${x.tag}:${x.type}:${x.name}`).sort().join('|');
+            const linksA = new Set(a.internalLinks), linksB = new Set(b.internalLinks);
+            let common=0; for (const x of linksA) if (linksB.has(x)) common++;
+            const linkScore = common / Math.max(1, new Set([...linksA,...linksB]).size);
+            return { sameH1, sameInputs: inputA===inputB, linkScore };
+          }
+
+          (async()=>{
+            const browser = await chromium.launch({ headless:true });
+            const report = { commit: require('child_process').execSync('git rev-parse HEAD').toString().trim(), mainBase, stagingBase, generatedAt:new Date().toISOString(), routes:[], legacy:[] };
+            try {
+              for (const vp of [{name:'desktop', width:1365,height:900},{name:'mobile',width:390,height:844}]) {
+                const mainCtx=await browser.newContext({ viewport:{width:vp.width,height:vp.height}, isMobile:vp.name==='mobile' });
+                const reactCtx=await browser.newContext({ viewport:{width:vp.width,height:vp.height}, isMobile:vp.name==='mobile' });
+                const mainPage=await mainCtx.newPage(), reactPage=await reactCtx.newPage();
+                const selected = vp.name==='mobile' ? routes.filter(r=>['/','/catalogo','/mappa','/blog','/login','/aggiungi-attivita','/chi-siamo'].includes(r)) : routes;
+                for (const route of selected) {
+                  const main=await snapshot(mainPage,mainBase,route,vp.name);
+                  const react=await snapshot(reactPage,stagingBase,route,vp.name);
+                  const structure=structureScore(main,react);
+                  report.routes.push({viewport:vp.name,route,main:{status:main.status,url:main.url,title:main.title,lang:main.lang,h1:main.h1,h2:main.h2,buttons:main.buttons,inputs:main.inputs,errors:main.errors,overflow:main.width-main.clientWidth},react:{status:react.status,url:react.url,title:react.title,lang:react.lang,h1:react.h1,h2:react.h2,buttons:react.buttons,inputs:react.inputs,errors:react.errors,overflow:react.width-react.clientWidth},textSimilarity:textSimilarity(main.text,react.text),...structure});
+                }
+                await mainCtx.close(); await reactCtx.close();
+              }
+              const ctx=await browser.newContext({viewport:{width:1365,height:900}}); const p=await ctx.newPage();
+              for (const route of legacyRoutes) {
+                const r=await p.goto(stagingBase+route,{waitUntil:'domcontentloaded',timeout:20000}).catch(()=>null); await p.waitForTimeout(200);
+                report.legacy.push({route,status:r?.status()||0,final:new URL(p.url()).pathname+new URL(p.url()).search});
+              }
+              await ctx.close();
+            } finally { await browser.close(); }
+            fs.writeFileSync(path.join(out,'report.json'),JSON.stringify(report,null,2));
+            const problem = report.routes.filter(r => r.react.status>=400 || r.react.status===0 || r.react.errors.length || r.react.overflow>3 || r.textSimilarity<0.35 || (!r.sameH1 && !['/profilo','/preferiti','/dashboard','/messaggi','/aggiungi-attivita','/admin'].some(x=>r.route.startsWith(x))));
+            fs.writeFileSync(path.join(out,'summary.txt'), problem.map(r=>`${r.viewport} ${r.route} status=${r.react.status} text=${r.textSimilarity.toFixed(2)} h1=${r.sameH1} inputs=${r.sameInputs} links=${r.linkScore.toFixed(2)} overflow=${r.react.overflow} errors=${r.react.errors.join(';')}`).join('\n') || 'NO_STRUCTURAL_PROBLEMS');
+            console.log(fs.readFileSync(path.join(out,'summary.txt'),'utf8'));
+            console.log(`Audited ${report.routes.length} route/viewport pairs and ${report.legacy.length} legacy redirects.`);
+          })().catch(e=>{console.error(e);process.exit(1)});
+          NODE
+          node /tmp/cv-parity-audit.cjs
+
+      - name: Upload parity report
+        if: always()
+        uses: actions/upload-artifact@v6
+        with:
+          name: react-parity-audit
+          path: source/parity-audit
+          if-no-files-found: warn
+          retention-days: 3
