@@ -50,11 +50,11 @@ jobs:
         run: |
           set -euo pipefail
           test "$(git -C source rev-parse HEAD)" = "e8d9997e12fca448001146f94e71c61a1d7995ad"
-      - name: Capture exact inline public businesses from main
+      - name: Capture exact user-facing inline public businesses from main
         shell: bash
         run: |
           set -euo pipefail
-          curl --fail --silent --show-error --location --retry 3 "$MAIN_BASE_URL/catalogo?react-inline=$(date +%s)" -o /tmp/main-catalogo.html
+          curl --fail --silent --show-error --location --retry 3 "$MAIN_BASE_URL/catalogo" -o /tmp/main-catalogo.html
           node <<'NODE'
           const fs=require('fs');
           const html=fs.readFileSync('/tmp/main-catalogo.html','utf8');
@@ -63,7 +63,8 @@ jobs:
           const snapshot=JSON.parse(match[1]);
           const items=Array.isArray(snapshot.businesses)?snapshot.businesses:[];
           const total=Number(snapshot.totals?.businesses ?? items.length);
-          if(items.length<20) throw new Error(`main inline businesses unexpectedly small: ${items.length}`);
+          console.log(`user-facing main inline businesses=${items.length}; declared total=${total}; with tourism=${items.length+24}`);
+          if(items.length<20) throw new Error(`user-facing main inline businesses unexpectedly small: ${items.length}`);
           if(total<items.length) throw new Error(`invalid main total ${total} < ${items.length}`);
           const ids=new Set(items.map(x=>String(x.id||'')));
           if(ids.size!==items.length) throw new Error('duplicate business ids in main inline snapshot');
@@ -72,7 +73,6 @@ jobs:
           fs.writeFileSync('source/frontend-react/public/assets/data/public-businesses-v1.json',JSON.stringify(out));
           fs.writeFileSync('/tmp/inline-count.txt',String(items.length));
           fs.writeFileSync('/tmp/main-total.txt',String(total));
-          console.log(`main inline businesses=${items.length}; declared total=${total}; with tourism=${items.length+24}`);
           NODE
       - name: Build React migration
         working-directory: source/frontend-react
