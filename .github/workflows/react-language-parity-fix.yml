@@ -29,7 +29,7 @@ jobs:
         uses: actions/checkout@v7
         with:
           repository: ${{ secrets.PRIVATE_REPO }}
-          token: ${{ secrets.PRIVATE_REPO_PAT || secrets.PERSONAL_ACCESS_TOKEN || secrets.PAT || secrets.GH_PAT || secrets.GITHUB_PAT }}
+          token: ${{ secrets.PRIVATE_REPO_PAT || secrets.PERSONAL_ACCESS_TOKEN || secrets.PAT || secrets.GH_PAT }}
           ref: react-migration
           path: source
           persist-credentials: true
@@ -46,61 +46,65 @@ jobs:
           set -euo pipefail
           python3 - <<'PY'
           from pathlib import Path
-          path = Path('frontend-react/src/lib/language.ts')
-          text = path.read_text(encoding='utf-8')
-          text = text.replace('const STORAGE_KEY = "cv-language";', 'const STORAGE_KEY = "cv-lang";')
-          old = '''export function languageFromPath(pathname = location.pathname): Language {
-            const first = pathname.split("/").filter(Boolean)[0] as Language | undefined;
-            if (first && SUPPORTED_LANGS.includes(first)) return first;
-            try {
-              const saved = localStorage.getItem(STORAGE_KEY) as Language | null;
-              if (saved && SUPPORTED_LANGS.includes(saved)) return saved;
-            } catch {}
-            return "it";
-          }'''
-          old = '\n'.join(line.strip() if False else line for line in old.splitlines())
-          actual = '''export function languageFromPath(pathname = location.pathname): Language {
-  const first = pathname.split("/").filter(Boolean)[0] as Language | undefined;
-  if (first && SUPPORTED_LANGS.includes(first)) return first;
-  try {
-    const saved = localStorage.getItem(STORAGE_KEY) as Language | null;
-    if (saved && SUPPORTED_LANGS.includes(saved)) return saved;
-  } catch {}
-  return "it";
-}'''
-          replacement = '''export function languageFromPath(pathname = location.pathname): Language {
-  const first = pathname.split("/").filter(Boolean)[0] as Language | undefined;
-  if (first && SUPPORTED_LANGS.includes(first)) return first;
-  try {
-    const query = new URLSearchParams(location.search).get("lang") as Language | null;
-    if (query && SUPPORTED_LANGS.includes(query)) return query;
-  } catch {}
-  return "it";
-}'''
-          if actual not in text and replacement not in text:
-              raise SystemExit('Blocco languageFromPath inatteso')
-          text = text.replace(actual, replacement)
 
-          actual_set = '''export function setLanguage(language: Language) {
-  try { localStorage.setItem(STORAGE_KEY, language); } catch {}
-  const clean = stripLanguagePath();
-  const next = language === "it" ? clean : `/${language}${clean === "/" ? "" : clean}`;
-  history.pushState({}, "", `${next}${location.search}${location.hash}` || "/");
-  window.dispatchEvent(new Event("cv:navigate"));
-}'''
-          replacement_set = '''export function setLanguage(language: Language) {
-  try { localStorage.setItem(STORAGE_KEY, language); } catch {}
-  const clean = stripLanguagePath();
-  const next = language === "it" ? clean : `/${language}${clean === "/" ? "" : clean}`;
-  const url = new URL(location.href);
-  url.pathname = next || "/";
-  url.searchParams.delete("lang");
-  location.href = `${url.pathname}${url.search}${url.hash}`;
-}'''
-          if actual_set not in text and replacement_set not in text:
-              raise SystemExit('Blocco setLanguage inatteso')
-          text = text.replace(actual_set, replacement_set)
-          path.write_text(text, encoding='utf-8')
+          path = Path('frontend-react/src/lib/language.ts')
+          lines = path.read_text(encoding='utf-8').splitlines()
+          out = []
+          i = 0
+
+          def skip_function(start):
+              depth = 0
+              j = start
+              while j < len(lines):
+                  depth += lines[j].count('{') - lines[j].count('}')
+                  j += 1
+                  if depth == 0 and j > start:
+                      return j
+              raise SystemExit('Funzione TypeScript non chiusa')
+
+          while i < len(lines):
+              line = lines[i]
+              if line == 'const STORAGE_KEY = "cv-language";':
+                  out.append('const STORAGE_KEY = "cv-lang";')
+                  i += 1
+                  continue
+              if line.startswith('export function languageFromPath('):
+                  out.extend([
+                      'export function languageFromPath(pathname = location.pathname): Language {',
+                      '  const first = pathname.split("/").filter(Boolean)[0] as Language | undefined;',
+                      '  if (first && SUPPORTED_LANGS.includes(first)) return first;',
+                      '  try {',
+                      '    const query = new URLSearchParams(location.search).get("lang") as Language | null;',
+                      '    if (query && SUPPORTED_LANGS.includes(query)) return query;',
+                      '  } catch {}',
+                      '  return "it";',
+                      '}',
+                  ])
+                  i = skip_function(i)
+                  continue
+              if line.startswith('export function setLanguage('):
+                  out.extend([
+                      'export function setLanguage(language: Language) {',
+                      '  try { localStorage.setItem(STORAGE_KEY, language); } catch {}',
+                      '  const clean = stripLanguagePath();',
+                      '  const next = language === "it" ? clean : `/${language}${clean === "/" ? "" : clean}`;',
+                      '  const url = new URL(location.href);',
+                      '  url.pathname = next || "/";',
+                      '  url.searchParams.delete("lang");',
+                      '  location.href = `${url.pathname}${url.search}${url.hash}`;',
+                      '}',
+                  ])
+                  i = skip_function(i)
+                  continue
+              out.append(line)
+              i += 1
+
+          next_text = '\n'.join(out) + '\n'
+          if 'localStorage.getItem(STORAGE_KEY)' in next_text:
+              raise SystemExit('La lingua root dipende ancora dallo storage')
+          if 'const STORAGE_KEY = "cv-lang";' not in next_text:
+              raise SystemExit('Storage key lingua non allineata')
+          path.write_text(next_text, encoding='utf-8')
           PY
 
           cd frontend-react
