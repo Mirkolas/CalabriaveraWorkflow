@@ -1,6 +1,6 @@
 const fs = require('node:fs');
 const path = require('node:path');
-const { chromium } = require(process.env.PLAYWRIGHT_MODULE || 'playwright');
+const { chromium, request: apiRequest } = require(process.env.PLAYWRIGHT_MODULE || 'playwright');
 
 const MAIN = (process.env.MAIN_BASE_URL || 'https://calabriavera.com').replace(/\/$/, '');
 const REACT = (process.env.STAGING_BASE_URL || 'https://calabriavera.sonotacamirko.workers.dev').replace(/\/$/, '');
@@ -122,14 +122,14 @@ async function screenshotPair(browser, route, label) {
     }
     await ctx.close();
 
-    const request=await browser.request.newContext({baseURL:REACT,maxRedirects:0});
+    const http=await apiRequest.newContext({baseURL:REACT,maxRedirects:0});
     for (const [from,to] of legacyRedirects) {
-      const r=await request.get(from,{maxRedirects:0}).catch(()=>null);
+      const r=await http.get(from,{maxRedirects:0}).catch(()=>null);
       report.redirects.push({from,to,status:r?.status()||0,location:r?.headers()?.location||''});
     }
-    const unauth=await request.post('/api/images/upload',{headers:{'content-type':'image/webp','x-user-id':'anonymous','x-business-id':'anonymous'},data:Buffer.from('not-image')}).catch(()=>null);
+    const unauth=await http.post('/api/images/upload',{headers:{'content-type':'image/webp','x-user-id':'anonymous','x-business-id':'anonymous'},data:Buffer.from('not-image')}).catch(()=>null);
     report.specific.unauthUploadStatus=unauth?.status()||0;
-    await request.dispose();
+    await http.dispose();
 
     // Functional markers in the current React deployment.
     const checkCtx=await browser.newContext({viewport:{width:1365,height:900}}); const p=await checkCtx.newPage();
