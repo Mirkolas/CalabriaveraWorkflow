@@ -44,18 +44,22 @@ jobs:
         with:
           node-version: '22'
 
-      - name: Attendi staging Cloudflare
+      - name: Attendi il deployment Cloudflare della commit verificata
         shell: bash
         run: |
           set -euo pipefail
-          for attempt in {1..12}; do
-            if curl --fail --silent --show-error --max-time 15 "$SMOKE_BASE_URL/" >/dev/null; then
+          EXPECTED_SHA="$(git -C source rev-parse HEAD)"
+          echo "Commit attesa: $EXPECTED_SHA"
+          for attempt in {1..30}; do
+            DEPLOYED_SHA="$(curl --fail --silent --show-error --max-time 15 "$SMOKE_BASE_URL/build-version.txt?check=$attempt" 2>/dev/null | tr -d '\r\n' || true)"
+            if [ "$DEPLOYED_SHA" = "$EXPECTED_SHA" ]; then
+              echo "Staging aggiornato alla commit $EXPECTED_SHA"
               exit 0
             fi
-            echo "Staging non ancora pronto, tentativo $attempt/12"
+            echo "Staging non ancora aggiornato ($attempt/30): ${DEPLOYED_SHA:-nessuna versione}"
             sleep 10
           done
-          echo "::error::Staging Cloudflare non raggiungibile"
+          echo "::error::Cloudflare non ha pubblicato la commit $EXPECTED_SHA entro il tempo previsto"
           exit 1
 
       - name: Installa Playwright e Chromium isolati dal progetto
