@@ -6,6 +6,7 @@ on:
     paths:
       - '.github/workflows/react-full-parity-batch.yml'
       - 'scripts/patch-react-shell-tourism-copy.py'
+      - 'scripts/patch-react-tourism-generator-types.py'
       - 'scripts/patch-react-messages-parity.py'
   workflow_dispatch:
 
@@ -52,6 +53,7 @@ jobs:
         run: |
           set -euo pipefail
           python3 automation/scripts/patch-react-shell-tourism-copy.py
+          python3 automation/scripts/patch-react-tourism-generator-types.py
           python3 automation/scripts/patch-react-messages-parity.py
 
       - name: Build React with Node 24
