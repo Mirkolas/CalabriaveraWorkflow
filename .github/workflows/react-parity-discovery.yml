@@ -1,0 +1,78 @@
+name: React migration - discovery parity
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/react-parity-discovery.yml'
+      - 'scripts/react-parity-discovery-patch.py'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  patch-and-validate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 18
+    env:
+      PRIVATE_REPO: ${{ secrets.PRIVATE_REPO }}
+      PRIVATE_REPO_PAT: ${{ secrets.PRIVATE_REPO_PAT || secrets.PERSONAL_ACCESS_TOKEN || secrets.PAT || secrets.GH_PAT || secrets.GITHUB_PAT }}
+    steps:
+      - name: Verify private-repo access
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -n "$PRIVATE_REPO"
+          test -n "$PRIVATE_REPO_PAT"
+
+      - name: Checkout automation repo
+        uses: actions/checkout@v7
+        with:
+          path: automation
+          persist-credentials: false
+
+      - name: Checkout React migration
+        uses: actions/checkout@v7
+        with:
+          repository: ${{ secrets.PRIVATE_REPO }}
+          token: ${{ secrets.PRIVATE_REPO_PAT || secrets.PERSONAL_ACCESS_TOKEN || secrets.PAT || secrets.GH_PAT || secrets.GITHUB_PAT }}
+          ref: react-migration
+          path: source
+          persist-credentials: true
+          fetch-depth: 0
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version: '24'
+
+      - name: Restore catalog map card and header parity
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 automation/scripts/react-parity-discovery-patch.py source
+
+      - name: Build React with Node 24
+        working-directory: source/frontend-react
+        shell: bash
+        run: |
+          set -euo pipefail
+          npm ci --no-audit --no-fund
+          npm run build
+          cd ..
+          git diff --check
+
+      - name: Commit verified discovery parity
+        working-directory: source
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name "CalabriaVera Automation"
+          git config user.email "actions@users.noreply.github.com"
+          git add frontend-react/src/pages/CatalogPage.tsx frontend-react/src/pages/MapPage.tsx frontend-react/src/components/BusinessCard.tsx frontend-react/src/pages/FavoritesPage.tsx frontend-react/src/components/Layout.tsx
+          if git diff --cached --quiet; then
+            echo "No discovery parity changes needed"
+            exit 0
+          fi
+          git commit -m "fix: align React discovery and favorites with main"
+          git push origin HEAD:react-migration
