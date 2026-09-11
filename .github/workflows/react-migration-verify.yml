@@ -16,7 +16,7 @@ concurrency:
   group: react-migration-verify
   cancel-in-progress: true
 
-# This workflow always validates the latest react-migration head from the private source repository.
+# Validate with the same Node major used by the Cloudflare build environment.
 jobs:
   build:
     runs-on: ubuntu-latest
@@ -44,11 +44,11 @@ jobs:
 
       - uses: actions/setup-node@v7
         with:
-          node-version: '22'
+          node-version: '24'
 
-      - name: Installa dipendenze React
+      - name: Installa dipendenze React da lockfile
         working-directory: source/frontend-react
-        run: npm install --no-audit --no-fund
+        run: npm ci --no-audit --no-fund
 
       - name: TypeScript e build Vite
         working-directory: source/frontend-react
