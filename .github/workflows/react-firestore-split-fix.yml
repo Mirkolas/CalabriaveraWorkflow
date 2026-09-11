@@ -1,0 +1,74 @@
+name: React migration - complete Firestore split
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/react-firestore-split-fix.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  patch-private-branch:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      PRIVATE_REPO: ${{ secrets.PRIVATE_REPO }}
+      PRIVATE_REPO_PAT: ${{ secrets.PRIVATE_REPO_PAT || secrets.PERSONAL_ACCESS_TOKEN || secrets.PAT || secrets.GH_PAT || secrets.GITHUB_PAT }}
+    steps:
+      - name: Verifica accesso
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -n "$PRIVATE_REPO" || { echo "::error::PRIVATE_REPO mancante"; exit 1; }
+          test -n "$PRIVATE_REPO_PAT" || { echo "::error::PAT mancante"; exit 1; }
+
+      - name: Checkout branch React privata
+        uses: actions/checkout@v7
+        with:
+          repository: ${{ secrets.PRIVATE_REPO }}
+          token: ${{ secrets.PRIVATE_REPO_PAT || secrets.PERSONAL_ACCESS_TOKEN || secrets.PAT || secrets.GH_PAT || secrets.GITHUB_PAT }}
+          ref: react-migration
+          path: source
+          persist-credentials: true
+          fetch-depth: 0
+
+      - name: Completa separazione Firestore dal bootstrap Auth
+        working-directory: source
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          from pathlib import Path
+          root = Path('frontend-react/src')
+          changed = []
+          old = 'Promise.all([import("./firebase"), import("firebase/firestore")])'
+          new = 'Promise.all([import("./firebase-db"), import("firebase/firestore")])'
+          old_parent = 'Promise.all([import("../lib/firebase"), import("firebase/firestore")])'
+          new_parent = 'Promise.all([import("../lib/firebase-db"), import("firebase/firestore")])'
+          for path in list(root.rglob('*.ts')) + list(root.rglob('*.tsx')):
+              text = path.read_text(encoding='utf-8')
+              next_text = text.replace(old, new).replace(old_parent, new_parent)
+              if next_text != text:
+                  path.write_text(next_text, encoding='utf-8')
+                  changed.append(str(path))
+          print('File aggiornati:')
+          print('\n'.join(changed) if changed else '(nessuno)')
+          PY
+
+          if grep -R -nE 'db[^\n]{0,80}import\("(\.\.?/[^\"]*/?)?firebase"\)|import\("(\.\.?/[^\"]*/?)?firebase"\)[^\n]{0,80}db' frontend-react/src --include='*.ts' --include='*.tsx'; then
+            echo "::warning::Sono rimasti possibili import Firebase misti: verificare il log sopra"
+          fi
+
+          git diff --check
+          if git diff --quiet; then
+            echo "Nessuna modifica necessaria."
+            exit 0
+          fi
+          git config user.name "CalabriaVera Automation"
+          git config user.email "actions@users.noreply.github.com"
+          git add frontend-react/src
+          git commit -m "perf: finish lazy Firestore split"
+          git push origin HEAD:react-migration
