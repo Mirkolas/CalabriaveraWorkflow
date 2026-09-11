@@ -6,6 +6,7 @@ on:
     paths:
       - '.github/workflows/react-parity-pwa.yml'
       - 'scripts/patch-react-pwa-parity.py'
+      - 'scripts/patch-react-prerender-resilience.py'
   workflow_dispatch:
 
 permissions:
@@ -46,11 +47,12 @@ jobs:
         with:
           node-version: '24'
 
-      - name: Restore PWA parity
+      - name: Restore PWA parity and resilient prerender
         shell: bash
         run: |
           set -euo pipefail
           python3 automation/scripts/patch-react-pwa-parity.py
+          python3 automation/scripts/patch-react-prerender-resilience.py
 
       - name: Build React with Node 24
         working-directory: source/frontend-react
@@ -72,5 +74,5 @@ jobs:
           git config user.name "CalabriaVera Automation"
           git config user.email "actions@users.noreply.github.com"
           git add frontend-react
-          git commit -m "fix: restore PWA install and offline parity"
+          git commit -m "fix: restore PWA install offline and build resilience"
           git push origin HEAD:react-migration
