@@ -1,12 +1,12 @@
 name: React migration - deterministic parity gate
 
-# Gate revision: react-migration 6a5704410bb32810c2bbf3c7c487309ed198bf34
+# Gate revision: react-migration 849266aecbb0cecc02caf6ce4c834f0e6caf2e34
 on:
   push:
     branches: [main]
     paths:
       - '.github/workflows/react-parity-gate.yml'
-      - 'scripts/react-parity-audit.cjs'
+      - 'scripts/react-parity-audit-v2.cjs'
   workflow_dispatch:
 
 permissions:
@@ -81,7 +81,7 @@ jobs:
           npm install --prefix /tmp/cv-parity --no-package-lock --no-save playwright@1.62.1
           /tmp/cv-parity/node_modules/.bin/playwright install --with-deps chromium
 
-      - name: Run deterministic parity audit
+      - name: Run data-ready parity audit
         working-directory: source
         env:
           PLAYWRIGHT_MODULE: /tmp/cv-parity/node_modules/playwright
@@ -89,7 +89,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          node ../automation/scripts/react-parity-audit.cjs
+          node ../automation/scripts/react-parity-audit-v2.cjs
 
       - name: Upload parity evidence
         if: always()

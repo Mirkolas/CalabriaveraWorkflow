@@ -1,0 +1,51 @@
+name: React migration - tourism count
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/react-tourism-count.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  count:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    env:
+      PRIVATE_REPO: ${{ secrets.PRIVATE_REPO }}
+      PRIVATE_REPO_PAT: ${{ secrets.PRIVATE_REPO_PAT || secrets.PERSONAL_ACCESS_TOKEN || secrets.PAT || secrets.GH_PAT || secrets.GITHUB_PAT }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          repository: ${{ secrets.PRIVATE_REPO }}
+          token: ${{ secrets.PRIVATE_REPO_PAT || secrets.PERSONAL_ACCESS_TOKEN || secrets.PAT || secrets.GH_PAT || secrets.GITHUB_PAT }}
+          ref: react-migration
+          path: source
+          persist-credentials: false
+      - uses: actions/setup-node@v7
+        with:
+          node-version: '24'
+      - name: Count main and generated tourism rows
+        shell: bash
+        run: |
+          set -euo pipefail
+          cp source/assets/js/tourism-data-core.js /tmp/tourism-data-core.mjs
+          node --input-type=module <<'NODE'
+          const main = await import('file:///tmp/tourism-data-core.mjs?x=' + Date.now());
+          console.log('main-tourism=' + main.TOURISM_BUSINESSES.length);
+          console.log('main-first=' + main.TOURISM_BUSINESSES[0]?.id);
+          console.log('main-last=' + main.TOURISM_BUSINESSES.at(-1)?.id);
+          NODE
+          cd source/frontend-react
+          node scripts/copy-legacy-assets.mjs
+          npx tsc src/generated/tourism-data-core.ts --target ES2022 --module ES2022 --moduleResolution bundler --outDir /tmp/cv-tourism --skipLibCheck
+          cp /tmp/cv-tourism/generated/tourism-data-core.js /tmp/generated-tourism.mjs 2>/dev/null || cp /tmp/cv-tourism/tourism-data-core.js /tmp/generated-tourism.mjs
+          node --input-type=module <<'NODE'
+          const react = await import('file:///tmp/generated-tourism.mjs?x=' + Date.now());
+          console.log('react-tourism=' + react.TOURISM_BUSINESSES.length);
+          console.log('react-first=' + react.TOURISM_BUSINESSES[0]?.id);
+          console.log('react-last=' + react.TOURISM_BUSINESSES.at(-1)?.id);
+          NODE

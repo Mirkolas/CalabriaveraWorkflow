@@ -1,0 +1,94 @@
+name: React migration - source parity
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/react-source-parity.yml'
+      - 'scripts/patch-react-source-parity.py'
+      - 'scripts/patch-react-source-parity-v2.py'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: react-source-parity
+  cancel-in-progress: true
+
+jobs:
+  patch-build-commit:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      PRIVATE_REPO: ${{ secrets.PRIVATE_REPO }}
+      PRIVATE_REPO_PAT: ${{ secrets.PRIVATE_REPO_PAT || secrets.PERSONAL_ACCESS_TOKEN || secrets.PAT || secrets.GH_PAT || secrets.GITHUB_PAT }}
+    steps:
+      - name: Verify private-repo access
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -n "$PRIVATE_REPO"
+          test -n "$PRIVATE_REPO_PAT"
+      - name: Checkout automation repo
+        uses: actions/checkout@v7
+        with:
+          path: automation
+          persist-credentials: false
+      - name: Checkout React migration
+        uses: actions/checkout@v7
+        with:
+          repository: ${{ secrets.PRIVATE_REPO }}
+          token: ${{ secrets.PRIVATE_REPO_PAT || secrets.PERSONAL_ACCESS_TOKEN || secrets.PAT || secrets.GH_PAT || secrets.GITHUB_PAT }}
+          ref: react-migration
+          path: source
+          persist-credentials: true
+          fetch-depth: 0
+      - uses: actions/setup-node@v7
+        with:
+          node-version: '24'
+      - name: Apply source-driven parity fixes
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 automation/scripts/patch-react-source-parity-v2.py
+      - name: Build React with Node 24
+        working-directory: source/frontend-react
+        shell: bash
+        run: |
+          set -euo pipefail
+          npm ci
+          npm run build
+      - name: Validate parity invariants
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -f source/frontend-react/src/generated/main-route-css.ts
+          grep -q '"/catalogo"' source/frontend-react/src/generated/main-route-css.ts
+          grep -q 'catalog-activity-cover.css' source/frontend-react/src/generated/main-route-css.ts
+          grep -q '"/chi-siamo"' source/frontend-react/src/generated/main-route-css.ts
+          grep -q 'redesign-final.css' source/frontend-react/src/generated/main-route-css.ts
+          grep -q 'enhancements.css' source/frontend-react/src/generated/main-route-css.ts
+          grep -q 'admin-critical-upgrades.css' source/frontend-react/src/generated/main-route-css.ts
+          grep -q 'Contatti' source/frontend-react/src/generated/legal-content.ts
+          grep -q 'Telefono / WhatsApp' source/frontend-react/src/generated/legal-content.ts
+          grep -q 'mainParityLinks' source/frontend-react/worker.ts
+          grep -q 'data-cv-main-parity' source/frontend-react/worker.ts
+          grep -q 'let started = false' source/frontend-react/src/pages/MapPage.tsx
+          grep -q 'if (!publicRows.length)' source/frontend-react/src/lib/public-data.ts
+          grep -q 'registerHero: "Crea il tuo account"' source/frontend-react/src/pages/AuthPage.tsx
+          ! test -f source/frontend-react/src/generated/main-parity.css
+          git -C source diff --check
+      - name: Commit verified source parity
+        shell: bash
+        run: |
+          set -euo pipefail
+          if git -C source diff --quiet; then
+            echo "No source parity changes needed."
+            exit 0
+          fi
+          git -C source config user.name "CalabriaVera Automation"
+          git -C source config user.email "actions@users.noreply.github.com"
+          git -C source add frontend-react
+          git -C source commit -m "fix: drive React parity from main source"
+          git -C source push origin HEAD:react-migration
