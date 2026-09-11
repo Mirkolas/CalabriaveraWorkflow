@@ -1,6 +1,6 @@
 name: React migration - deterministic parity gate
 
-# Gate revision: react-migration 21b633d6c855de6257e21dfab38517ae6138f7c2
+# Gate revision: react-migration 6a5704410bb32810c2bbf3c7c487309ed198bf34
 on:
   push:
     branches: [main]
