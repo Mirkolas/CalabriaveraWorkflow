@@ -1,6 +1,6 @@
 name: React migration - deterministic parity gate
 
-# Gate revision: react-migration ce65efff3fd46a0ae44dced4d7991a8154b1c559
+# Gate revision: react-migration 08055dbb79648261b3b767cf10a2ec7c87114c33
 on:
   push:
     branches: [main]
@@ -8,6 +8,7 @@ on:
       - '.github/workflows/react-parity-gate.yml'
       - 'scripts/react-parity-audit-v2.cjs'
       - 'scripts/prepare-final-parity-audit.py'
+      - 'scripts/react-catalog-map-live-gate.cjs'
   workflow_dispatch:
 
 permissions:
@@ -20,7 +21,7 @@ concurrency:
 jobs:
   parity:
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    timeout-minutes: 25
     env:
       PRIVATE_REPO: ${{ secrets.PRIVATE_REPO }}
       PRIVATE_REPO_PAT: ${{ secrets.PRIVATE_REPO_PAT || secrets.PERSONAL_ACCESS_TOKEN || secrets.PAT || secrets.GH_PAT || secrets.GITHUB_PAT }}
@@ -60,6 +61,7 @@ jobs:
         run: |
           set -euo pipefail
           expected="$(git -C source rev-parse HEAD)"
+          test "$expected" = "08055dbb79648261b3b767cf10a2ec7c87114c33"
           echo "expected=$expected" >> "$GITHUB_OUTPUT"
           echo "Expected staging commit: $expected"
           for attempt in {1..72}; do
@@ -88,7 +90,7 @@ jobs:
           set -euo pipefail
           python3 automation/scripts/prepare-final-parity-audit.py
 
-      - name: Run data-ready parity audit v4
+      - name: Run broad data-ready parity audit
         working-directory: source
         env:
           PLAYWRIGHT_MODULE: /tmp/cv-parity/node_modules/playwright
@@ -97,6 +99,16 @@ jobs:
         run: |
           set -euo pipefail
           node ../automation/scripts/react-parity-audit-v2.cjs
+
+      - name: Run strict Catalog and Map live parity gate
+        working-directory: source
+        env:
+          PLAYWRIGHT_MODULE: /tmp/cv-parity/node_modules/playwright
+          PARITY_OUT: parity-audit-fast
+        shell: bash
+        run: |
+          set -euo pipefail
+          node ../automation/scripts/react-catalog-map-live-gate.cjs
 
       - name: Upload parity evidence
         if: always()
