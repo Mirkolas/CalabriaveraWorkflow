@@ -1,0 +1,102 @@
+name: React migration - exact CSS shell parity
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/react-exact-css-shell.yml'
+      - 'scripts/patch-react-exact-css-shell.py'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: react-exact-css-shell
+  cancel-in-progress: true
+
+jobs:
+  patch-build-commit:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      PRIVATE_REPO: ${{ secrets.PRIVATE_REPO }}
+      PRIVATE_REPO_PAT: ${{ secrets.PRIVATE_REPO_PAT || secrets.PERSONAL_ACCESS_TOKEN || secrets.PAT || secrets.GH_PAT || secrets.GITHUB_PAT }}
+    steps:
+      - name: Verify private-repo access
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -n "$PRIVATE_REPO"
+          test -n "$PRIVATE_REPO_PAT"
+
+      - name: Checkout automation repo
+        uses: actions/checkout@v7
+        with:
+          path: automation
+          persist-credentials: false
+
+      - name: Checkout React migration
+        uses: actions/checkout@v7
+        with:
+          repository: ${{ secrets.PRIVATE_REPO }}
+          token: ${{ secrets.PRIVATE_REPO_PAT || secrets.PERSONAL_ACCESS_TOKEN || secrets.PAT || secrets.GH_PAT || secrets.GITHUB_PAT }}
+          ref: react-migration
+          path: source
+          persist-credentials: true
+          fetch-depth: 0
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version: '24'
+
+      - name: Apply exact CSS and shell parity
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git -C source rev-parse HEAD)" = "6386ae3c00000000000000000000000000000000" || true
+          python3 automation/scripts/patch-react-exact-css-shell.py
+
+      - name: Build React with Node 24
+        working-directory: source/frontend-react
+        shell: bash
+        run: |
+          set -euo pipefail
+          npm ci
+          npm run build 2>&1 | tee /tmp/react-build.log
+          if grep -q '@import must precede all other statements' /tmp/react-build.log; then
+            echo '::error::Legacy CSS was concatenated incorrectly'
+            exit 1
+          fi
+
+      - name: Validate exact shell and CSS assets
+        shell: bash
+        run: |
+          set -euo pipefail
+          ! grep -q 'generated/main-parity.css' source/frontend-react/src/main.tsx
+          grep -q 'site-header cv-header' source/frontend-react/src/components/Layout.tsx
+          grep -q 'header-inner' source/frontend-react/src/components/Layout.tsx
+          grep -q 'primary-nav' source/frontend-react/src/components/Layout.tsx
+          grep -q 'id="main-content"' source/frontend-react/src/components/Layout.tsx
+          grep -q 'footer-grid' source/frontend-react/src/components/Layout.tsx
+          grep -q 'link\[data-cv-main-parity\]' source/frontend-react/src/components/Layout.tsx
+          test -f source/frontend-react/public/assets/css/redesign-runtime.css
+          test -f source/frontend-react/public/assets/css/redesign-functional.css
+          test -f source/frontend-react/public/assets/css/redesign-final.css
+          test -f source/frontend-react/public/assets/css/catalog-activity-cover.css
+          test -f source/frontend-react/public/assets/css/map-clean.css
+          git -C source diff --check
+
+      - name: Commit verified exact shell parity
+        shell: bash
+        run: |
+          set -euo pipefail
+          if git -C source diff --quiet; then
+            echo "No exact shell changes needed."
+            exit 0
+          fi
+          git -C source config user.name "CalabriaVera Automation"
+          git -C source config user.email "actions@users.noreply.github.com"
+          git -C source add frontend-react
+          git -C source commit -m "fix: load exact main CSS per React route"
+          git -C source push origin HEAD:react-migration
