@@ -8,7 +8,7 @@ on:
   workflow_dispatch:
 
 permissions:
-  contents: write
+  contents: read
 
 jobs:
   fix-and-run:
@@ -20,33 +20,6 @@ jobs:
     steps:
       - name: Checkout automation repo
         uses: actions/checkout@v7
-        with:
-          persist-credentials: true
-
-      - name: Add Java 21 setup to R2 workflow
-        shell: bash
-        run: |
-          set -euo pipefail
-          python3 - <<'PY'
-          from pathlib import Path
-          p = Path('.github/workflows/react-r2-editor-wire.yml')
-          s = p.read_text(encoding='utf-8')
-          marker = '      - name: Setup Java 21 for Firestore emulator\n'
-          if marker not in s:
-              needle = "      - uses: actions/setup-node@v7\n        with:\n          node-version: '24'\n"
-              if needle not in s:
-                  raise SystemExit('setup-node block not found')
-              addition = needle + "\n      - name: Setup Java 21 for Firestore emulator\n        uses: actions/setup-java@v5\n        with:\n          distribution: temurin\n          java-version: '21'\n"
-              s = s.replace(needle, addition, 1)
-              p.write_text(s, encoding='utf-8')
-          PY
-          if ! git diff --quiet -- .github/workflows/react-r2-editor-wire.yml; then
-            git config user.name "CalabriaVera Automation"
-            git config user.email "actions@users.noreply.github.com"
-            git add .github/workflows/react-r2-editor-wire.yml
-            git commit -m "ci: use Java 21 for Firestore emulator"
-            git push origin HEAD:main
-          fi
 
       - name: Extract existing R2 patch
         shell: bash
