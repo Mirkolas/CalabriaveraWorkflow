@@ -49,7 +49,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          test "$(git -C source rev-parse HEAD)" = "94868a091a8f66d83b51c17f9fbe0310d0377e9a"
+          test "$(git -C source rev-parse HEAD)" = "176e190d29b20e2b430068a5c33450e15b7af277"
       - name: Apply account runtime parity
         run: python3 automation/scripts/patch-react-account-runtime-parity.py
       - name: Build React migration
