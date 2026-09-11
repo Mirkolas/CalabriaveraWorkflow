@@ -51,128 +51,145 @@ jobs:
           text = editor.read_text(encoding='utf-8')
           start = text.index('export async function replaceBusinessImages(')
           end = text.index('\nexport async function geocodeAddress', start)
-          replacement_lines = [
-              'async function uploadEditorImageToR2(businessId: string, image: EditableImage, user: { uid: string; getIdToken(forceRefresh?: boolean): Promise<string> }) {',
-              '  const source = String(image.imageDataUrl || "").trim();',
-              '  if (!source || String(image.imageMime || "") !== "image/webp") return image;',
-              '  const blobResponse = await fetch(source);',
-              '  const blob = await blobResponse.blob();',
-              '  if (!blob.size || blob.size > MAX_BLOB_BYTES || blob.type !== "image/webp") throw new Error("IMAGE_INVALID");',
-              '  const token = await user.getIdToken();',
-              '  const response = await fetch("/api/images/upload", {',
-              '    method: "POST",',
-              '    headers: {',
-              '      Authorization: `Bearer ${token}`,',
-              '      "Content-Type": "image/webp",',
-              '      "X-User-Id": user.uid,',
-              '      "X-Business-Id": businessId,',
-              '    },',
-              '    body: blob,',
-              '  });',
-              '  if (!response.ok) throw new Error(`R2_UPLOAD_${response.status}`);',
-              '  const uploaded = await response.json() as { key?: string; url?: string };',
-              '  const imageKey = String(uploaded.key || "").trim();',
-              '  const imageUrl = String(uploaded.url || "").trim();',
-              '  if (!imageKey || !/^https:\/\/img[.]calabriavera[.]com\//i.test(imageUrl)) throw new Error("R2_UPLOAD_INVALID");',
-              '  return { ...image, imageDataUrl: undefined, imageMime: undefined, imageBytes: undefined, imageKey, r2ImageKey: undefined, imageUrl };',
-              '}',
-              '',
-              'export async function replaceBusinessImages(businessId: string, images: EditableImage[]) {',
-              '  const user = await requireVerifiedUser();',
-              '  const business = await loadEditableBusiness(businessId);',
-              '  if (!business || business.ownerId !== user.uid) throw new Error("FORBIDDEN");',
-              '  const { db, f } = await services();',
-              '  const originals = images.slice(0, 10);',
-              '',
-              '  const persist = async (sources: EditableImage[]) => {',
-              '    const normalized = sources',
-              '      .map((source, order) => ({ source, data: normalizedImage(source, order, user.uid) }))',
-              '      .filter((item): item is { source: EditableImage; data: NonNullable<ReturnType<typeof normalizedImage>> } => Boolean(item.data));',
-              '    const current = await f.getDocs(f.collection(db, "businesses", businessId, "images"));',
-              '    const batch = f.writeBatch(db);',
-              '    current.docs.forEach((doc) => batch.delete(doc.ref));',
-              '    normalized.forEach(({ source, data }) => {',
-              '      const ref = source.id ? f.doc(db, "businesses", businessId, "images", source.id) : f.doc(f.collection(db, "businesses", businessId, "images"));',
-              '      batch.set(ref, data);',
-              '    });',
-              '    await batch.commit();',
-              '',
-              '    const businessRef = f.doc(db, "businesses", businessId);',
-              '    const cover = normalized[0]?.data;',
-              '    if (cover) {',
-              '      const patch: Record<string, unknown> = {',
-              '        imageUrl: f.deleteField(), imageKey: f.deleteField(), r2ImageKey: f.deleteField(),',
-              '        imageDataUrl: f.deleteField(), imageMime: f.deleteField(), imageBytes: f.deleteField(),',
-              '        updatedAt: f.serverTimestamp(),',
-              '      };',
-              '      if ("imageUrl" in cover) patch.imageUrl = cover.imageUrl;',
-              '      if ("imageKey" in cover) patch.imageKey = cover.imageKey;',
-              '      if ("imageDataUrl" in cover) { patch.imageDataUrl = cover.imageDataUrl; patch.imageMime = cover.imageMime; patch.imageBytes = cover.imageBytes; }',
-              '      await f.updateDoc(businessRef, patch);',
-              '    } else {',
-              '      await f.updateDoc(businessRef, {',
-              '        imageDataUrl: f.deleteField(), imageMime: f.deleteField(), imageBytes: f.deleteField(), imageUrl: f.deleteField(),',
-              '        imageKey: f.deleteField(), r2ImageKey: f.deleteField(), updatedAt: f.serverTimestamp(),',
-              '      });',
-              '    }',
-              '  };',
-              '',
-              '  let prepared = originals;',
-              '  let uploadedToR2 = false;',
-              '  try {',
-              '    prepared = await Promise.all(originals.map(async (image) => {',
-              '      if (!image.imageDataUrl) return image;',
-              '      const next = await uploadEditorImageToR2(businessId, image, user);',
-              '      if (next !== image) uploadedToR2 = true;',
-              '      return next;',
-              '    }));',
-              '  } catch (error) {',
-              '    console.warn("R2 upload non disponibile, uso il percorso Firebase compatibile.", error);',
-              '    prepared = originals;',
-              '    uploadedToR2 = false;',
-              '  }',
-              '',
-              '  try {',
-              '    await persist(prepared);',
-              '  } catch (error) {',
-              '    if (!uploadedToR2) throw error;',
-              '    console.warn("Regole R2 non ancora attive, salvo la galleria con il formato Firebase precedente.", error);',
-              '    await persist(originals);',
-              '  }',
-              '}',
-          ]
-          replacement = '\n'.join(replacement_lines)
+          replacement = r'''async function uploadEditorImageToR2(businessId: string, image: EditableImage, user: { uid: string; getIdToken(forceRefresh?: boolean): Promise<string> }) {
+  const source = String(image.imageDataUrl || "").trim();
+  if (!source || String(image.imageMime || "") !== "image/webp") return image;
+  const blobResponse = await fetch(source);
+  const blob = await blobResponse.blob();
+  if (!blob.size || blob.size > MAX_BLOB_BYTES || blob.type !== "image/webp") throw new Error("IMAGE_INVALID");
+  const token = await user.getIdToken();
+  const response = await fetch("/api/images/upload", {
+    method: "POST",
+    headers: {
+      Authorization: `Bearer ${token}`,
+      "Content-Type": "image/webp",
+      "X-User-Id": user.uid,
+      "X-Business-Id": businessId,
+    },
+    body: blob,
+  });
+  if (!response.ok) throw new Error(`R2_UPLOAD_${response.status}`);
+  const uploaded = await response.json() as { key?: string; url?: string };
+  const imageKey = String(uploaded.key || "").trim();
+  const imageUrl = String(uploaded.url || "").trim();
+  if (!imageKey || !/^https:\/\/img[.]calabriavera[.]com\//i.test(imageUrl)) throw new Error("R2_UPLOAD_INVALID");
+  return { ...image, imageDataUrl: undefined, imageMime: undefined, imageBytes: undefined, imageKey, r2ImageKey: undefined, imageUrl };
+}
+
+export async function replaceBusinessImages(businessId: string, images: EditableImage[]) {
+  const user = await requireVerifiedUser();
+  const business = await loadEditableBusiness(businessId);
+  if (!business || business.ownerId !== user.uid) throw new Error("FORBIDDEN");
+  const { db, f } = await services();
+  const originals = images.slice(0, 10);
+
+  const persist = async (sources: EditableImage[]) => {
+    const normalized = sources
+      .map((source, order) => ({ source, data: normalizedImage(source, order, user.uid) }))
+      .filter((item): item is { source: EditableImage; data: NonNullable<ReturnType<typeof normalizedImage>> } => Boolean(item.data));
+    const current = await f.getDocs(f.collection(db, "businesses", businessId, "images"));
+    const batch = f.writeBatch(db);
+    current.docs.forEach((doc) => batch.delete(doc.ref));
+    normalized.forEach(({ source, data }) => {
+      const ref = source.id ? f.doc(db, "businesses", businessId, "images", source.id) : f.doc(f.collection(db, "businesses", businessId, "images"));
+      batch.set(ref, data);
+    });
+    await batch.commit();
+
+    const businessRef = f.doc(db, "businesses", businessId);
+    const cover = normalized[0]?.data;
+    if (cover) {
+      const patch: Record<string, unknown> = {
+        imageUrl: f.deleteField(), imageKey: f.deleteField(), r2ImageKey: f.deleteField(),
+        imageDataUrl: f.deleteField(), imageMime: f.deleteField(), imageBytes: f.deleteField(),
+        updatedAt: f.serverTimestamp(),
+      };
+      if ("imageUrl" in cover) patch.imageUrl = cover.imageUrl;
+      if ("imageKey" in cover) patch.imageKey = cover.imageKey;
+      if ("imageDataUrl" in cover) { patch.imageDataUrl = cover.imageDataUrl; patch.imageMime = cover.imageMime; patch.imageBytes = cover.imageBytes; }
+      await f.updateDoc(businessRef, patch);
+    } else {
+      await f.updateDoc(businessRef, {
+        imageDataUrl: f.deleteField(), imageMime: f.deleteField(), imageBytes: f.deleteField(), imageUrl: f.deleteField(),
+        imageKey: f.deleteField(), r2ImageKey: f.deleteField(), updatedAt: f.serverTimestamp(),
+      });
+    }
+  };
+
+  let prepared = originals;
+  let uploadedToR2 = false;
+  try {
+    prepared = await Promise.all(originals.map(async (image) => {
+      if (!image.imageDataUrl) return image;
+      const next = await uploadEditorImageToR2(businessId, image, user);
+      if (next !== image) uploadedToR2 = true;
+      return next;
+    }));
+  } catch (error) {
+    console.warn("R2 upload non disponibile, uso il percorso Firebase compatibile.", error);
+    prepared = originals;
+    uploadedToR2 = false;
+  }
+
+  try {
+    await persist(prepared);
+  } catch (error) {
+    if (!uploadedToR2) throw error;
+    console.warn("Regole R2 non ancora attive, salvo la galleria con il formato Firebase precedente.", error);
+    await persist(originals);
+  }
+}'''
           text = text[:start] + replacement + text[end:]
           editor.write_text(text, encoding='utf-8')
 
           rules = Path('firestore.rules')
           r = rules.read_text(encoding='utf-8')
-          r = r.replace('"imageDataUrl","imageMime","imageBytes","imageUrl",', '"imageDataUrl","imageMime","imageBytes","imageUrl","imageKey","r2ImageKey",')
-          r = r.replace('"slug","keywords","updatedAt","imageDataUrl","imageMime","imageBytes","imageUrl"', '"slug","keywords","updatedAt","imageDataUrl","imageMime","imageBytes","imageUrl","imageKey","r2ImageKey"')
-          old_keys = "request.resource.data.keys().hasOnly(['imageDataUrl','imageMime','imageBytes','order','ownerId'])"
-          new_keys = "request.resource.data.keys().hasOnly(['imageDataUrl','imageMime','imageBytes','imageUrl','imageKey','r2ImageKey','order','ownerId'])"
-          if old_keys in r:
-              r = r.replace(old_keys, new_keys, 1)
-          elif new_keys not in r:
-              raise SystemExit('Regole galleria inattese')
-          old_validation = """          && request.resource.data.imageDataUrl is string && request.resource.data.imageDataUrl.size() <= 650000
-          && request.resource.data.imageDataUrl.matches('^data:image/(jpeg|png|webp);base64,[A-Za-z0-9+/=]+$')
-          && request.resource.data.imageMime in ['image/jpeg','image/png','image/webp']
-          && request.resource.data.imageBytes is int && request.resource.data.imageBytes >= 0 && request.resource.data.imageBytes <= 450000;"""
-          new_validation = """          && ((request.resource.data.keys().hasAny(['imageDataUrl'])
+          r = r.replace('"imageDataUrl","imageMime","imageBytes","imageUrl",\n        "views"', '"imageDataUrl","imageMime","imageBytes","imageUrl","imageKey","r2ImageKey",\n        "views"')
+          r = r.replace('"slug","keywords","updatedAt","imageDataUrl","imageMime","imageBytes","imageUrl"\n      ]);', '"slug","keywords","updatedAt","imageDataUrl","imageMime","imageBytes","imageUrl","imageKey","r2ImageKey"\n      ]);')
+
+          valid_start = r.index('    function validImage(data) {')
+          valid_end = r.index('\n    function validBusinessCreateShape', valid_start)
+          valid_image = r'''    function validImage(data) {
+      return (!data.keys().hasAny(["imageDataUrl"]) || (
+          data.imageDataUrl is string
+          && data.imageDataUrl.size() <= 650000
+          && data.imageDataUrl.matches('^data:image/(jpeg|png|webp);base64,[A-Za-z0-9+/=]+$')
+          && (!data.keys().hasAny(["imageMime"]) || data.imageMime in ["image/jpeg", "image/png", "image/webp"])
+          && (!data.keys().hasAny(["imageBytes"]) || (data.imageBytes is int && data.imageBytes >= 0 && data.imageBytes <= 450000))
+        ))
+        && (!data.keys().hasAny(["imageUrl"]) || (data.imageUrl is string && data.imageUrl.size() <= 2000))
+        && (!data.keys().hasAny(["imageKey","r2ImageKey"]) || (
+          ((data.keys().hasAny(["imageKey"]) && data.imageKey is string && data.imageKey.matches('^activities/[^/]+/[A-Fa-f0-9]+-1400[.]webp$'))
+            || (!data.keys().hasAny(["imageKey"]) && data.r2ImageKey is string && data.r2ImageKey.matches('^activities/[^/]+/[A-Fa-f0-9]+-1400[.]webp$')))
+          && (!data.keys().hasAny(["imageUrl"]) || data.imageUrl.matches('^https://img[.]calabriavera[.]com/activities/.*[.]webp$'))
+        ));
+    }'''
+          r = r[:valid_start] + valid_image + r[valid_end:]
+
+          image_match = r.index('      match /images/{imageId} {')
+          allow_start = r.index('        allow create, update:', image_match)
+          allow_end = r.index(';', allow_start) + 1
+          image_rule = r'''        allow create, update: if verified() && businessOwner(id)
+          && request.resource.data.keys().hasOnly(['imageDataUrl','imageMime','imageBytes','imageUrl','imageKey','r2ImageKey','order','ownerId'])
+          && request.resource.data.ownerId == request.auth.uid
+          && request.resource.data.order is int && request.resource.data.order >= 0 && request.resource.data.order < 10
+          && (
+            (request.resource.data.keys().hasAny(['imageDataUrl'])
+              && !request.resource.data.keys().hasAny(['imageKey','r2ImageKey','imageUrl'])
               && request.resource.data.imageDataUrl is string && request.resource.data.imageDataUrl.size() <= 650000
               && request.resource.data.imageDataUrl.matches('^data:image/(jpeg|png|webp);base64,[A-Za-z0-9+/=]+$')
               && request.resource.data.imageMime in ['image/jpeg','image/png','image/webp']
               && request.resource.data.imageBytes is int && request.resource.data.imageBytes >= 0 && request.resource.data.imageBytes <= 450000)
-            || (!request.resource.data.keys().hasAny(['imageDataUrl'])
-              && request.resource.data.imageKey is string && request.resource.data.imageKey.size() > 20 && request.resource.data.imageKey.size() <= 500
-              && request.resource.data.imageKey.matches('^activities/[^/]+/[A-Fa-f0-9]+-1400[.]webp$')
+            || (!request.resource.data.keys().hasAny(['imageDataUrl','imageMime','imageBytes','imageKey','r2ImageKey'])
               && request.resource.data.imageUrl is string && request.resource.data.imageUrl.size() <= 2000
-              && request.resource.data.imageUrl.matches('^https://img[.]calabriavera[.]com/activities/.*[.]webp$')));"""
-          if old_validation in r:
-              r = r.replace(old_validation, new_validation, 1)
-          elif new_validation not in r:
-              raise SystemExit('Validazione galleria inattesa')
+              && request.resource.data.imageUrl.matches('^https://.*'))
+            || (!request.resource.data.keys().hasAny(['imageDataUrl','imageMime','imageBytes'])
+              && request.resource.data.imageKey is string && request.resource.data.imageKey.matches('^activities/[^/]+/[A-Fa-f0-9]+-1400[.]webp$')
+              && (!request.resource.data.keys().hasAny(['r2ImageKey']) || request.resource.data.r2ImageKey == request.resource.data.imageKey)
+              && request.resource.data.imageUrl is string && request.resource.data.imageUrl.size() <= 2000
+              && request.resource.data.imageUrl.matches('^https://img[.]calabriavera[.]com/activities/.*[.]webp$'))
+          );'''
+          r = r[:allow_start] + image_rule + r[allow_end:]
           rules.write_text(r, encoding='utf-8')
           PY
 
