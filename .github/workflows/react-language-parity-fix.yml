@@ -1,0 +1,119 @@
+name: React migration - language URL parity
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/react-language-parity-fix.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  patch-private-branch:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      PRIVATE_REPO: ${{ secrets.PRIVATE_REPO }}
+      PRIVATE_REPO_PAT: ${{ secrets.PRIVATE_REPO_PAT || secrets.PERSONAL_ACCESS_TOKEN || secrets.PAT || secrets.GH_PAT || secrets.GITHUB_PAT }}
+    steps:
+      - name: Verifica accesso
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -n "$PRIVATE_REPO" || { echo "::error::PRIVATE_REPO mancante"; exit 1; }
+          test -n "$PRIVATE_REPO_PAT" || { echo "::error::PAT mancante"; exit 1; }
+
+      - name: Checkout branch React privata
+        uses: actions/checkout@v7
+        with:
+          repository: ${{ secrets.PRIVATE_REPO }}
+          token: ${{ secrets.PRIVATE_REPO_PAT || secrets.PERSONAL_ACCESS_TOKEN || secrets.PAT || secrets.GH_PAT || secrets.GITHUB_PAT }}
+          ref: react-migration
+          path: source
+          persist-credentials: true
+          fetch-depth: 0
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version: '24'
+
+      - name: Allinea lingua alla URL originale
+        working-directory: source
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          from pathlib import Path
+          path = Path('frontend-react/src/lib/language.ts')
+          text = path.read_text(encoding='utf-8')
+          text = text.replace('const STORAGE_KEY = "cv-language";', 'const STORAGE_KEY = "cv-lang";')
+          old = '''export function languageFromPath(pathname = location.pathname): Language {
+            const first = pathname.split("/").filter(Boolean)[0] as Language | undefined;
+            if (first && SUPPORTED_LANGS.includes(first)) return first;
+            try {
+              const saved = localStorage.getItem(STORAGE_KEY) as Language | null;
+              if (saved && SUPPORTED_LANGS.includes(saved)) return saved;
+            } catch {}
+            return "it";
+          }'''
+          old = '\n'.join(line.strip() if False else line for line in old.splitlines())
+          actual = '''export function languageFromPath(pathname = location.pathname): Language {
+  const first = pathname.split("/").filter(Boolean)[0] as Language | undefined;
+  if (first && SUPPORTED_LANGS.includes(first)) return first;
+  try {
+    const saved = localStorage.getItem(STORAGE_KEY) as Language | null;
+    if (saved && SUPPORTED_LANGS.includes(saved)) return saved;
+  } catch {}
+  return "it";
+}'''
+          replacement = '''export function languageFromPath(pathname = location.pathname): Language {
+  const first = pathname.split("/").filter(Boolean)[0] as Language | undefined;
+  if (first && SUPPORTED_LANGS.includes(first)) return first;
+  try {
+    const query = new URLSearchParams(location.search).get("lang") as Language | null;
+    if (query && SUPPORTED_LANGS.includes(query)) return query;
+  } catch {}
+  return "it";
+}'''
+          if actual not in text and replacement not in text:
+              raise SystemExit('Blocco languageFromPath inatteso')
+          text = text.replace(actual, replacement)
+
+          actual_set = '''export function setLanguage(language: Language) {
+  try { localStorage.setItem(STORAGE_KEY, language); } catch {}
+  const clean = stripLanguagePath();
+  const next = language === "it" ? clean : `/${language}${clean === "/" ? "" : clean}`;
+  history.pushState({}, "", `${next}${location.search}${location.hash}` || "/");
+  window.dispatchEvent(new Event("cv:navigate"));
+}'''
+          replacement_set = '''export function setLanguage(language: Language) {
+  try { localStorage.setItem(STORAGE_KEY, language); } catch {}
+  const clean = stripLanguagePath();
+  const next = language === "it" ? clean : `/${language}${clean === "/" ? "" : clean}`;
+  const url = new URL(location.href);
+  url.pathname = next || "/";
+  url.searchParams.delete("lang");
+  location.href = `${url.pathname}${url.search}${url.hash}`;
+}'''
+          if actual_set not in text and replacement_set not in text:
+              raise SystemExit('Blocco setLanguage inatteso')
+          text = text.replace(actual_set, replacement_set)
+          path.write_text(text, encoding='utf-8')
+          PY
+
+          cd frontend-react
+          npm ci --no-audit --no-fund
+          npm run build
+          cd ..
+          git diff --check
+          if git diff --quiet; then
+            echo "Nessuna modifica necessaria."
+            exit 0
+          fi
+          git config user.name "CalabriaVera Automation"
+          git config user.email "actions@users.noreply.github.com"
+          git add frontend-react/src/lib/language.ts
+          git commit -m "fix: make language selection URL deterministic"
+          git push origin HEAD:react-migration
