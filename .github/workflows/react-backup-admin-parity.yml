@@ -1,0 +1,82 @@
+name: React migration - backup admin parity
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/react-backup-admin-parity.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  patch-private-branch:
+    runs-on: ubuntu-latest
+    timeout-minutes: 12
+    env:
+      PRIVATE_REPO: ${{ secrets.PRIVATE_REPO }}
+      PRIVATE_REPO_PAT: ${{ secrets.PRIVATE_REPO_PAT || secrets.PERSONAL_ACCESS_TOKEN || secrets.PAT || secrets.GH_PAT }}
+    steps:
+      - name: Verifica accesso
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -n "$PRIVATE_REPO" || { echo "::error::PRIVATE_REPO mancante"; exit 1; }
+          test -n "$PRIVATE_REPO_PAT" || { echo "::error::PAT mancante"; exit 1; }
+
+      - name: Checkout React privata
+        uses: actions/checkout@v7
+        with:
+          repository: ${{ secrets.PRIVATE_REPO }}
+          token: ${{ secrets.PRIVATE_REPO_PAT || secrets.PERSONAL_ACCESS_TOKEN || secrets.PAT || secrets.GH_PAT }}
+          ref: react-migration
+          path: source
+          persist-credentials: true
+          fetch-depth: 0
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version: '24'
+
+      - name: Ripristina pagina backup React
+        working-directory: source
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          from pathlib import Path
+          path = Path('frontend-react/src/pages/AdminPage.tsx')
+          text = path.read_text(encoding='utf-8')
+
+          old_tabs = '["Panoramica", "/admin"], ["Attività", "/admin/attivita"], ["Recensioni", "/admin/recensioni"]'
+          new_tabs = '["Panoramica", "/admin"], ["Backup", "/backup"], ["Attività", "/admin/attivita"], ["Recensioni", "/admin/recensioni"]'
+          if old_tabs in text:
+              text = text.replace(old_tabs, new_tabs, 1)
+          elif new_tabs not in text:
+              raise SystemExit('Tabs admin inattesi')
+
+          anchor = '      {section === "attivita" ? <div className="cv-admin-list">'
+          backup = '''      {section === "backup" ? <div className="cv-admin-generic"><p className="eyebrow">Admin</p><h2>Backup e ripristino</h2><div className="cv-admin-list"><article><div><h2>Backup cifrati</h2><p>Le copie complete vengono conservate dalle automazioni GitHub dedicate. La retention mantiene i backup previsti solo dopo la verifica del download.</p></div><div className="cv-admin-actions"><a href="https://github.com/Mirkolas/CalabriaveraWorkflow/actions/workflows/daily-backup.yml" target="_blank" rel="noopener noreferrer">Controlla o avvia backup</a></div></article><article><div><h2>Ripristino protetto</h2><p>Il ripristino parte in simulazione e richiede una conferma prima di modificare dati o account. Conserva sempre una copia offline della chiave.</p></div><div className="cv-admin-actions"><a href="https://github.com/Mirkolas/calabriavera/blob/main/docs/GITHUB_BACKUP_RIPRISTINO.md" target="_blank" rel="noopener noreferrer">Apri la guida</a></div></article></div></div> : null}\n\n'''
+          if 'section === "backup" ?' not in text:
+              if anchor not in text:
+                  raise SystemExit('Anchor attività non trovato')
+              text = text.replace(anchor, backup + anchor, 1)
+
+          path.write_text(text, encoding='utf-8')
+          PY
+
+          cd frontend-react
+          npm ci --no-audit --no-fund
+          npm run build
+          cd ..
+          git diff --check
+          git config user.name "CalabriaVera Automation"
+          git config user.email "actions@users.noreply.github.com"
+          git add frontend-react/src/pages/AdminPage.tsx
+          if git diff --cached --quiet; then
+            echo "Nessuna modifica necessaria."
+            exit 0
+          fi
+          git commit -m "feat: restore backup admin page in React"
+          git push origin HEAD:react-migration
