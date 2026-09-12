@@ -1,6 +1,6 @@
 name: React migration - deterministic parity gate
 
-# Gate revision: react-migration c828a8a22ac045a3c307df71063c852e4a950eaa
+# Gate revision: react-migration a10c3653d11c6007fbe55767ecd5adf66f3fd787
 on:
   push:
     branches: [main]
@@ -61,7 +61,7 @@ jobs:
         run: |
           set -euo pipefail
           expected="$(git -C source rev-parse HEAD)"
-          test "$expected" = "c828a8a22ac045a3c307df71063c852e4a950eaa"
+          test "$expected" = "a10c3653d11c6007fbe55767ecd5adf66f3fd787"
           echo "expected=$expected" >> "$GITHUB_OUTPUT"
           echo "Expected staging commit: $expected"
           for attempt in {1..72}; do
