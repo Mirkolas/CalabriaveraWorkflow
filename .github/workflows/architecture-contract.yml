@@ -68,5 +68,10 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          grep -Rqs 'wrangler@4 d1\|wrangler d1' .github/workflows/cloudflare-d1-workflows.yml .github/workflows/cloudflare-d1-sync-after-deploy.yml
+          for workflow in \
+            .github/workflows/cloudflare-d1-workflows.yml \
+            .github/workflows/cloudflare-d1-sync-after-deploy.yml; do
+            test -f "$workflow" || { echo "::error::Workflow D1 mancante: $workflow"; exit 1; }
+            grep -Fq 'wrangler@4 d1' "$workflow" || { echo "::error::Nessun comando D1 trovato in $workflow"; exit 1; }
+          done
           echo "D1 confinato ai workflow automatici verificati."
