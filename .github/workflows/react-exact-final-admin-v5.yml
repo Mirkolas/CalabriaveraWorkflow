@@ -1,0 +1,173 @@
+name: React exact final admin parity v5
+
+on:
+  push:
+    branches: [main]
+    paths: ['.github/workflows/react-exact-final-admin-v5.yml']
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  exact-admin-gate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 55
+    env:
+      PRIVATE_REPO_PAT: ${{ secrets.PRIVATE_REPO_PAT || secrets.PERSONAL_ACCESS_TOKEN || secrets.PAT || secrets.GH_PAT || secrets.GITHUB_PAT }}
+      LEGACY_SHA: 7be434e3418e95cff9825e4cc3f4b4ed75cd1076
+      EXPECTED_BASE: 0dfc13772604f64cd9712468f6aca7cdd7c8a944
+    steps:
+      - uses: actions/checkout@v7
+        with: {path: workflow, persist-credentials: false}
+      - uses: actions/checkout@v7
+        with:
+          repository: ${{ secrets.PRIVATE_REPO }}
+          token: ${{ env.PRIVATE_REPO_PAT }}
+          ref: backup-main-pre-react-2026-09-11
+          path: legacy
+          persist-credentials: false
+      - uses: actions/checkout@v7
+        with:
+          repository: ${{ secrets.PRIVATE_REPO }}
+          token: ${{ env.PRIVATE_REPO_PAT }}
+          ref: react-migration
+          path: source
+          persist-credentials: true
+          fetch-depth: 8
+      - uses: actions/setup-node@v7
+        with:
+          node-version: '24'
+          cache: npm
+          cache-dependency-path: source/frontend-react/package-lock.json
+
+      - name: Build exact backup and verify authoritative admin features
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git -C legacy rev-parse HEAD)" = "$LEGACY_SHA"
+          test "$(git -C source rev-parse HEAD)" = "$EXPECTED_BASE"
+          (cd legacy && npm ci && npm run build)
+          cd legacy
+          node --test \
+            tests/admin-control.test.mjs \
+            tests/admin-backend.test.mjs \
+            tests/admin-conversation-delete.test.mjs \
+            tests/admin-conversation-delete-ui.test.mjs \
+            tests/admin-user-profile-ui.test.mjs \
+            tests/admin-critical-upgrades.test.mjs
+          grep -Fq 'Attività & CRM' dist/assets/js/admin-upgrade.js
+          grep -Fq 'Vetrina €15/mese' dist/assets/js/admin-upgrade.js
+          grep -Fq 'data-critical-workbench' dist/assets/js/admin-critical-upgrades.js
+          grep -Fq 'data-admin-delete-conversation' dist/assets/js/admin-conversation-delete-ui.js
+          grep -Fq 'data-admin-site-profile' dist/assets/js/admin-user-profile-ui.js
+          node --input-type=module <<'NODE'
+          import fs from 'node:fs';
+          const scripts=file=>[...fs.readFileSync(file,'utf8').matchAll(/<script[^>]+src="([^"]+)"[^>]*>/g)].map(x=>x[1].replace(/\?v=.*/,''));
+          const assertSubsequence=(file,expected)=>{const got=scripts(file);let at=0;for(const item of got)if(item===expected[at])at++;if(at!==expected.length)throw new Error(`${file}: expected ${expected.join(' -> ')} in ${got.join(' -> ')}`)};
+          assertSubsequence('dist/pages/admin/index.html',['/assets/js/page-loader.js','/assets/js/admin-maintenance-toggle.js','/assets/js/admin-automation-status.js','/assets/js/admin-console.js','/assets/js/admin-upgrade.js']);
+          assertSubsequence('dist/pages/admin/attivita.html',['/assets/js/page-loader.js','/assets/js/admin-critical-upgrades.js','/assets/js/admin-console.js','/assets/js/admin-upgrade.js']);
+          assertSubsequence('dist/pages/admin/messaggi.html',['/assets/js/page-loader.js','/assets/js/admin-critical-upgrades.js','/assets/js/admin-conversation-delete-ui.js','/assets/js/admin-console.js','/assets/js/admin-upgrade.js']);
+          assertSubsequence('dist/pages/admin/utenti.html',['/assets/js/page-loader.js','/assets/js/admin-user-profile-ui.js','/assets/js/admin-console.js','/assets/js/admin-upgrade.js']);
+          console.log('EXACT_ADMIN_ENTRYPOINT_ORDER_GREEN');
+          NODE
+
+      - name: Apply exact final built admin entrypoints to React
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd source
+          python3 ../workflow/scripts/patch-react-exact-final-admin-runtime.py
+          python3 ../workflow/scripts/copy-exact-built-admin-runtime.py ../legacy/dist frontend-react/public
+          grep -Fq 'kind==="attivita" || kind==="messaggi"' frontend-react/src/pages/AdminPage.tsx
+          grep -Fq 'admin-critical-upgrades.js' frontend-react/src/pages/AdminPage.tsx
+          grep -Fq 'admin-conversation-delete-ui.js' frontend-react/src/pages/AdminPage.tsx
+          grep -Fq 'admin-user-profile-ui.js' frontend-react/src/pages/AdminPage.tsx
+          ! grep -Fq 'admin-runtime-fixes.js' frontend-react/src/pages/AdminPage.tsx
+          test ! -e frontend-react/public/assets/js/admin-runtime-fixes.js
+          git diff --check
+
+      - name: Build React and verify exact built runtime plus route CSS
+        working-directory: source/frontend-react
+        shell: bash
+        run: |
+          set -euo pipefail
+          npm ci
+          npm run build
+          for f in \
+            admin.js admin-console.js admin-upgrade.js \
+            admin-maintenance-toggle.js admin-automation-status.js \
+            admin-critical-upgrades.js admin-conversation-delete-ui.js admin-user-profile-ui.js; do
+            cmp "../../legacy/dist/assets/js/$f" "dist/assets/js/$f"
+          done
+          node --input-type=module <<'NODE'
+          import fs from 'node:fs';
+          const m=JSON.parse(fs.readFileSync('public/main-route-css.json','utf8')).routeCss;
+          const expect={
+            '/admin':'/assets/css/cv-bundle-28783d3e87e06008.css',
+            '/admin/attivita':'/assets/css/cv-bundle-b23bf9fdf406ca6d.css',
+            '/admin/recensioni':'/assets/css/cv-bundle-28783d3e87e06008.css',
+            '/admin/utenti':'/assets/css/cv-bundle-fe11938d8fd5afe9.css',
+            '/admin/messaggi':'/assets/css/cv-bundle-b23bf9fdf406ca6d.css',
+            '/admin/blog':'/assets/css/cv-bundle-28783d3e87e06008.css',
+            '/admin/categorie':'/assets/css/cv-bundle-28783d3e87e06008.css',
+            '/admin/comuni':'/assets/css/cv-bundle-28783d3e87e06008.css',
+            '/admin/impostazioni':'/assets/css/cv-bundle-28783d3e87e06008.css',
+            '/admin/seo':'/assets/css/cv-bundle-28783d3e87e06008.css'
+          };
+          for(const [route,css] of Object.entries(expect)){
+            const got=m[route];if(!Array.isArray(got)||got.length!==1||got[0]!==css)throw new Error(`${route}: ${JSON.stringify(got)} != ${css}`);
+          }
+          for(const route of ['/admin/segnalazioni','/admin/comunicazioni','/admin/sistema']){
+            if(m[route])throw new Error(`${route}: should use Firebase /admin/** index rewrite, not a physical route bundle`);
+          }
+          console.log('EXACT_FINAL_ADMIN_RUNTIME_AND_CSS_GREEN');
+          NODE
+
+      - name: Install Chromium and serve Firebase-compatible oracle plus React
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p /tmp/cv-admin-v5
+          npm install --prefix /tmp/cv-admin-v5 --no-package-lock --no-save playwright@1.62.1 serve@14.2.4
+          /tmp/cv-admin-v5/node_modules/.bin/playwright install --with-deps chromium >/dev/null
+          nohup node workflow/scripts/serve-exact-legacy-admin-oracle.mjs legacy/dist 4190 >/tmp/cv-admin-v5-legacy.log 2>&1 & echo $! >/tmp/cv-admin-v5-legacy.pid
+          nohup /tmp/cv-admin-v5/node_modules/.bin/serve -s source/frontend-react/dist -l 4191 >/tmp/cv-admin-v5-react.log 2>&1 & echo $! >/tmp/cv-admin-v5-react.pid
+          for i in {1..30}; do
+            curl -fsS http://127.0.0.1:4190/admin >/dev/null 2>&1 && \
+            curl -fsS http://127.0.0.1:4190/admin/messaggi >/dev/null 2>&1 && \
+            curl -fsS http://127.0.0.1:4190/admin/comunicazioni >/dev/null 2>&1 && \
+            curl -fsS http://127.0.0.1:4191/admin >/dev/null 2>&1 && exit 0
+            sleep 1
+          done
+          cat /tmp/cv-admin-v5-legacy.log || true
+          exit 1
+
+      - name: Gate exact final admin DOM and page-specific decorators
+        env:
+          PLAYWRIGHT_MODULE: /tmp/cv-admin-v5/node_modules/playwright
+        shell: bash
+        run: |
+          set -euo pipefail
+          node workflow/scripts/gate-exact-final-admin.mjs
+
+      - name: Commit only after every exact admin gate is green
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git -C source rev-parse HEAD)" = "$EXPECTED_BASE"
+          cd source
+          git config user.name 'CalabriaVera Migration Bot'
+          git config user.email 'actions@users.noreply.github.com'
+          git add frontend-react/src/pages/AdminPage.tsx frontend-react/public/assets/js frontend-react/public/firebase
+          git diff --cached --check
+          git commit -m 'fix: match exact final pre-React admin runtime'
+          git push origin HEAD:react-migration
+          echo "PRIVATE_SHA=$(git rev-parse HEAD)"
+
+      - name: Stop servers
+        if: always()
+        shell: bash
+        run: |
+          kill "$(cat /tmp/cv-admin-v5-legacy.pid 2>/dev/null)" 2>/dev/null || true
+          kill "$(cat /tmp/cv-admin-v5-react.pid 2>/dev/null)" 2>/dev/null || true
