@@ -41,7 +41,8 @@ jobs:
             ('assert.match(siteBatch, /filter\\(row => row\\.status === "queued"\\)/);', 'assert.match(siteBatch, /collection\\("blogPosts"\\)\\.where\\("status", "==", "queued"\\)\\.get\\(\\)/);'),
             ("  const deploy = read('.github/workflows/firebase-deploy.yml');\n", ''),
             ('  assert.match(deploy, /Story Instagram 9:16 con safe area/);\n  assert.match(deploy, /scale=1080:1920/);\n  assert.match(deploy, /scale=920:1640/);\n  assert.match(deploy, /test "\\$dims" = "1080x1920"/);', '  assert.match(publisher, /assertRemoteImage\\(instagramImageUrl, "Story Instagram 9:16 safe-area"\\)/);\n  assert.match(publisher, /media_type: "STORIES"/);'),
-            ('assert.match(publisher, /\\.filter\\(post => !FORCE_POST_ID \\|\\| post\\.id === FORCE_POST_ID\\)/);', 'assert.match(publisher, /collection\\("blogPosts"\\)\\.doc\\(FORCE_POST_ID\\)\\.get\\(\\)/);\n  assert.match(publisher, /return validCandidate\\(post, oldest\\) \\? \\[post\\] : \\[]/);')
+            ('assert.match(publisher, /\\.filter\\(post => !FORCE_POST_ID \\|\\| post\\.id === FORCE_POST_ID\\)/);', 'assert.match(publisher, /collection\\("blogPosts"\\)\\.doc\\(FORCE_POST_ID\\)\\.get\\(\\)/);\n  assert.match(publisher, /return validCandidate\\(post, oldest\\) \\? \\[post\\] : \\[]/);'),
+            ('assert.match(socialPair, /for \\(const lane of \\["news", "events"\\]\\)/);', 'assert.match(socialPair, /const lanes = \\["news", "events"\\]/);\n  assert.match(socialPair, /for \\(const lane of lanes\\)/);')
           ]
           for old, new in pairs:
             if old not in s:
