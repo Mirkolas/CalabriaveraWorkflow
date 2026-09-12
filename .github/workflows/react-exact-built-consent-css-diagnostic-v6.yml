@@ -1,0 +1,76 @@
+name: React exact built consent CSS diagnostic v6
+on:
+  push:
+    branches: [main]
+    paths: ['.github/workflows/react-exact-built-consent-css-diagnostic-v6.yml']
+permissions:
+  contents: read
+jobs:
+  diagnose:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      PRIVATE_REPO_PAT: ${{ secrets.PRIVATE_REPO_PAT || secrets.PERSONAL_ACCESS_TOKEN || secrets.PAT || secrets.GH_PAT || secrets.GITHUB_PAT }}
+      LEGACY_SHA: 7be434e3418e95cff9825e4cc3f4b4ed75cd1076
+    steps:
+      - uses: actions/checkout@v7
+        with: {path: workflow, persist-credentials: false}
+      - uses: actions/checkout@v7
+        with:
+          repository: ${{ secrets.PRIVATE_REPO }}
+          token: ${{ env.PRIVATE_REPO_PAT }}
+          ref: backup-main-pre-react-2026-09-11
+          path: legacy
+          persist-credentials: false
+      - uses: actions/checkout@v7
+        with:
+          repository: ${{ secrets.PRIVATE_REPO }}
+          token: ${{ env.PRIVATE_REPO_PAT }}
+          ref: react-migration
+          path: source
+          persist-credentials: false
+      - uses: actions/setup-node@v7
+        with: {node-version: '24'}
+      - name: Build outputs
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git -C legacy rev-parse HEAD)" = "$LEGACY_SHA"
+          (cd legacy && npm ci && npm run build)
+          cd source
+          python3 ../workflow/scripts/patch-react-exact-consent.py
+          cp ../legacy/assets/css/privacy-consent.css frontend-react/src/consent.css
+          cd frontend-react && npm ci && npm run build
+      - name: Browser diagnostic
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p /tmp/cv-cd6
+          npm install --prefix /tmp/cv-cd6 --no-package-lock --no-save playwright@1.62.1 serve@14.2.4
+          /tmp/cv-cd6/node_modules/.bin/playwright install --with-deps chromium >/dev/null
+          nohup /tmp/cv-cd6/node_modules/.bin/serve legacy/dist -l 4184 >/tmp/cv-cd6-l.log 2>&1 & echo $! >/tmp/cv-cd6-l.pid
+          nohup /tmp/cv-cd6/node_modules/.bin/serve -s source/frontend-react/dist -l 4185 >/tmp/cv-cd6-r.log 2>&1 & echo $! >/tmp/cv-cd6-r.pid
+          for attempt in {1..30}; do curl -fsS http://127.0.0.1:4184/ >/dev/null 2>&1 && curl -fsS http://127.0.0.1:4185/ >/dev/null 2>&1 && break; sleep 1; done
+          PLAYWRIGHT_MODULE=/tmp/cv-cd6/node_modules/playwright node --input-type=module <<'NODE'
+          import {createRequire} from 'node:module';
+          const {chromium}=createRequire(import.meta.url)(process.env.PLAYWRIGHT_MODULE);
+          const browser=await chromium.launch({headless:true});
+          async function collect(origin){
+            const ctx=await browser.newContext({viewport:{width:390,height:844},serviceWorkers:'block'});await ctx.addInitScript(()=>localStorage.clear());const p=await ctx.newPage();await p.goto(origin+'/',{waitUntil:'domcontentloaded'});await p.locator('[data-cv-consent-banner]').waitFor({state:'visible'});await p.waitForTimeout(150);
+            const data=await p.evaluate(()=>{
+              function computed(el){const r=el.getBoundingClientRect(),s=getComputedStyle(el);return{rect:{x:r.x,y:r.y,w:r.width,h:r.height},fontFamily:s.fontFamily,fontSize:s.fontSize,fontWeight:s.fontWeight,lineHeight:s.lineHeight,letterSpacing:s.letterSpacing,whiteSpace:s.whiteSpace,width:s.width,maxWidth:s.maxWidth,minWidth:s.minWidth,padding:s.padding,boxSizing:s.boxSizing,display:s.display}}
+              function rules(el){const out=[];for(const sh of [...document.styleSheets]){let rs;try{rs=sh.cssRules}catch{continue}function walk(list){for(const rule of [...list]){if(rule.cssRules){walk(rule.cssRules);continue}if(!rule.selectorText)continue;try{if(el.matches(rule.selectorText)){const text=rule.style?.cssText||'';if(/font|line-height|letter-spacing|white-space|width|max-width|min-width|padding|display/.test(text))out.push({sheet:sh.href?new URL(sh.href,location.href).pathname:'inline',selector:rule.selectorText,style:text})}}catch{}}}walk(rs)}return out}
+              const h=document.querySelector('[data-cv-consent-banner] h2'),copy=document.querySelector('[data-cv-consent-banner] .cv-consent-copy'),btn=document.querySelector('[data-cv-consent-banner] .cv-consent-actions .button'),actions=document.querySelector('[data-cv-consent-banner] .cv-consent-actions');
+              return{h2:computed(h),copy:computed(copy),button:computed(btn),actions:computed(actions),h2Rules:rules(h),buttonRules:rules(btn)};
+            });
+            await p.close();await ctx.close();return data;
+          }
+          console.log('LEGACY='+JSON.stringify(await collect('http://127.0.0.1:4184'),null,2));
+          console.log('REACT='+JSON.stringify(await collect('http://127.0.0.1:4185'),null,2));
+          await browser.close();
+          NODE
+      - name: Stop
+        if: always()
+        run: |
+          kill "$(cat /tmp/cv-cd6-l.pid 2>/dev/null)" 2>/dev/null || true
+          kill "$(cat /tmp/cv-cd6-r.pid 2>/dev/null)" 2>/dev/null || true
