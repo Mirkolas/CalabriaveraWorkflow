@@ -77,7 +77,7 @@ body[data-page="notFound"] #main-content .prose{max-width:817.28px!important}
 body[data-page="notFound"] #main-content .form-actions{gap:8px}
 body[data-page="notFound"] #main-content .form-actions .button{font-family:Inter,ui-sans-serif,system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif!important;font-size:16.48px!important;font-weight:760!important;line-height:27.192px!important;padding:10.24px 14.72px!important;letter-spacing:normal!important;max-width:100%}
 @media(max-width:700px){body[data-page="notFound"] .site-header{height:60px!important;min-height:60px!important}body[data-page="notFound"] .site-header .header-inner{height:60px!important;min-height:60px!important;padding:5.6px 0!important}body[data-page="notFound"] #main-content>section.section.container{width:calc(100% - 18px)!important;max-width:1200px!important;margin-top:12px!important;padding:28px 0!important}body[data-page="notFound"] #main-content h1{font-size:31.2px;line-height:32.76px;letter-spacing:-.8736px}body[data-page="notFound"] #main-content .prose{max-width:none!important}}
-'''.strip()
+'''.strip().replace('\\"', '"')
 if marker in css:
     css = css[:css.index(marker)].rstrip() + '\n' + block + '\n'
 else:
