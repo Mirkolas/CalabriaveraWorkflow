@@ -46,26 +46,38 @@ jobs:
           print('COMMITTED_HAS_ISOLA_DINO','turismo-isola-dino' in ids)
           assert len(ids)==52 and len(set(ids))==52
           PY
-      - name: Build locally and inspect emitted client dataset module
+      - name: Build locally and trace generated records into client graph
         working-directory: source/frontend-react
         shell: bash
         run: |
           set -euo pipefail
           npm ci
           npm run build
-          node --input-type=module <<'NODE'
-          import fs from 'node:fs';
-          import path from 'node:path';
-          const dir='dist/assets';
-          const file=fs.readdirSync(dir).find(x=>x.startsWith('tourism-data-core-')&&x.endsWith('.js'));
-          if(!file) throw new Error('client tourism chunk missing');
-          const source=fs.readFileSync(path.join(dir,file),'utf8');
-          console.log('LOCAL_CLIENT_CHUNK',file);
-          console.log('LOCAL_CLIENT_BYTES',source.length);
-          console.log('LOCAL_CLIENT_HAS_ISOLA_DINO',source.includes('turismo-isola-dino'));
-          console.log('LOCAL_CLIENT_HAS_CATANZARO',source.includes('turismo-catanzaro-centro'));
-          if(!source.includes('turismo-isola-dino')) process.exit(2);
-          NODE
+          python3 - <<'PY'
+          from pathlib import Path
+          import re
+          generated=Path('src/generated/tourism-data-core.ts').read_text(encoding='utf-8')
+          ids=re.findall(r'"id"\s*:\s*"([^"]+)"',generated)
+          print('POST_BUILD_GENERATED_COUNT',len(ids))
+          print('POST_BUILD_GENERATED_HAS_ISOLA_DINO','turismo-isola-dino' in ids)
+          print('POST_BUILD_GENERATED_HAS_CATANZARO','turismo-catanzaro-centro' in ids)
+          assets=list(Path('dist/assets').glob('*.js'))
+          containing=[]
+          for p in assets:
+              s=p.read_text(encoding='utf-8',errors='ignore')
+              if 'turismo-isola-dino' in s or 'turismo-catanzaro-centro' in s:
+                  containing.append((p.name,p.stat().st_size,'turismo-isola-dino' in s,'turismo-catanzaro-centro' in s))
+          merged='\n'.join(p.read_text(encoding='utf-8',errors='ignore') for p in assets)
+          print('LOCAL_JS_FILES',len(assets))
+          print('LOCAL_GRAPH_HAS_ISOLA_DINO','turismo-isola-dino' in merged)
+          print('LOCAL_GRAPH_HAS_CATANZARO','turismo-catanzaro-centro' in merged)
+          print('LOCAL_ASSETS_WITH_EXTRA_IDS',containing)
+          for p in sorted(Path('dist/assets').glob('*tourism*')):
+              s=p.read_text(encoding='utf-8',errors='ignore')
+              print('LOCAL_TOURISM_ASSET',p.name,p.stat().st_size,'isola=', 'turismo-isola-dino' in s,'catanzaro=', 'turismo-catanzaro-centro' in s)
+          assert len(ids)==52
+          assert 'turismo-isola-dino' in ids
+          PY
       - name: Inspect exact staging HTML and loaded JavaScript graph
         shell: bash
         run: |
@@ -91,13 +103,14 @@ jobs:
               (out/name).write_text(data,encoding='utf-8')
               for dep in re.findall(r'["\'](\.?/?[^"\']+\.js)["\']',data):
                   if dep.startswith('.') or dep.startswith('/assets/'): queue.append(urllib.parse.urljoin(full,dep))
-          merged='\n'.join(p.read_text(encoding='utf-8',errors='ignore') for p in out.glob('*.js'))
-          print('STAGING_JS_FILES',len(list(out.glob('*.js'))))
+          assets=list(out.glob('*.js'))
+          merged='\n'.join(p.read_text(encoding='utf-8',errors='ignore') for p in assets)
+          print('STAGING_JS_FILES',len(assets))
           print('STAGING_HAS_REVISION','20260912-catalog-map-v2' in merged)
           print('STAGING_HAS_ISOLA_DINO','turismo-isola-dino' in merged)
           print('STAGING_HAS_CATANZARO','turismo-catanzaro-centro' in merged)
           for p in sorted(out.glob('*tourism*')):
               s=p.read_text(encoding='utf-8',errors='ignore')
-              print('STAGING_TOURISM_ASSET',p.name,p.stat().st_size,'isola=', 'turismo-isola-dino' in s)
+              print('STAGING_TOURISM_ASSET',p.name,p.stat().st_size,'isola=', 'turismo-isola-dino' in s,'catanzaro=', 'turismo-catanzaro-centro' in s)
           assert '20260912-catalog-map-v2' in merged
           PY
