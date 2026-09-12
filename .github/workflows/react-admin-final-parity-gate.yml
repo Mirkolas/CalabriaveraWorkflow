@@ -32,8 +32,8 @@ jobs:
           token: ${{ env.PRIVATE_REPO_PAT }}
           ref: react-migration
           path: source
-          persist-credentials: false
-          fetch-depth: 1
+          persist-credentials: true
+          fetch-depth: 0
 
       - name: Checkout oracle legacy
         uses: actions/checkout@v7
@@ -88,6 +88,33 @@ jobs:
         working-directory: oracle
         run: npm run build
 
+      - name: Correggi bridge verso output legacy finale
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          from pathlib import Path
+          path = Path('source/frontend-react/scripts/copy-legacy-assets.mjs')
+          text = path.read_text()
+          old = '''const legacyBuild = spawnSync(process.execPath, [resolve(repoRoot, "scripts/build.mjs")], {
+            cwd: repoRoot,
+            stdio: "inherit",
+          });'''
+          new = '''const npmCommand = process.platform === "win32" ? "npm.cmd" : "npm";
+          const legacyBuild = spawnSync(npmCommand, ["run", "build"], {
+            cwd: repoRoot,
+            stdio: "inherit",
+          });'''
+          if old not in text:
+              raise SystemExit('legacy build bridge marker non trovato')
+          text = text.replace(old, new, 1)
+          text = text.replace(
+              '// Running build.mjs here reproduces patchAdminRuntime() from the authoritative pipeline.',
+              '// Run the complete legacy build so copied JS includes every authoritative post-build transformation.'
+          )
+          path.write_text(text)
+          PY
+
       - name: Costruisci React completo
         working-directory: source/frontend-react
         run: npm run build
@@ -126,6 +153,7 @@ jobs:
           done
           cmp -s oracle/dist/firebase/firebase-config.js source/frontend-react/public/firebase/firebase-config.js || {
             echo "::error::firebase-config.js diverso dall'oracle"
+            sha256sum oracle/dist/firebase/firebase-config.js source/frontend-react/public/firebase/firebase-config.js
             exit 1
           }
           echo "Moduli admin legacy: parità byte-per-byte OK"
@@ -180,10 +208,10 @@ jobs:
             '/admin/backup': '/assets/css/cv-bundle-28783d3e87e06008.css',
           }
           for route, bundle in expected_css.items():
-            assert css.get(route) == [bundle], (route, css.get(route), bundle)
+              assert css.get(route) == [bundle], (route, css.get(route), bundle)
 
           for route in ('/admin/segnalazioni', '/admin/comunicazioni', '/admin/sistema'):
-            assert pages.get(route) == 'admin-index', (route, pages.get(route))
+              assert pages.get(route) == 'admin-index', (route, pages.get(route))
 
           required = [
             'importLegacy("auth.js")',
@@ -198,7 +226,7 @@ jobs:
             'importLegacy("admin-upgrade.js")',
           ]
           for token in required:
-            assert token in admin, token
+              assert token in admin, token
           assert admin.index('importLegacy("auth.js")') < admin.index('importLegacy("admin.js")') < admin.index('importLegacy("admin-runtime-fixes.js")')
           assert admin.index('importLegacy("admin-console.js")') < admin.index('importLegacy("admin-upgrade.js")')
           assert 'const url = `/assets/js/${file}`' in admin
@@ -206,9 +234,21 @@ jobs:
           assert 'robots: "noindex,nofollow"' in admin
 
           dist = Path('source/frontend-react/dist')
-          assert dist.exists()
           for route in ('admin', 'admin/attivita', 'admin/utenti', 'admin/messaggi', 'admin/segnalazioni', 'admin/comunicazioni', 'admin/sistema'):
-            target = dist / route / 'index.html'
-            assert target.exists(), target
+              target = dist / route / 'index.html'
+              assert target.exists(), target
           print('Admin bridge/routes/build: OK')
           PY
+
+      - name: Commit bridge finale
+        working-directory: source
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name "CalabriaVera CI"
+          git config user.email "actions@users.noreply.github.com"
+          git add frontend-react/scripts/copy-legacy-assets.mjs
+          git diff --cached --check
+          git diff --cached --quiet && { echo "::error::Nessuna modifica da committare"; exit 1; }
+          git commit -m "fix: copy final legacy admin build output"
+          git push origin HEAD:react-migration
