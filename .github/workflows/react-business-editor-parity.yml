@@ -1,0 +1,85 @@
+name: React migration - business editor parity
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/react-business-editor-parity.yml'
+      - 'scripts/patch-react-business-editor-parity.py'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  patch-build-push:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      PRIVATE_REPO: ${{ secrets.PRIVATE_REPO }}
+      PRIVATE_REPO_PAT: ${{ secrets.PRIVATE_REPO_PAT || secrets.PERSONAL_ACCESS_TOKEN || secrets.PAT || secrets.GH_PAT || secrets.GITHUB_PAT }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          path: automation
+          persist-credentials: false
+      - uses: actions/checkout@v7
+        with:
+          repository: ${{ secrets.PRIVATE_REPO }}
+          token: ${{ env.PRIVATE_REPO_PAT }}
+          ref: react-migration
+          path: source
+          fetch-depth: 0
+          persist-credentials: true
+      - uses: actions/setup-node@v7
+        with:
+          node-version: '24'
+          cache: npm
+          cache-dependency-path: source/frontend-react/package-lock.json
+      - name: Assert exact base
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git -C source rev-parse HEAD)" = "83bceb3db2869362d3fd8d5bc1ccb2c15810d0ca"
+      - name: Apply editor parity patch
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 automation/scripts/patch-react-business-editor-parity.py
+      - name: Build React client SSR and prerender
+        working-directory: source/frontend-react
+        shell: bash
+        run: |
+          set -euo pipefail
+          npm ci
+          npm run build
+      - name: Validate editor parity invariants
+        shell: bash
+        run: |
+          set -euo pipefail
+          f=source/frontend-react/src/pages/BusinessEditorPage.tsx
+          grep -q 'id="add-business-root"' "$f"
+          grep -q 'id="business-form"' "$f"
+          grep -q 'form-progress' "$f"
+          grep -q '4 · Contatti e foto' "$f"
+          grep -q 'business-truthful' "$f"
+          grep -q 'name="phone" type="tel" required' "$f"
+          grep -q 'pattern="\[0-9\]{5}"' "$f"
+          grep -q 'MAIN_COMMON_CITIES' "$f"
+          grep -q 'Attività non disponibile.' "$f"
+          grep -q 'Verifica la tua email' "$f"
+          grep -q 'business-image-editor' "$f"
+          grep -q 'replaceBusinessImages' "$f"
+          grep -q 'saveBusiness' "$f"
+          ! grep -q 'react-business-form' "$f"
+          git -C source diff --check
+      - name: Commit and push only after green build
+        shell: bash
+        run: |
+          set -euo pipefail
+          git -C source config user.name 'CalabriaVera Automation'
+          git -C source config user.email 'actions@users.noreply.github.com'
+          git -C source add frontend-react/src/pages/BusinessEditorPage.tsx
+          git -C source diff --cached --quiet && exit 0
+          git -C source commit -m 'fix: match main business editor contract and layout'
+          git -C source push origin HEAD:react-migration
