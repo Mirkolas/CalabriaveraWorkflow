@@ -123,11 +123,9 @@ jobs:
           text = text.replace(query_anchor, query_anchor + '  if (PRERENDER_OFFLINE) return [];\n', 1)
           prerender.write_text(text)
 
-          admin = Path('source/frontend-react/src/pages/AdminPage.tsx')
-          text = admin.read_text()
-          if '  backup: "Backup",\n' not in text:
-              raise SystemExit('label admin backup non trovato')
-          admin.write_text(text.replace('  backup: "Backup",\n', '', 1))
+          admin = Path('source/frontend-react/src/pages/AdminPage.tsx').read_text()
+          if 'backup' in admin.lower():
+              raise SystemExit('AdminPage contiene una sezione backup non presente nell’oracle')
 
           app = Path('source/frontend-react/src/App.tsx')
           text = app.read_text()
@@ -210,7 +208,7 @@ jobs:
               assert f'["{slug}",' in legacy_console, slug
               assert f'"/admin/{slug}"' in app, slug
           assert '["backup",' not in legacy_console
-          assert 'backup: "Backup"' not in admin
+          assert 'backup' not in admin.lower()
           assert '"/admin/backup"' not in app
           assert 'path.startsWith("/admin/")' not in app
           assert 'ADMIN_ROUTES.has(path)' in app
@@ -278,7 +276,6 @@ jobs:
           git add frontend-react/oracle-admin \
                   frontend-react/scripts/copy-legacy-assets.mjs \
                   frontend-react/scripts/prerender-home.mjs \
-                  frontend-react/src/pages/AdminPage.tsx \
                   frontend-react/src/App.tsx
           git diff --cached --check
           git diff --cached --quiet && { echo "::error::Nessuna modifica da committare"; exit 1; }
