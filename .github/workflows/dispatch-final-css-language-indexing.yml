@@ -1,4 +1,5 @@
 name: Dispatch latest final CSS language indexing gate
+# rerun latest parity after prerender SEO patch refinement
 
 on:
   push:
