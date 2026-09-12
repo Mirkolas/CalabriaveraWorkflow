@@ -1,0 +1,243 @@
+name: React legacy parity - shell home map fix
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/react-legacy-shell-home-map-fix.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: react-legacy-shell-home-map-fix
+  cancel-in-progress: true
+
+jobs:
+  patch:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      PRIVATE_REPO: ${{ secrets.PRIVATE_REPO }}
+      PRIVATE_REPO_PAT: ${{ secrets.PRIVATE_REPO_PAT || secrets.PERSONAL_ACCESS_TOKEN || secrets.PAT || secrets.GH_PAT || secrets.GITHUB_PAT }}
+    steps:
+      - name: Verify private repository access
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -n "$PRIVATE_REPO"
+          test -n "$PRIVATE_REPO_PAT"
+
+      - name: Checkout React migration
+        uses: actions/checkout@v7
+        with:
+          repository: ${{ secrets.PRIVATE_REPO }}
+          token: ${{ secrets.PRIVATE_REPO_PAT || secrets.PERSONAL_ACCESS_TOKEN || secrets.PAT || secrets.GH_PAT || secrets.GITHUB_PAT }}
+          ref: react-migration
+          path: source
+          persist-credentials: true
+          fetch-depth: 5
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version: '24'
+
+      - name: Patch exact legacy parity
+        working-directory: source
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          from pathlib import Path
+          import re
+
+          # 1) Preserve the real stylesheet cascade declared by each legacy route.
+          p=Path('frontend-react/scripts/copy-legacy-assets.mjs')
+          s=p.read_text()
+          old='''  for (const href of [...CORE_STYLES, ...(PAGE_STYLES[page] || []), liveParityCss]) {
+            const pathOnly = assetPath(href);
+            styles = styles.filter((current) => assetPath(current) !== pathOnly);
+            styles.push(href);
+          }'''
+          new='''  const usesExtendedCascade = styles.some((href) => CORE_STYLES.some((core) => assetPath(core) === assetPath(href)));
+          const parityStyles = [...(usesExtendedCascade ? CORE_STYLES : []), ...(PAGE_STYLES[page] || []), liveParityCss];
+          for (const href of parityStyles) {
+            const pathOnly = assetPath(href);
+            styles = styles.filter((current) => assetPath(current) !== pathOnly);
+            styles.push(href);
+          }'''
+          assert old in s, 'copy-legacy-assets target not found'
+          p.write_text(s.replace(old,new))
+
+          # 2) The React adapter must not overwrite legacy header/home visual choices.
+          p=Path('frontend-react/public/assets/css/react-live-parity.css')
+          p.write_text('''html,body,#root,.cv-site-shell{max-width:100%;overflow-x:clip}
+          .footer .social-link{background:rgba(255,255,255,.08)!important;border-color:rgba(255,255,255,.16)!important;color:#fff!important}
+          .cv-consent-footer-line{grid-column:1/-1;border-top:1px solid rgba(255,255,255,.16);padding-top:24px;margin-top:8px;display:flex;align-items:center;justify-content:center;gap:10px;font-size:.78rem;color:rgba(255,255,255,.82)}
+          .cv-consent-footer-line button{border:0;background:transparent;color:inherit;padding:0;text-decoration:underline;cursor:pointer}.cv-consent-footer-line a{color:inherit;text-decoration:underline}
+          .cv-whatsapp-help{position:absolute;right:68px;white-space:nowrap;background:#fff;color:#083b5f;border-radius:999px;padding:7px 11px;font-size:12px;font-weight:800;box-shadow:0 5px 18px rgba(0,0,0,.14)}
+          @media(max-width:700px){
+            body[data-page="map"] .map-layout{grid-template-columns:minmax(0,1fr)!important;display:grid!important}
+            body[data-page="map"] .map-layout>aside{grid-column:1!important;grid-row:1!important;border-right:0!important;border-bottom:1px solid var(--cv-line)!important}
+            body[data-page="map"] .map-layout>section{grid-column:1!important;grid-row:2!important;min-width:0!important}
+          }
+          @media(max-width:620px){.cv-whatsapp-help{display:none}.cv-consent-footer-line{justify-content:flex-start;flex-wrap:wrap}}
+          ''')
+
+          # 3) Restore Home search DOM contract and live behavior from legacy home-search.js.
+          p=Path('frontend-react/src/pages/OriginalHomePage.tsx')
+          s=p.read_text()
+          needle='import { setPageSeo } from "../lib/seo";\n'
+          assert needle in s and 'MAIN_COMMON_CITIES' not in s, 'OriginalHomePage import target unexpected'
+          s=s.replace(needle, needle+'import { MAIN_COMMON_CITIES } from "../generated/main-static-options";\n')
+          needle='''export default function OriginalHomePage() {
+            const language = languageFromPath();
+          '''
+          repl='''export default function OriginalHomePage() {
+            const language = languageFromPath();
+            const [searchKeyword, setSearchKeyword] = useState("");
+            const [searchCity, setSearchCity] = useState("");
+            const [searchCategory, setSearchCategory] = useState("");
+          '''
+          assert needle in s, 'OriginalHomePage state target not found'
+          s=s.replace(needle,repl)
+          pattern=re.compile(r'      <form className="cv-searchbar container" onSubmit=\{\(event\) => \{.*?</form>',re.S)
+          replacement='''      <form id="cv-home-search" className="cv-searchbar container" onSubmit={(event) => { event.preventDefault(); const data = new FormData(event.currentTarget); const params = new URLSearchParams(); for (const key of ["keyword", "comune", "categoria"]) { const value = String(data.get(key) || "").trim(); if (value) params.set(key, value); } navigate(withLanguage(`/catalogo${params.size ? `?${params}` : ""}`, language)); }}>
+            <label className="cv-searchbar__wide"><span className="cv-searchbar__icon">⌕</span><span><b>{uiText("searchWhat", language)}</b><small data-search-preview>{searchKeyword || uiText("searchWhatHint", language)}</small></span><input id="cv-search-keyword" name="keyword" autoComplete="off" aria-label={uiText("searchWhat", language)} value={searchKeyword} onChange={(event) => setSearchKeyword(event.target.value)} /></label>
+            <label><span className="cv-searchbar__icon">⌖</span><span><b>{uiText("where", language)}</b><small data-city-preview>{searchCity || uiText("allCalabria", language)}</small></span><input id="cv-search-city" name="comune" autoComplete="off" aria-label={uiText("where", language)} list="cv-search-city-options" value={searchCity} onChange={(event) => setSearchCity(event.target.value)} /></label>
+            <datalist id="cv-search-city-options">{MAIN_COMMON_CITIES.map((city) => <option key={city} value={city} />)}</datalist>
+            <label><span className="cv-searchbar__icon">▦</span><span><b>{uiText("categories", language)}</b><small data-category-preview>{searchCategory || uiText("allCategories", language)}</small></span><select id="cv-search-category" name="categoria" aria-label={uiText("categories", language)} value={searchCategory} onChange={(event) => setSearchCategory(event.target.value)}><option value="">{uiText("allCategories", language)}</option>{CATEGORIES.map((category) => <option key={category} value={category}>{category}</option>)}</select></label>
+            <button type="submit" className="cv-searchbar__submit"><span aria-hidden="true">⌕</span>&nbsp; <span>{uiText("search", language)}</span></button>
+          </form>'''
+          s,n=pattern.subn(replacement,s,count=1)
+          assert n==1, f'OriginalHomePage form replacements={n}'
+          p.write_text(s)
+
+          # 4) Restore the legacy selector contract used by language smoke tests.
+          p=Path('frontend-react/src/components/Layout.tsx')
+          s=p.read_text()
+          old='className="cv-language-option" role="menuitem"'
+          new='className="cv-language-option" data-language-value={lang} role="menuitem"'
+          assert old in s, 'Layout language target not found'
+          p.write_text(s.replace(old,new))
+
+          # 5) Align Map behavior/appearance to the legacy Leaflet implementation.
+          p=Path('frontend-react/src/pages/MapPage.tsx')
+          s=p.read_text()
+          insert='''
+          const CATEGORY_MARKER_COLORS: Record<string, string> = {
+            "Alloggi": "#2563eb",
+            "Ristorazione": "#dc2626",
+            "Turismo ed esperienze": "#059669",
+            "Bellezza e benessere": "#db2777",
+            "Shopping e prodotti": "#7c3aed",
+            "Casa, edilizia e artigiani": "#d97706",
+            "Auto e motori": "#0f766e",
+            "Professionisti e servizi": "#4f46e5",
+            "Salute": "#0891b2",
+            "Altro": "#64748b",
+          };
+          function markerColor(item: Business) { return CATEGORY_MARKER_COLORS[categoryGroup(item.category || item.subcategory || "")] || "#075b8f"; }
+          function imageOf(item: Business) { return String(item.imageDataUrl || item.imageUrl || ""); }
+          '''
+          needle='''function routeFor(item: Business) {
+            return isTourism(item) ? `/attivita?turismo=${encodeURIComponent(String(item.slug || item.id))}` : businessPath(item);
+          }
+          '''
+          assert needle in s and 'CATEGORY_MARKER_COLORS' not in s, 'Map helper target unexpected'
+          s=s.replace(needle,needle+insert)
+          s=s.replace('''function categoryMatches(item: Business, requested: string) {
+            if (!requested) return true;
+            const group = categoryGroup(requested), itemGroup = categoryGroup(item.category || item.subcategory);
+            if (CATEGORIES.includes(requested)) return group === itemGroup;
+            const types = CATEGORY_GROUPS[group] || [];
+            return types.includes(requested) ? String(item.category || item.subcategory) === requested || item.subcategory === requested : group === itemGroup;
+          }''','''function categoryMatches(item: Business, requested: string) {
+            return !requested || String(item.category || "") === requested;
+          }''')
+          s=s.replace('import { CATEGORIES, PROVINCES, CATEGORY_GROUPS, businessPath, categoryGroup } from "../lib/businesses";','import { CATEGORIES, PROVINCES, businessPath, categoryGroup } from "../lib/businesses";')
+          s=s.replace('attributionControl: true, fadeAnimation: false, zoomAnimation: true, markerZoomAnimation: false','attributionControl: false, fadeAnimation: false')
+          s=s.replace('''runtimeL.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png", { maxZoom: 19, minZoom: 6, attribution: "&copy; OpenStreetMap contributors", updateWhenIdle: true, updateWhenZooming: false, keepBuffer: 2, crossOrigin: true }).addTo(map);
+                  runtimeL.control.zoom({ position: "topright" }).addTo(map);
+                  runtimeL.control.scale({ imperial: false, position: "bottomleft" }).addTo(map);''','''runtimeL.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png", { maxZoom: 19, updateWhenIdle: true, updateWhenZooming: false, keepBuffer: 2 }).addTo(map);
+                  runtimeL.control.zoom({ position: "topright" }).addTo(map);
+                  runtimeL.control.scale({ imperial: false, position: "bottomleft", maxWidth: 110 }).addTo(map);
+                  runtimeL.control.attribution({ position: "bottomright", prefix: false }).addAttribution('<a href="https://www.openstreetmap.org/copyright" target="_blank" rel="noopener noreferrer">© OpenStreetMap contributors</a>').addTo(map);''')
+          s=s.replace('chunkDelay: 30, showCoverageOnHover: false, spiderfyOnMaxZoom: true, removeOutsideVisibleBounds: true, maxClusterRadius: 48, disableClusteringAtZoom: 15, iconCreateFunction: (cluster: { getChildCount(): number }) => runtimeL.divIcon({ className: "cv-map-cluster-shell", html: `<span class="cv-map-cluster">${cluster.getChildCount()}</span>`, iconSize: [42, 42] })','chunkDelay: 24, showCoverageOnHover: false, maxClusterRadius: 52, disableClusteringAtZoom: 13, iconCreateFunction: (cluster: { getChildCount(): number }) => { const count = cluster.getChildCount(); const size = count > 99 ? 48 : count > 20 ? 45 : 42; return runtimeL.divIcon({ className: "cv-map-cluster-shell", html: `<span class="cv-map-cluster">${count}</span>`, iconSize: [size, size] }); }')
+          s=s.replace('if (city && normalizeText(item.comune) !== normalizeText(city)) return false;','if (city && !normalizeText(item.comune).includes(normalizeText(city))) return false;')
+          old='''  const filtered = useMemo(() => (items || []).filter((item) => {
+            if (!validCoordinates(item) || !categoryMatches(item, category)) return false;
+            if (province && item.provincia !== province) return false;
+            if (city && !normalizeText(item.comune).includes(normalizeText(city))) return false;
+            if (verified && item.verified !== true) return false;
+            if (serviceNormalized && !(item.services || []).some((value) => normalizeText(value).includes(serviceNormalized))) return false;
+            if (nearby && userPoint && distanceKm(userPoint, item) > radius) return false;
+            return true;
+          }).sort((a, b) => nearby && userPoint ? distanceKm(userPoint, a) - distanceKm(userPoint, b) : String(a.name || "").localeCompare(String(b.name || ""), "it")), [items, category, province, city, verified, serviceNormalized, nearby, userPoint, radius]);'''
+          new='''  const filtered = useMemo(() => {
+            const result = (items || []).filter((item) => {
+              if (!validCoordinates(item) || !categoryMatches(item, category)) return false;
+              if (province && item.provincia !== province) return false;
+              if (city && !normalizeText(item.comune).includes(normalizeText(city))) return false;
+              if (verified && item.verified !== true) return false;
+              if (serviceNormalized && !(item.services || []).some((value) => normalizeText(value).includes(serviceNormalized))) return false;
+              if (nearby && userPoint && distanceKm(userPoint, item) > radius) return false;
+              return true;
+            });
+            if (nearby && userPoint) result.sort((a, b) => distanceKm(userPoint, a) - distanceKm(userPoint, b));
+            return result;
+          }, [items, category, province, city, verified, serviceNormalized, nearby, userPoint, radius]);'''
+          assert old in s, 'Map filtered target not found'
+          s=s.replace(old,new)
+          old='''      const fill = isTourism(business) ? "#059669" : business.verified ? "#075b8f" : "#475569";
+                const icon = L.divIcon({ className: "cv-map-pin-shell", html: `<span aria-hidden="true" class="cv-map-pin${isTourism(business) ? " is-tourism" : business.verified ? " is-verified" : ""}" style="background:${fill};--cv-map-pin-color:${fill}"></span>`, iconSize: [30, 38], iconAnchor: [15, 36], popupAnchor: [0, -34] });
+                const marker = L.marker([lat, lng], { icon, keyboard: true, title: localizedField<string>(business, "name", language) || business.name || "CalabriaVera" });
+                const popup = document.createElement("div");
+                const title = document.createElement("strong"); title.textContent = localizedField<string>(business, "name", language) || business.name || "CalabriaVera";
+                const place = document.createElement("div"); place.textContent = [isTourism(business) ? copy.tourism : business.subcategory || business.category, business.comune, nearby && userPoint ? `${distanceKm(userPoint, business).toFixed(1)} km` : ""].filter(Boolean).join(" · "); place.style.cssText = "margin-top:4px;color:#64748b";
+                const link = document.createElement("a"); link.href = withLanguage(routeFor(business), language); link.textContent = `${copy.open} →`; link.style.cssText = "display:inline-block;margin-top:8px;font-weight:800;color:#075b8f";
+                popup.append(title, place, link); marker.bindPopup(popup, { maxWidth: 280, minWidth: 180 }).addTo(layer);'''
+          new='''      const fill = markerColor(business);
+                const icon = L.divIcon({ className: "cv-map-pin-shell", html: `<span aria-hidden="true" class="cv-map-pin${isTourism(business) ? " is-tourism" : ""}" style="background:${fill};--cv-map-pin-color:${fill}"></span>`, iconSize: [30, 38], iconAnchor: [15, 36], popupAnchor: [0, -33] });
+                const marker = L.marker([lat, lng], { icon, keyboard: false, title: localizedField<string>(business, "name", language) || business.name || "CalabriaVera" });
+                const popup = document.createElement("div"); popup.className = "cv-map-popup";
+                const image = imageOf(business);
+                if (image) { const img = document.createElement("img"); img.className = "cv-map-popup__image"; img.loading = "lazy"; img.decoding = "async"; img.src = image; img.alt = localizedField<string>(business, "name", language) || business.name || "Attività"; if (business.imageSrcset) { img.srcset = String(business.imageSrcset); img.sizes = "260px"; } popup.append(img); }
+                const body = document.createElement("div"); body.className = "cv-map-popup__body";
+                const categoryLabel = document.createElement("span"); categoryLabel.className = "cv-map-popup__category"; categoryLabel.textContent = String(business.subcategory || business.category || "Attività");
+                const title = document.createElement("strong"); title.textContent = localizedField<string>(business, "name", language) || business.name || "CalabriaVera";
+                const place = document.createElement("div"); place.className = "cv-map-popup__place"; const km = nearby && userPoint ? distanceKm(userPoint, business) : Infinity; place.textContent = [business.comune, business.provincia, Number.isFinite(km) ? `${km.toFixed(km < 10 ? 1 : 0)} km` : ""].filter(Boolean).join(" · ");
+                const foot = document.createElement("div"); foot.className = "cv-map-popup__foot";
+                const rating = document.createElement("span"); rating.className = "cv-map-popup__rating"; rating.textContent = business.rating ? `${Number(business.rating).toFixed(1)} ★` : "";
+                const link = document.createElement("a"); link.className = "cv-map-popup__link"; link.href = withLanguage(routeFor(business), language); link.textContent = `${copy.open} →`;
+                foot.append(rating, link); body.append(categoryLabel, title, place, foot); popup.append(body); marker.bindPopup(popup, { maxWidth: 260, closeButton: true }).addTo(layer);'''
+          assert old in s, 'Map popup target not found'
+          s=s.replace(old,new)
+          s=s.replace('map.fitBounds(bounds, { padding: [36, 36], maxZoom: 13 });','map.fitBounds(bounds, { padding: [28, 28], maxZoom: 12 });')
+          p.write_text(s)
+          PY
+
+      - name: Build patched React
+        working-directory: source/frontend-react
+        shell: bash
+        run: |
+          set -euo pipefail
+          npm ci
+          npm run build
+
+      - name: Commit patch to react-migration
+        working-directory: source
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name 'calabriavera-parity-bot'
+          git config user.email 'actions@users.noreply.github.com'
+          git add frontend-react/scripts/copy-legacy-assets.mjs frontend-react/public/assets/css/react-live-parity.css frontend-react/src/pages/OriginalHomePage.tsx frontend-react/src/components/Layout.tsx frontend-react/src/pages/MapPage.tsx frontend-react/src/generated/main-route-css.ts frontend-react/public/main-route-css.json
+          if git diff --cached --quiet; then
+            echo 'No changes to commit'
+            exit 0
+          fi
+          git commit -m 'fix: align shell home and map with legacy'
+          git push origin HEAD:react-migration
+          echo "PATCH_SHA=$(git rev-parse HEAD)"
