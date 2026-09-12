@@ -1,0 +1,86 @@
+name: Cloudflare Worker - R2 API
+
+on:
+  workflow_dispatch:
+  repository_dispatch:
+    types: [source-deploy]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: cloudflare-worker-r2-api
+  cancel-in-progress: true
+
+env:
+  PRIVATE_REPO: ${{ secrets.PRIVATE_REPO }}
+  PRIVATE_REPO_PAT: ${{ secrets.PRIVATE_REPO_PAT || secrets.PERSONAL_ACCESS_TOKEN || secrets.PAT || secrets.GH_PAT || secrets.GITHUB_PAT }}
+  CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+  CLOUDFLARE_ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
+
+jobs:
+  deploy-worker:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Verifica configurazione
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -n "$PRIVATE_REPO"
+          test -n "$PRIVATE_REPO_PAT"
+          test -n "$CLOUDFLARE_API_TOKEN"
+          test -n "$CLOUDFLARE_ACCOUNT_ID"
+
+      - name: Checkout main privato
+        uses: actions/checkout@v7
+        with:
+          repository: ${{ secrets.PRIVATE_REPO }}
+          token: ${{ env.PRIVATE_REPO_PAT }}
+          ref: main
+          path: source
+          persist-credentials: false
+          fetch-depth: 1
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: source/frontend-react/package-lock.json
+
+      - name: Controllo architettura Worker
+        working-directory: source
+        shell: bash
+        run: |
+          set -euo pipefail
+          if grep -Eqi 'd1_databases|binding[^[:alnum:]]*:[^[:alnum:]]*"?DB"?' frontend-react/wrangler.jsonc; then
+            echo '::error::D1 non deve essere collegato al Worker.'
+            exit 1
+          fi
+          grep -Fq 'IMAGES' frontend-react/wrangler.jsonc
+          grep -Fq 'IMAGES' frontend-react/worker.ts
+
+      - name: Build assets Worker
+        working-directory: source/frontend-react
+        env:
+          CV_PRERENDER_OFFLINE: '1'
+        shell: bash
+        run: |
+          set -euo pipefail
+          npm ci --no-audit --no-fund
+          npm run build
+          test "$(tr -d '\r\n' < dist/build-version.txt)" = "$(git rev-parse HEAD)"
+
+      - name: Deploy Worker supporto R2
+        working-directory: source/frontend-react
+        run: npx wrangler deploy
+
+      - name: Verifica workers.dev
+        working-directory: source
+        shell: bash
+        run: |
+          set -euo pipefail
+          expected="$(git rev-parse HEAD)"
+          live="$(curl --fail --silent --show-error --location --retry 5 --retry-delay 2 -H 'Cache-Control: no-cache' "https://calabriavera.sonotacamirko.workers.dev/build-version.txt?run=$GITHUB_RUN_ID" | tr -d '\r\n')"
+          test "$live" = "$expected"
+          echo "Worker R2/API aggiornato: $live"
