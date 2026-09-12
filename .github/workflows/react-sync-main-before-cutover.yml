@@ -21,7 +21,7 @@ jobs:
     env:
       PRIVATE_REPO: ${{ secrets.PRIVATE_REPO }}
       PRIVATE_REPO_PAT: ${{ secrets.PRIVATE_REPO_PAT || secrets.PERSONAL_ACCESS_TOKEN || secrets.PAT || secrets.GH_PAT || secrets.GITHUB_PAT }}
-      EXPECTED_REACT_HEAD: 374698d35ecf9a80da7e1ffd4044dc977a86768c
+      EXPECTED_REACT_HEAD: 186962e16eb491252f6d934e57f068c6278ecd2b
     steps:
       - name: Verify private repository access
         shell: bash
@@ -85,7 +85,16 @@ jobs:
           test -s dist/index.html
           test -s dist/catalogo/index.html
           test -s dist/blog/index.html
-          grep -q 'turismo-isola-dino' dist/catalogo/index.html
+          grep -q 'Le Ninfee' dist/catalogo/index.html
+          grep -q 'index,follow,max-image-preview:large' dist/index.html
+
+      - name: Verify Firebase React hosting contract
+        shell: bash
+        run: |
+          set -euo pipefail
+          node -e 'const x=require("./firebase.react.json"); if(x.hosting.public!=="frontend-react/dist") process.exit(1)'
+          grep -q 'calabriavera.sonotacamirko.workers.dev/api/images/upload' frontend-react/src/lib/business-editor.ts
+          grep -q 'R2_UPLOAD_ORIGINS' frontend-react/worker.ts
 
       - name: Verify main did not move during validation
         shell: bash
@@ -105,3 +114,4 @@ jobs:
         run: |
           set -euo pipefail
           git push origin HEAD:react-migration
+          echo "SYNCED_REACT_SHA=$(git rev-parse HEAD)"
