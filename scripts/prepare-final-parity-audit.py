@@ -1,5 +1,6 @@
 from pathlib import Path
 
+# Trigger the dynamic cutover gate after the latest protected main sync.
 path = Path('automation/scripts/react-parity-audit-v2.cjs')
 s = path.read_text()
 
