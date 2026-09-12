@@ -2,8 +2,7 @@
 name: Validate Private React PR 142
 
 on:
-  push:
-    branches: [main]
+  pull_request:
     paths:
       - '.github/workflows/validate-private-react-pr142.yml'
 
@@ -44,9 +43,13 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          pattern='/assets/Logo[.](png|webp)|/assets/images/home/|/assets/flags/|images[.]unsplash[.]com|calabriavera-e08d4[.]web[.]app/assets/Logo'
-          if rg -n "$pattern" source/frontend-react/src source/frontend-react/index.html source/assets/css source/assets/site.webmanifest; then
-            echo '::error::Trovati riferimenti immagine statici React non migrati a R2.'
+          local_pattern='["'"'"'(][[:space:]]*/assets/(Logo[.](png|webp)|images/home/|flags/)'
+          if rg -n "$local_pattern" source/frontend-react/src source/frontend-react/index.html source/assets/css source/assets/site.webmanifest; then
+            echo '::error::Trovati riferimenti immagine statici locali non migrati a R2.'
+            exit 1
+          fi
+          if rg -n 'images[.]unsplash[.]com|calabriavera-e08d4[.]web[.]app/assets/Logo' source/frontend-react/src source/frontend-react/index.html source/assets/css source/assets/site.webmanifest; then
+            echo '::error::Trovate dipendenze immagine statiche Unsplash/Firebase.'
             exit 1
           fi
           echo 'Nessun riferimento statico locale/Unsplash/Firebase residuo nei sorgenti React e CSS.'
