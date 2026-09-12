@@ -1,10 +1,10 @@
-name: Temporary - Guard incremental backup baseline
+name: Temporary - Gate incremental business counters
 
 on:
   push:
     paths:
       - '.github/workflows/backup-incremental-apply.yml'
-      - 'scripts/patch-incremental-baseline-guard.py'
+      - 'scripts/patch-incremental-business-counters.py'
   workflow_dispatch:
 
 permissions:
@@ -21,15 +21,13 @@ jobs:
     env:
       PRIVATE_REPO: ${{ secrets.PRIVATE_REPO }}
       PRIVATE_REPO_PAT: ${{ secrets.PRIVATE_REPO_PAT || secrets.PERSONAL_ACCESS_TOKEN || secrets.PAT || secrets.GH_PAT || secrets.GITHUB_PAT }}
-      EXPECTED_BASE: 23373081131461ada113ced08dcae3dfddf4aac9
+      EXPECTED_BASE: bac01da1101103fe17e457005493f6ae385e0dfa
     steps:
-      - name: Checkout workflow repo
-        uses: actions/checkout@v7
+      - uses: actions/checkout@v7
         with:
           path: automation
           persist-credentials: false
-      - name: Checkout private React branch
-        uses: actions/checkout@v7
+      - uses: actions/checkout@v7
         with:
           repository: ${{ secrets.PRIVATE_REPO }}
           token: ${{ env.PRIVATE_REPO_PAT }}
@@ -47,31 +45,46 @@ jobs:
           cache-dependency-path: |
             source/package-lock.json
             source/tools/package-lock.json
-      - name: Apply explicit baseline guard
+            source/frontend-react/package-lock.json
+      - name: Apply counter tracking patch
         shell: bash
         run: |
           set -euo pipefail
-          python3 automation/scripts/patch-incremental-baseline-guard.py
+          python3 automation/scripts/patch-incremental-business-counters.py
           git -C source diff --check
-      - name: Test backup guard offline
+      - name: Gate backup and React offline
         working-directory: source
+        shell: bash
         run: |
+          set -euo pipefail
           npm ci
           npm --prefix tools ci --no-audit --no-fund
+          npm --prefix frontend-react ci
           npm run test:backup
-          node --check tools/backup/run.mjs
-          grep -q "process.argv.includes('--baseline-v1')" tools/backup/run.mjs
-          grep -q "incrementalSchemaVersion: activateIncrementalBaseline ? INCREMENTAL_SCHEMA_VERSION : 0" tools/backup/run.mjs
+          node --check tools/backup/incremental.mjs
+          cd frontend-react
+          npx tsc --noEmit
+      - name: Gate field isolation
+        working-directory: source
+        shell: bash
+        run: |
+          set -euo pipefail
+          grep -q "businesses: \['backupUpdatedAt','updatedAt','createdAt'\]" tools/backup/incremental.mjs
+          grep -q "favoriteCount: f.increment(1), backupUpdatedAt: f.serverTimestamp()" frontend-react/src/lib/businesses.ts
+          grep -q "\[field\]: f.increment(1), backupUpdatedAt: f.serverTimestamp()" frontend-react/src/lib/business-detail-interactions.ts
+          grep -q "affectedKeys().hasOnly(\['favoriteCount','backupUpdatedAt'\])" firestore.rules
+          grep -q "affectedKeys().hasOnly(\[field,'backupUpdatedAt'\])" firestore.rules
+          grep -q "backupUpdatedAt == request.time" firestore.rules
       - name: Commit only after green gate
         working-directory: source
         shell: bash
         run: |
           set -euo pipefail
           test "$(git rev-parse HEAD)" = "$EXPECTED_BASE"
-          git add tools/backup/run.mjs tests/backup.test.mjs
+          git add tools/backup/incremental.mjs frontend-react/src/lib/businesses.ts frontend-react/src/lib/business-detail-interactions.ts firestore.rules tests/backup.test.mjs
           git diff --cached --check
           test -n "$(git diff --cached --name-only)"
           git config user.name 'CalabriaVera Automation'
           git config user.email 'actions@users.noreply.github.com'
-          git commit -m 'fix: require explicit incremental backup baseline'
+          git commit -m 'fix: include business counters in incremental backup'
           git push origin HEAD:react-migration
