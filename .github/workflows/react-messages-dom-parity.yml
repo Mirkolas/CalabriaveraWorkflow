@@ -1,0 +1,86 @@
+name: React migration - messages DOM parity
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/react-messages-dom-parity.yml'
+      - 'scripts/patch-react-messages-dom-parity.py'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  patch-build-push:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      PRIVATE_REPO: ${{ secrets.PRIVATE_REPO }}
+      PRIVATE_REPO_PAT: ${{ secrets.PRIVATE_REPO_PAT || secrets.PERSONAL_ACCESS_TOKEN || secrets.PAT || secrets.GH_PAT || secrets.GITHUB_PAT }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          path: automation
+          persist-credentials: false
+      - uses: actions/checkout@v7
+        with:
+          repository: ${{ secrets.PRIVATE_REPO }}
+          token: ${{ env.PRIVATE_REPO_PAT }}
+          ref: react-migration
+          path: source
+          fetch-depth: 0
+          persist-credentials: true
+      - uses: actions/setup-node@v7
+        with:
+          node-version: '24'
+          cache: npm
+          cache-dependency-path: source/frontend-react/package-lock.json
+      - name: Assert exact base
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git -C source rev-parse HEAD)" = "b091ae8145c46212691c52479aa090831d251517"
+      - name: Apply Messages DOM parity patch
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 automation/scripts/patch-react-messages-dom-parity.py
+      - name: Build React client SSR and prerender
+        working-directory: source/frontend-react
+        shell: bash
+        run: |
+          set -euo pipefail
+          npm ci
+          npm run build
+      - name: Validate Messages parity invariants
+        shell: bash
+        run: |
+          set -euo pipefail
+          f=source/frontend-react/src/pages/MessagesPage.tsx
+          grep -q 'id="messages-root"' "$f"
+          grep -q 'cv-messages-shell cv-messages-v2' "$f"
+          grep -q 'cv-conversation-row' "$f"
+          grep -q 'cv-thread-contact' "$f"
+          grep -q 'cv-thread-actions' "$f"
+          grep -q 'cv-delete-chat' "$f"
+          grep -q 'cv-message-row' "$f"
+          grep -q 'cv-message-composer' "$f"
+          grep -q 'cv-send-button' "$f"
+          grep -q 'hideConversation' "$f"
+          grep -q 'watchMessages' "$f"
+          grep -q 'watchConversations' "$f"
+          grep -q 'watchUnreadCounts' "$f"
+          grep -q 'saveQuickReplies' "$f"
+          grep -q 'markConversationRead' "$f"
+          git -C source diff --check
+      - name: Commit and push only after green build
+        shell: bash
+        run: |
+          set -euo pipefail
+          git -C source config user.name 'CalabriaVera Automation'
+          git -C source config user.email 'actions@users.noreply.github.com'
+          git -C source add frontend-react/src/pages/MessagesPage.tsx
+          git -C source diff --cached --quiet && exit 0
+          git -C source commit -m 'fix: match main messages DOM and thread actions'
+          git -C source push origin HEAD:react-migration
