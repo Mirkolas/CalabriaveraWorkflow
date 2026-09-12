@@ -66,9 +66,26 @@ jobs:
           (cd oracle && npm ci --no-audit --no-fund)
           (cd source/frontend-react && npm ci --no-audit --no-fund)
 
-      - name: Regressione legacy sulla base React
+      - name: Regressione UI SEO runtime e admin pertinente a React
         working-directory: source
-        run: npm test
+        shell: bash
+        run: |
+          set -euo pipefail
+          npm run test:syntax
+          node --test tests/ui-regression.test.mjs
+          node --test tests/privacy-consent.test.mjs
+          node --test tests/admin-control.test.mjs
+          node --test tests/admin-conversation-delete-ui.test.mjs
+          node --test tests/admin-user-profile-ui.test.mjs
+          node --test tests/admin-critical-upgrades.test.mjs
+          node --test tests/render-ownership.test.mjs
+          node --test tests/site-stability.test.mjs
+          node --test tests/runtime-cache.test.mjs
+          node --test tests/activity-url-favorites.test.mjs
+          node --test tests/seo-and-public.test.mjs
+          node --test tests/end-to-end-fixes.test.mjs
+          node --test tests/responsive-i18n-complete.test.mjs
+          node --test tests/seo-snapshot.test.mjs
 
       - name: Costruisci oracle
         working-directory: oracle
