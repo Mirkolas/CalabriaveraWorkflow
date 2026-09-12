@@ -1,0 +1,167 @@
+name: React legacy parity - business detail v1
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/react-legacy-business-detail-parity-v1.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: react-legacy-business-detail-parity-v1
+  cancel-in-progress: true
+
+jobs:
+  patch-and-gate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    env:
+      PRIVATE_REPO: ${{ secrets.PRIVATE_REPO }}
+      PRIVATE_REPO_PAT: ${{ secrets.PRIVATE_REPO_PAT || secrets.PERSONAL_ACCESS_TOKEN || secrets.PAT || secrets.GH_PAT || secrets.GITHUB_PAT }}
+      LEGACY_SHA: 7be434e3418e95cff9825e4cc3f4b4ed75cd1076
+      BUSINESS_PATH: /attivita/reggio-calabria/marina-di-gioiosa-ionica/b-b/le-ninfee-b-e-b
+    steps:
+      - name: Verify access
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -n "$PRIVATE_REPO"; test -n "$PRIVATE_REPO_PAT"
+
+      - name: Checkout workflow tools
+        uses: actions/checkout@v7
+        with:
+          path: workflow
+          persist-credentials: false
+
+      - name: Checkout exact backup
+        uses: actions/checkout@v7
+        with:
+          repository: ${{ secrets.PRIVATE_REPO }}
+          token: ${{ env.PRIVATE_REPO_PAT }}
+          ref: backup-main-pre-react-2026-09-11
+          path: legacy
+          persist-credentials: false
+          fetch-depth: 1
+
+      - name: Checkout React branch
+        uses: actions/checkout@v7
+        with:
+          repository: ${{ secrets.PRIVATE_REPO }}
+          token: ${{ env.PRIVATE_REPO_PAT }}
+          ref: react-migration
+          path: source
+          persist-credentials: true
+          fetch-depth: 5
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version: '24'
+
+      - name: Verify exact business detail contract
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git -C legacy rev-parse HEAD)" = "$LEGACY_SHA"
+          grep -q 'class="article-hero"' legacy/assets/js/business-v2.js
+          grep -q 'cv-share-block cv-share-block--top' legacy/assets/js/business-v2.js
+          grep -q 'class="business-cover" id="business-cover"' legacy/assets/js/business-v2.js
+          grep -q 'class="business-gallery"' legacy/assets/js/business-v2.js
+          grep -q 'class="chip-row"' legacy/assets/js/business-v2.js
+          grep -q 'class="business-google-map"' legacy/assets/js/business-v2.js
+          grep -q 'id="reviews-list"' legacy/assets/js/business-v2.js
+          grep -q 'id="review-form"' legacy/assets/js/business-v2.js
+          grep -q 'id="favorite"' legacy/assets/js/business-v2.js
+          grep -q 'id="message-owner"' legacy/assets/js/business-v2.js
+          grep -q 'id="report"' legacy/assets/js/business-v2.js
+
+      - name: Apply business detail parity patch
+        working-directory: source
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 ../workflow/scripts/patch-react-business-detail-parity.py
+
+      - name: Assert source contract
+        working-directory: source
+        shell: bash
+        run: |
+          set -euo pipefail
+          for token in 'article-hero' 'cv-share-block cv-share-block--top cv-share-bar' 'business-cover' 'business-gallery' 'chip-row' 'business-google-map' 'id="reviews-list"' 'id="review-form"' 'id="favorite"' 'id="message-owner"' 'id="report"' 'cv-star-picker'; do grep -q "$token" frontend-react/src/pages/BusinessPage.tsx; done
+          grep -q 'incrementBusinessMetric' frontend-react/src/lib/business-detail-interactions.ts
+          ! grep -q 'max-w-7xl' frontend-react/src/pages/BusinessPage.tsx
+          ! grep -q '<select name="rating"' frontend-react/src/pages/BusinessPage.tsx
+
+      - name: Build React
+        working-directory: source/frontend-react
+        shell: bash
+        run: |
+          set -euo pipefail
+          npm ci
+          npm run build
+
+      - name: Install browser gate
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p /tmp/cv-business-gate
+          npm install --prefix /tmp/cv-business-gate --no-package-lock --no-save playwright@1.62.1 serve@14.2.4
+          /tmp/cv-business-gate/node_modules/.bin/playwright install --with-deps chromium
+
+      - name: Start built app
+        shell: bash
+        run: |
+          set -euo pipefail
+          nohup /tmp/cv-business-gate/node_modules/.bin/serve -s source/frontend-react/dist -l 4179 >/tmp/cv-business-gate.log 2>&1 &
+          echo $! >/tmp/cv-business-gate.pid
+          for attempt in {1..30}; do curl -fsS --max-time 3 "http://127.0.0.1:4179$BUSINESS_PATH" >/dev/null && exit 0; sleep 1; done
+          cat /tmp/cv-business-gate.log || true; exit 1
+
+      - name: Browser business detail parity gate
+        env:
+          PLAYWRIGHT_MODULE: /tmp/cv-business-gate/node_modules/playwright
+        shell: bash
+        run: |
+          set -euo pipefail
+          node --input-type=module <<'NODE'
+          import { createRequire } from 'node:module';
+          const require=createRequire(import.meta.url),{chromium}=require(process.env.PLAYWRIGHT_MODULE);
+          const browser=await chromium.launch({headless:true});
+          try{
+            const context=await browser.newContext({serviceWorkers:'block',viewport:{width:1365,height:900}});
+            await context.addInitScript(()=>{localStorage.setItem('cv-cookie-consent-v3',JSON.stringify({version:3,scope:'technical-only',savedAt:new Date().toISOString(),expiresAt:new Date(Date.now()+864e5).toISOString(),necessary:true,preferences:false,analytics:false,marketing:false,source:'gate'}));});
+            const page=await context.newPage(),errors=[];page.on('pageerror',e=>errors.push(String(e.message||e)));
+            const path=process.env.BUSINESS_PATH;
+            await page.goto(`http://127.0.0.1:4179${path}`,{waitUntil:'domcontentloaded',timeout:30000});
+            await page.waitForSelector('#business-root .article-hero h1',{timeout:15000}); await page.waitForTimeout(2200);
+            const title=(await page.locator('#business-root h1').first().innerText()).trim();
+            if(title!=='Le Ninfee B&B') throw new Error(`TITLE_${title}`);
+            for(const selector of ['#business-root .article-hero','#business-root .cv-share-bar','#business-cover','#business-root .chip-row','#business-root .business-google-map','#reviews-list','#business-root aside.card.stack','#favorite','#report']) if(await page.locator(selector).count()<1) throw new Error(`MISSING_${selector}`);
+            if(await page.locator('#review-form').count()) throw new Error('GUEST_REVIEW_FORM_SHOULD_NOT_EXIST');
+            if(await page.getByText('Accedi per lasciare una recensione.').count()<1) throw new Error('GUEST_REVIEW_PROMPT_MISSING');
+            const mapHref=await page.locator('.business-map-actions a').getAttribute('href');
+            if(mapHref!=='/mappa?attivita=lpukobEdPH9bDtT38KCS') throw new Error(`MAP_HREF_${mapHref}`);
+            if(errors.length) throw new Error(`PAGE_ERRORS_${errors.join('|')}`);
+            console.log('LEGACY_BUSINESS_DETAIL_GREEN');
+            await context.close();
+          }finally{await browser.close()}
+          NODE
+
+      - name: Commit to react-migration
+        working-directory: source
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name 'calabriavera-parity-bot'; git config user.email 'actions@users.noreply.github.com'
+          git add frontend-react/src/pages/BusinessPage.tsx frontend-react/src/lib/business-detail-interactions.ts
+          git diff --cached --quiet && { echo 'No changes to commit'; exit 0; }
+          git commit -m 'fix: align React business detail with exact pre-React backup'
+          git push origin HEAD:react-migration
+          echo "PATCH_SHA=$(git rev-parse HEAD)"
+
+      - name: Stop server
+        if: always()
+        shell: bash
+        run: kill "$(cat /tmp/cv-business-gate.pid 2>/dev/null)" 2>/dev/null || true
