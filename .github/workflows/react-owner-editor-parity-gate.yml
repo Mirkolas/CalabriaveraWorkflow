@@ -68,9 +68,9 @@ jobs:
             const elementRef = useRef<HTMLDivElement | null>(null);
             const mapRef = useRef<import("leaflet").Map | null>(null);
             const markerRef = useRef<import("leaflet").Marker | null>(null);
-            const leafletRef = useRef<typeof import("leaflet") | null>(null);
             const loadingRef = useRef(false);
             const onChangeRef = useRef(onChange);
+            const hadValueRef = useRef(Boolean(value));
             const [initialized, setInitialized] = useState(false);
             const [failed, setFailed] = useState(false);
 
@@ -81,7 +81,6 @@ jobs:
               loadingRef.current = true;
               void import("leaflet").then((L) => {
                 if (!elementRef.current || mapRef.current) return;
-                leafletRef.current = L;
                 const map = L.map(elementRef.current, { scrollWheelZoom: false }).setView([value.lat, value.lng], 17);
                 L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png", { maxZoom: 19, attribution: "&copy; OpenStreetMap contributors" }).addTo(map);
                 map.on("click", (event) => onChangeRef.current({ lat: Number(event.latlng.lat), lng: Number(event.latlng.lng) }, "click"));
@@ -92,20 +91,23 @@ jobs:
                 });
                 mapRef.current = map;
                 markerRef.current = marker;
+                hadValueRef.current = true;
                 setInitialized(true);
                 window.setTimeout(() => map.invalidateSize(), 50);
               }).catch(() => setFailed(true)).finally(() => { loadingRef.current = false; });
             }, [Boolean(value)]);
 
             useEffect(() => {
-              if (!value || !mapRef.current || !markerRef.current) return;
-              markerRef.current.setLatLng([value.lat, value.lng]);
+              const map = mapRef.current, marker = markerRef.current;
+              if (!value || !map || !marker) { hadValueRef.current = Boolean(value); return; }
+              marker.setLatLng([value.lat, value.lng]);
+              if (!hadValueRef.current) map.setView([value.lat, value.lng], 17);
+              hadValueRef.current = true;
             }, [value?.lat, value?.lng]);
 
             useEffect(() => () => {
               markerRef.current?.remove(); markerRef.current = null;
               mapRef.current?.remove(); mapRef.current = null;
-              leafletRef.current = null;
             }, []);
 
             const nudge = (direction: "north" | "west" | "east" | "south") => {
@@ -153,37 +155,40 @@ jobs:
           if helper_anchor not in text: raise SystemExit('helper field non trovato')
           text = text.replace(helper_anchor, helper_anchor + toast_helper, 1)
 
+          text = text.replace('import { useEffect, useMemo, useState } from "react";', 'import { useEffect, useMemo, useRef, useState } from "react";', 1)
           state_anchor = '  const [status, setStatus] = useState("");\n'
           state_extra = '  const [addressStatus, setAddressStatus] = useState("");\n  const [geocodeBusy, setGeocodeBusy] = useState(false);\n  const dragIndex = useRef(-1);\n'
           if state_anchor not in text: raise SystemExit('state status non trovato')
           text = text.replace(state_anchor, state_anchor + state_extra, 1)
-          text = text.replace('import { useEffect, useMemo, useState } from "react";', 'import { useEffect, useMemo, useRef, useState } from "react";', 1)
 
           old_coords = '        const lat = Number(business.lat), lng = Number(business.lng);\n        if (Number.isFinite(lat) && Number.isFinite(lng)) setCoords({ lat, lng });'
           new_coords = '        const lat = Number(business.lat), lng = Number(business.lng);\n        if (Number.isFinite(lat) && Number.isFinite(lng)) { setCoords({ lat, lng }); setAddressStatus("Posizione salvata: controlla il pin."); }'
           if old_coords not in text: raise SystemExit('init coords non trovato')
           text = text.replace(old_coords, new_coords, 1)
 
-          pattern = re.compile(r'  const geocode = async \(\) => \{.*?\n  \};\n\n  const addImages', re.S)
-          replacement = '''  const verifyAddress = async () => {\n    const form = document.getElementById("business-form") as HTMLFormElement | null;\n    if (!form) return null;\n    const data = new FormData(form);\n    setError(""); setGeocodeBusy(true); setAddressStatus("Ricerca indirizzo…");\n    try {\n      const result = await geocodeAddress({\n        street: field(data.get("street")).trim(), streetNumber: field(data.get("streetNumber")).trim(),\n        cap: field(data.get("cap")).trim(), comune: field(data.get("comune")).trim(), provincia: field(data.get("provincia")).trim(),\n      });\n      setCoords(result);\n      setAddressStatus(`Posizione trovata: ${result.label || `${result.lat}, ${result.lng}`}. Trascina il punto se serve una correzione.`);\n      return result;\n    } catch {\n      setCoords(null); setAddressStatus("Indirizzo non trovato. Controlla i dati."); return null;\n    } finally { setGeocodeBusy(false); }\n  };\n\n  const geocode = async () => { await verifyAddress(); };\n  const invalidateLocation = () => {\n    if (!coords) return;\n    setCoords(null);\n    setAddressStatus("Indirizzo modificato: premi di nuovo “Trova sulla mappa”.");\n  };\n\n  const addImages'''
-          text, count = pattern.subn(replacement, text, count=1)
+          geocode_pattern = re.compile(r'  const geocode = async \(\) => \{.*?\n  \};\n\n  const addImages', re.S)
+          geocode_replacement = '''  const verifyAddress = async () => {\n    const form = document.getElementById("business-form") as HTMLFormElement | null;\n    if (!form) return null;\n    const data = new FormData(form);\n    setError(""); setGeocodeBusy(true); setAddressStatus("Ricerca indirizzo…");\n    try {\n      const result = await geocodeAddress({\n        street: field(data.get("street")).trim(), streetNumber: field(data.get("streetNumber")).trim(),\n        cap: field(data.get("cap")).trim(), comune: field(data.get("comune")).trim(), provincia: field(data.get("provincia")).trim(),\n      });\n      setCoords(result);\n      setAddressStatus(`Posizione trovata: ${result.label || `${result.lat}, ${result.lng}`}. Trascina il punto se serve una correzione.`);\n      return result;\n    } catch {\n      setCoords(null); setAddressStatus("Indirizzo non trovato. Controlla i dati."); return null;\n    } finally { setGeocodeBusy(false); }\n  };\n\n  const geocode = async () => { await verifyAddress(); };\n  const invalidateLocation = () => {\n    if (!coords) return;\n    setCoords(null);\n    setAddressStatus("Indirizzo modificato: premi di nuovo “Trova sulla mappa”.");\n  };\n\n  const addImages'''
+          text, count = geocode_pattern.subn(geocode_replacement, text, count=1)
           if count != 1: raise SystemExit('blocco geocode non riconosciuto')
+
+          move_pattern = re.compile(r'\n  const moveImage = \(index: number, delta: number\) => \{.*?\n  \};\n\n  const makeCover', re.S)
+          text, count = move_pattern.subn('\n  const makeCover', text, count=1)
+          if count != 1: raise SystemExit('moveImage non riconosciuto')
 
           submit_pattern = re.compile(r'  const submit = async \(event: FormEvent<HTMLFormElement>\) => \{.*?\n  \};\n\n  if \(authorized === null', re.S)
           submit_replacement = '''  const submit = async (event: FormEvent<HTMLFormElement>) => {\n    event.preventDefault();\n    const form = event.currentTarget;\n    if (!form.reportValidity()) return;\n    if (!emailVerified) { setStatus("Verifica la tua email prima di salvare."); return; }\n    const resolvedCoords = coords || await verifyAddress();\n    if (!resolvedCoords) { setStatus("Verifica la posizione sulla mappa prima di continuare."); return; }\n    const data = new FormData(form);\n    const priceMinRaw = field(data.get("priceMin")).trim(), priceMaxRaw = field(data.get("priceMax")).trim();\n    const priceMin = priceMinRaw ? Number(priceMinRaw) : null, priceMax = priceMaxRaw ? Number(priceMaxRaw) : null;\n    if (priceMin !== null && priceMax !== null && priceMin > priceMax) { setStatus("Il prezzo minimo non può superare il prezzo massimo."); return; }\n    const street = field(data.get("street")).trim(), streetNumber = field(data.get("streetNumber")).trim();\n    const businessType = selectedType || group;\n    const payload: Record<string, unknown> = {\n      name: field(data.get("name")).trim(), category: businessType, subcategory: businessType !== group ? businessType : "",\n      provincia: field(data.get("provincia")).trim(), comune: field(data.get("comune")).trim(),\n      street, streetNumber, address: `${street}, ${streetNumber}`, cap: field(data.get("cap")).trim(),\n      phone: field(data.get("phone")).trim(), whatsapp: field(data.get("whatsapp")).trim(), email: field(data.get("email")).trim(), website: field(data.get("website")).trim(),\n      description: field(data.get("description")).trim(), priceMin, priceMax, lat: resolvedCoords.lat, lng: resolvedCoords.lng,\n      services: services.filter((value) => availableServices.includes(value)).slice(0, 60),\n    };\n    setBusy(true); setError(""); setStatus("Salvataggio in corso…");\n    try {\n      const id = await saveBusiness(payload, editId || undefined);\n      if (imagesDirty) { setStatus("Salvataggio galleria…"); await replaceBusinessImages(id, images); }\n      legacyToast(editId ? "Modifiche salvate." : "Attività inviata per approvazione.");\n      location.href = "/dashboard";\n    } catch (cause) {\n      const message = editorError(cause);\n      setStatus(message); setError(""); legacyToast(message);\n    } finally { setBusy(false); }\n  };\n\n  if (authorized === null'''
           text, count = submit_pattern.subn(submit_replacement, text, count=1)
           if count != 1: raise SystemExit('submit editor non riconosciuto')
 
-          # Address controls: invalidano coordinate già verificate e usano lo status locale legacy.
           replacements = {
-            '<select name="provincia" required defaultValue={field(existing?.provincia)||PROVINCES[0]}>': '<select name="provincia" required defaultValue={field(existing?.provincia)||PROVINCES[0]} onChange={invalidateLocation}>',
+            '<select name="provincia" required defaultValue={field(existing?.provincia||PROVINCES[0])}>': '<select name="provincia" required defaultValue={field(existing?.provincia||PROVINCES[0])} onChange={invalidateLocation}>',
             '<input name="comune" list="city-options" required autoComplete="address-level2" defaultValue={field(existing?.comune)}/>': '<input name="comune" list="city-options" required autoComplete="address-level2" defaultValue={field(existing?.comune)} onInput={invalidateLocation}/>',
-            '<input name="street" required maxLength={200} autoComplete="street-address" defaultValue={parsedAddress.street}/>': '<input name="street" required maxLength={200} autoComplete="street-address" defaultValue={parsedAddress.street} onInput={invalidateLocation}/>',
+            '<input name="street" required maxLength={200} autoComplete="street-address" defaultValue={field(existing?.street)||parsedAddress.street}/>': '<input name="street" required maxLength={200} autoComplete="street-address" defaultValue={field(existing?.street)||parsedAddress.street} onInput={invalidateLocation}/>',
             '<input name="streetNumber" required maxLength={20} defaultValue={field(existing?.streetNumber)||parsedAddress.streetNumber}/>': '<input name="streetNumber" required maxLength={20} defaultValue={field(existing?.streetNumber)||parsedAddress.streetNumber} onInput={invalidateLocation}/>',
             '<input name="cap" required inputMode="numeric" pattern="[0-9]{5}" maxLength={5} autoComplete="postal-code" defaultValue={field(existing?.cap)}/>': '<input name="cap" required inputMode="numeric" pattern="[0-9]{5}" maxLength={5} autoComplete="postal-code" defaultValue={field(existing?.cap)} onInput={invalidateLocation}/>',
           }
           for old, new in replacements.items():
-              if old not in text: raise SystemExit(f'address control non trovato: {old[:35]}')
+              if old not in text: raise SystemExit(f'address control non trovato: {old[:42]}')
               text = text.replace(old, new, 1)
 
           old_address = '<div className="address-check"><button type="button" className="button button-primary" onClick={()=>void geocode()}>Trova sulla mappa</button><p id="address-status" className="small muted" aria-live="polite">{coords?"Posizione salvata: controlla il pin.":"Completa l’indirizzo e premi “Trova sulla mappa”."}</p></div>'
@@ -198,16 +203,20 @@ jobs:
 
           text = text.replace('Seleziona più foto insieme. La prima è la copertina; puoi riordinarle.', 'Seleziona più foto insieme. La prima è la copertina; trascinale per riordinarle.', 1)
 
-          image_pattern = re.compile(r'<div className="full"><div id="business-image-editor" className="business-image-editor" aria-live="polite">\{images\.length\?images\.map\(\(image,index\)=>.*?</div></div>', re.S)
-          image_replacement = '''<div className="full"><div id="business-image-editor" className="business-image-editor" aria-live="polite">{images.length?images.map((image,index)=><div key={image.id||`${imageSource(image).slice(0,40)}-${index}`} className="business-image-card" draggable data-image-index={index} onDragStart={(event)=>{dragIndex.current=index;event.currentTarget.classList.add("is-dragging");}} onDragEnd={(event)=>{event.currentTarget.classList.remove("is-dragging");dragIndex.current=-1;}} onDragOver={(event)=>event.preventDefault()} onDrop={(event)=>{event.preventDefault();const from=dragIndex.current;if(from<0||from===index)return;setImages((current)=>{const next=[...current];next.splice(index,0,next.splice(from,1)[0]);return next;});setImagesDirty(true);dragIndex.current=-1;}}>{index===0?<span className="business-image-card__cover">Copertina</span>:null}{imageSource(image)?<img src={imageSource(image)} alt={`Foto ${index+1}`}/>:null}<div className="business-image-card__actions"><button type="button" className="button button-secondary" onClick={()=>makeCover(index)} disabled={index===0}>Usa come copertina</button><button type="button" className="button button-secondary" onClick={()=>removeImage(index)}>Rimuovi</button></div></div>):<p className="muted">Nessuna foto caricata.</p>}</div></div>'''
-          text, count = image_pattern.subn(image_replacement, text, count=1)
-          if count != 1: raise SystemExit('gallery markup non riconosciuto')
+          gallery_start = text.find('<div className="full"><div id="business-image-editor" className="business-image-editor" aria-live="polite">')
+          gallery_end = text.find('\n      </div></section>', gallery_start)
+          if gallery_start < 0 or gallery_end < 0: raise SystemExit('gallery markup non riconosciuto')
+          gallery = '''<div className="full"><div id="business-image-editor" className="business-image-editor" aria-live="polite">{images.length?images.map((image,index)=><div key={image.id||`${imageSource(image).slice(0,40)}-${index}`} className="business-image-card" draggable data-image-index={index} onDragStart={(event)=>{dragIndex.current=index;event.currentTarget.classList.add("is-dragging");}} onDragEnd={(event)=>{event.currentTarget.classList.remove("is-dragging");dragIndex.current=-1;}} onDragOver={(event)=>event.preventDefault()} onDrop={(event)=>{event.preventDefault();const from=dragIndex.current;if(from<0||from===index)return;setImages((current)=>{const next=[...current];next.splice(index,0,next.splice(from,1)[0]);return next;});setImagesDirty(true);dragIndex.current=-1;}}>{index===0?<span className="business-image-card__cover">Copertina</span>:null}{imageSource(image)?<img src={imageSource(image)} alt={`Foto ${index+1}`}/>:null}<div className="business-image-card__actions"><button type="button" className="button button-secondary" onClick={()=>makeCover(index)} disabled={index===0}>Usa come copertina</button><button type="button" className="button button-secondary" onClick={()=>removeImage(index)}>Rimuovi</button></div></div>):<p className="muted">Nessuna foto caricata.</p>}</div></div>'''
+          text = text[:gallery_start] + gallery + text[gallery_end:]
 
-          text = text.replace(' multiple disabled={imageBusy||images.length>=10} onChange={addImages}', ' multiple onChange={addImages}', 1)
-          old_submit_button = '<button id="business-submit" className="button button-primary" type="submit" disabled={busy||imageBusy}>{busy?"Salvataggio…":editId?"Salva modifiche":"Invia per approvazione"}</button>'
-          new_submit_button = '<button id="business-submit" className="button button-primary" type="submit" disabled={busy}>{editId?"Salva modifiche":"Invia per approvazione"}</button>'
-          if old_submit_button not in text: raise SystemExit('submit button non trovato')
-          text = text.replace(old_submit_button, new_submit_button, 1)
+          old_input = ' multiple disabled={imageBusy||images.length>=10} onChange={addImages}'
+          if old_input not in text: raise SystemExit('input immagini non riconosciuto')
+          text = text.replace(old_input, ' multiple onChange={addImages}', 1)
+
+          old_button = '<button id="business-submit" className="button button-primary" type="submit" disabled={busy||imageBusy}>{busy?"Salvataggio…":editId?"Salva modifiche":"Invia per approvazione"}</button>'
+          new_button = '<button id="business-submit" className="button button-primary" type="submit" disabled={busy}>{editId?"Salva modifiche":"Invia per approvazione"}</button>'
+          if old_button not in text: raise SystemExit('submit button non trovato')
+          text = text.replace(old_button, new_button, 1)
 
           path.write_text(text)
           PY
@@ -239,7 +248,7 @@ jobs:
           assert '<meta name="robots" content="index,follow">' in oracle_html
           assert '<title>Inserisci gratuitamente la tua attività | CalabriaVera</title>' in oracle_html
           assert 'if(!form.reportValidity())return' in oracle_js
-          assert "const step=.00018" in oracle_js
+          assert 'const step=.00018' in oracle_js
           assert 'id="recenter-pin"' in oracle_js
           assert 'draggable="true" data-image-index' in oracle_js
           assert 'trascinale per riordinarle' in oracle_js
