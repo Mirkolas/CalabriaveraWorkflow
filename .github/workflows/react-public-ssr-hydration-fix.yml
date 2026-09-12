@@ -1,0 +1,112 @@
+name: React migration - fix public SSR hydration
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/react-public-ssr-hydration-fix.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  patch-private-branch:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      PRIVATE_REPO: ${{ secrets.PRIVATE_REPO }}
+      PRIVATE_REPO_PAT: ${{ secrets.PRIVATE_REPO_PAT || secrets.PERSONAL_ACCESS_TOKEN || secrets.PAT || secrets.GH_PAT }}
+      EXPECTED_BASE: 9cbf9d82b41c9aeca3ae281c49224ec185666fe6
+    steps:
+      - name: Verify private repository access
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -n "$PRIVATE_REPO"
+          test -n "$PRIVATE_REPO_PAT"
+
+      - uses: actions/checkout@v7
+        with:
+          repository: ${{ secrets.PRIVATE_REPO }}
+          token: ${{ secrets.PRIVATE_REPO_PAT || secrets.PERSONAL_ACCESS_TOKEN || secrets.PAT || secrets.GH_PAT }}
+          ref: react-migration
+          path: source
+          fetch-depth: 0
+          persist-credentials: true
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version: '24'
+          cache: npm
+          cache-dependency-path: source/frontend-react/package-lock.json
+
+      - name: Freeze exact base
+        working-directory: source
+        shell: bash
+        run: |
+          set -euo pipefail
+          actual="$(git rev-parse HEAD)"
+          test "$actual" = "$EXPECTED_BASE" || { echo "::error::react-migration moved: $actual"; exit 1; }
+
+      - name: Make public prerender components synchronous on SSR
+        working-directory: source
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          from pathlib import Path
+          p=Path('frontend-react/src/App.tsx')
+          s=p.read_text(encoding='utf-8')
+          replacements={
+            'const MapPage = lazy(() => import("./pages/MapPage"));':'const MapPage = serverRendering ? (await import("./pages/MapPage")).default : lazy(() => import("./pages/MapPage"));',
+            'const BusinessPage = lazy(() => import("./pages/BusinessPage"));':'const BusinessPage = serverRendering ? (await import("./pages/BusinessPage")).default : lazy(() => import("./pages/BusinessPage"));',
+            'const TourismPage = lazy(() => import("./pages/TourismPage"));':'const TourismPage = serverRendering ? (await import("./pages/TourismPage")).default : lazy(() => import("./pages/TourismPage"));',
+            'const BlogPostPage = lazy(() => import("./pages/BlogPostPage"));':'const BlogPostPage = serverRendering ? (await import("./pages/BlogPostPage")).default : lazy(() => import("./pages/BlogPostPage"));',
+            'const LegalPage = lazy(() => import("./pages/LegalPage"));':'const LegalPage = serverRendering ? (await import("./pages/LegalPage")).default : lazy(() => import("./pages/LegalPage"));',
+          }
+          for old,new in replacements.items():
+              if old not in s:
+                  raise SystemExit(f'anchor not found: {old}')
+              s=s.replace(old,new,1)
+          p.write_text(s,encoding='utf-8')
+          PY
+          git diff --check
+
+      - name: Build exact React candidate
+        working-directory: source/frontend-react
+        shell: bash
+        run: |
+          set -euo pipefail
+          npm ci
+          npm run build | tee /tmp/react-ssr-fix-build.log
+          ! grep -q 'Tourism prerender fallback' /tmp/react-ssr-fix-build.log
+
+      - name: Verify prerender contains real public pages
+        working-directory: source
+        shell: bash
+        run: |
+          set -euo pipefail
+          grep -q 'Mappa delle attività in Calabria' frontend-react/dist/mappa/index.html
+          grep -q 'La Calabria raccontata da chi la vive' frontend-react/dist/chi-siamo/index.html
+          ! grep -q 'cv-route-loader' frontend-react/dist/mappa/index.html
+          ! grep -q 'cv-route-loader' frontend-react/dist/chi-siamo/index.html
+          grep -q 'serverRendering ? (await import("./pages/MapPage"))' frontend-react/src/App.tsx
+          grep -q 'serverRendering ? (await import("./pages/LegalPage"))' frontend-react/src/App.tsx
+          grep -q 'serverRendering ? (await import("./pages/BusinessPage"))' frontend-react/src/App.tsx
+          grep -q 'serverRendering ? (await import("./pages/BlogPostPage"))' frontend-react/src/App.tsx
+          git diff --check
+
+      - name: Commit and push atomically
+        working-directory: source
+        shell: bash
+        run: |
+          set -euo pipefail
+          git fetch origin react-migration
+          test "$(git rev-parse origin/react-migration)" = "$EXPECTED_BASE" || { echo '::error::react-migration changed during validation'; exit 1; }
+          git config user.name 'CalabriaVera Automation'
+          git config user.email 'actions@users.noreply.github.com'
+          git add frontend-react/src/App.tsx
+          git commit -m 'fix: hydrate public prerender routes consistently'
+          git push origin HEAD:react-migration
+          echo "SSR_HYDRATION_FIX_GREEN=$(git rev-parse HEAD)"
