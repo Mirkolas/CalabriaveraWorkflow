@@ -2,11 +2,7 @@ name: SEO - Sincronizza attività e sitemap
 
 on:
   schedule:
-    - cron: '3 * * * *'
-    - cron: '13 * * * *'
-    - cron: '23 * * * *'
-    - cron: '33 * * * *'
-    - cron: '43 * * * *'
+    - cron: '3 */12 * * *'
   workflow_dispatch:
   repository_dispatch:
     types: [source-seo-push]
@@ -24,7 +20,7 @@ jobs:
     uses: ./.github/workflows/scheduled-retry-gate.yml
     with:
       workflow_file: seo-sync.yml
-      cadence_minutes: 60
+      cadence_minutes: 720
       anchor_offset_minutes: 3
 
   sync:
@@ -57,7 +53,7 @@ jobs:
         with:
           node-version: '22'
 
-      - name: Confronta tutti i contenuti pubblici con la sitemap online
+      - name: Confronta i contenuti pubblici con la sitemap online
         id: changes
         working-directory: source
         env:
@@ -77,7 +73,7 @@ jobs:
             exit 0
           fi
           if printf '%s' "$output" | grep -Eqi 'RESOURCE_EXHAUSTED|Quota exceeded|HTTP 429|FIRESTORE_429|(^|[^0-9])429([^0-9]|$)'; then
-            echo "::warning::Verifica SEO rinviata: quota Firestore temporaneamente esaurita. Il prossimo tentativo della stessa campagna riproverà automaticamente."
+            echo "::warning::Verifica SEO fermata: quota Firestore esaurita. Nessun retry automatico nella stessa finestra."
             exit 75
           fi
           exit "$code"
