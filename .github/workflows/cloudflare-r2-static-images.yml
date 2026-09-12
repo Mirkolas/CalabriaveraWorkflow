@@ -4,6 +4,10 @@ on:
   workflow_dispatch:
   repository_dispatch:
     types: [source-deploy]
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/cloudflare-r2-static-images.yml'
 
 permissions:
   contents: read
