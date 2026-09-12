@@ -14,11 +14,16 @@ jobs:
   diagnose:
     runs-on: ubuntu-latest
     timeout-minutes: 10
+    env:
+      CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+      CLOUDFLARE_ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
     steps:
-      - name: DNS and endpoint diagnostics
+      - name: DNS, endpoints and Cloudflare zone diagnostics
         shell: bash
         run: |
           set -euo pipefail
+          echo '=== Authoritative nameservers ==='
+          dig +short NS calabriavera.com || true
           echo '=== DNS apex ==='
           dig +short A calabriavera.com || true
           dig +short AAAA calabriavera.com || true
@@ -27,15 +32,32 @@ jobs:
           dig +short A www.calabriavera.com || true
           dig +short AAAA www.calabriavera.com || true
           dig +short CNAME www.calabriavera.com || true
+          echo '=== DNS img ==='
+          dig +short A img.calabriavera.com || true
+          dig +short AAAA img.calabriavera.com || true
+          dig +short CNAME img.calabriavera.com || true
 
           for base in \
             https://calabriavera.sonotacamirko.workers.dev \
             https://calabriavera.com \
             https://www.calabriavera.com; do
             echo "=== $base ==="
+            rm -f /tmp/body
             curl --silent --show-error --location --connect-timeout 8 --max-time 20 \
               -D - -o /tmp/body "$base/build-version.txt?diag=$GITHUB_RUN_ID" || true
             printf 'body: '; head -c 200 /tmp/body 2>/dev/null || true; echo
-            curl --silent --show-error --head --connect-timeout 8 --max-time 20 \
-              "$base/?diag=$GITHUB_RUN_ID" | grep -Ei '^(HTTP/|server:|cf-ray:|cf-cache-status:|location:|x-powered-by:|cache-control:)' || true
           done
+
+          echo '=== Cloudflare zone lookup (read-only) ==='
+          if [ -n "${CLOUDFLARE_API_TOKEN:-}" ]; then
+            response="$(curl --fail --silent --show-error \
+              -H "Authorization: Bearer $CLOUDFLARE_API_TOKEN" \
+              -H 'Content-Type: application/json' \
+              'https://api.cloudflare.com/client/v4/zones?name=calabriavera.com&status=active' || true)"
+            node -e '
+              const raw = process.argv[1] || "";
+              if (!raw) { console.log("Cloudflare zone lookup unavailable with current token"); process.exit(0); }
+              const j = JSON.parse(raw);
+              console.log(JSON.stringify({success:j.success, errors:j.errors, zones:(j.result||[]).map(z=>({id:z.id,name:z.name,status:z.status,paused:z.paused,type:z.type,name_servers:z.name_servers}))},null,2));
+            ' "$response"
+          fi
