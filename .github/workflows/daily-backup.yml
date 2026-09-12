@@ -23,7 +23,7 @@ jobs:
     uses: ./.github/workflows/scheduled-retry-gate.yml
     with:
       workflow_file: daily-backup.yml
-      cadence_minutes: 1440
+      cadence_minutes: 2880
       anchor_offset_minutes: 150
 
   backup:
@@ -75,7 +75,7 @@ jobs:
           FIREBASE_PROJECT_ID: calabriavera-e08d4
         run: node tools/backup/prepare-hosting-dist.mjs
 
-      - name: Backup, verifica remota e rotazione ogni sette copie riuscite
+      - name: Backup, verifica remota e rotazione a gruppi di cinque copie riuscite
         working-directory: source
         env:
           FIREBASE_PROJECT_ID: calabriavera-e08d4
