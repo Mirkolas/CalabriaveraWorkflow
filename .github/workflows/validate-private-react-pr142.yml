@@ -1,0 +1,80 @@
+name: Validate Private React PR 142
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/validate-private-react-pr142.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 35
+    env:
+      PRIVATE_REPO: ${{ secrets.PRIVATE_REPO }}
+      PRIVATE_REPO_PAT: ${{ secrets.PRIVATE_REPO_PAT || secrets.PERSONAL_ACCESS_TOKEN || secrets.PAT || secrets.GH_PAT || secrets.GITHUB_PAT }}
+    steps:
+      - name: Verifica accesso sorgente privato
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -n "$PRIVATE_REPO"
+          test -n "$PRIVATE_REPO_PAT"
+
+      - name: Scarica branch privato PR 142
+        uses: actions/checkout@v7
+        with:
+          repository: ${{ secrets.PRIVATE_REPO }}
+          token: ${{ env.PRIVATE_REPO_PAT }}
+          ref: migration/react-static-images-r2
+          path: source
+          persist-credentials: false
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: source/frontend-react/package-lock.json
+
+      - name: Cerca riferimenti immagine statici fuori da R2
+        shell: bash
+        run: |
+          set -euo pipefail
+          pattern='/assets/Logo[.](png|webp)|/assets/images/home/|/assets/flags/|images[.]unsplash[.]com|calabriavera-e08d4[.]web[.]app/assets/Logo'
+          if rg -n "$pattern" source/frontend-react/src source/frontend-react/index.html source/assets/css source/assets/site.webmanifest; then
+            echo '::error::Trovati riferimenti immagine statici React non migrati a R2.'
+            exit 1
+          fi
+          echo 'Nessun riferimento statico locale/Unsplash/Firebase residuo nei sorgenti React e CSS.'
+
+      - name: Installa dipendenze React
+        working-directory: source/frontend-react
+        run: npm ci --no-audit --no-fund
+
+      - name: Verifica architettura definitiva
+        working-directory: source/frontend-react
+        run: npm run architecture:check
+
+      - name: Build React completa
+        working-directory: source/frontend-react
+        run: npm run build
+
+      - name: Verifica che il bundle non contenga le immagini statiche migrate
+        working-directory: source/frontend-react
+        shell: bash
+        run: |
+          set -euo pipefail
+          forbidden=(
+            dist/assets/Logo.webp dist/assets/Logo.png dist/assets/favicon.ico
+            dist/assets/images/home/tropea-960.webp dist/assets/images/home/tropea-1600.webp
+            dist/assets/images/home/sila-720.webp dist/assets/images/home/sila-1280.webp
+            dist/assets/images/home/scilla-720.webp dist/assets/images/home/capo-colonna-720.webp
+            dist/assets/flags/it.svg dist/assets/flags/en.svg dist/assets/flags/fr.svg dist/assets/flags/de.svg dist/assets/flags/es.svg
+          )
+          for file in "${forbidden[@]}"; do
+            test ! -e "$file" || { echo "::error::Asset immagine locale ancora presente nel bundle: $file"; exit 1; }
+          done
+          echo 'Bundle React senza copie locali degli asset immagine statici migrati.'
