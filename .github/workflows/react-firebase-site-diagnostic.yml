@@ -1,0 +1,65 @@
+name: React migration - Firebase Hosting site diagnostic
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/react-firebase-site-diagnostic.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  id-token: write
+
+jobs:
+  diagnose:
+    runs-on: ubuntu-latest
+    timeout-minutes: 8
+    steps:
+      - name: Verify WIF configuration
+        shell: bash
+        env:
+          WIF_PROVIDER: ${{ vars.FIREBASE_WIF_PROVIDER }}
+          DEPLOY_SA: ${{ vars.FIREBASE_DEPLOY_SERVICE_ACCOUNT }}
+        run: |
+          set -euo pipefail
+          test -n "$WIF_PROVIDER"
+          test -n "$DEPLOY_SA"
+      - uses: google-github-actions/auth@v3
+        with:
+          workload_identity_provider: ${{ vars.FIREBASE_WIF_PROVIDER }}
+          service_account: ${{ vars.FIREBASE_DEPLOY_SERVICE_ACCOUNT }}
+      - uses: google-github-actions/setup-gcloud@v3
+      - name: List Hosting sites and custom domains
+        shell: bash
+        run: |
+          set -euo pipefail
+          project='calabriavera-e08d4'
+          token="$(gcloud auth print-access-token)"
+          curl -fsS -H "Authorization: Bearer $token" \
+            "https://firebasehosting.googleapis.com/v1beta1/projects/$project/sites?pageSize=100" > /tmp/sites.json
+          node - <<'NODE'
+          const fs=require('fs');
+          const x=JSON.parse(fs.readFileSync('/tmp/sites.json','utf8'));
+          for(const s of x.sites||[]) console.log(`SITE ${s.name} defaultUrl=${s.defaultUrl||''}`);
+          NODE
+          node - <<'NODE' >/tmp/site_ids
+          const fs=require('fs');
+          const x=JSON.parse(fs.readFileSync('/tmp/sites.json','utf8'));
+          for(const s of x.sites||[]) console.log(String(s.name||'').split('/').pop());
+          NODE
+          while read -r site; do
+            [ -n "$site" ] || continue
+            code="$(curl -sS -o "/tmp/domains-$site.json" -w '%{http_code}' \
+              -H "Authorization: Bearer $token" \
+              "https://firebasehosting.googleapis.com/v1beta1/projects/$project/sites/$site/customDomains?pageSize=100")"
+            echo "CUSTOM_DOMAINS site=$site http=$code"
+            if [ "$code" = 200 ]; then
+              node - "$site" <<'NODE'
+          const fs=require('fs');
+          const site=process.argv[2];
+          const x=JSON.parse(fs.readFileSync(`/tmp/domains-${site}.json`,'utf8'));
+          for(const d of x.customDomains||[]) console.log(`DOMAIN site=${site} name=${d.name||''} host=${d.hostState||''} cert=${d.certState||''}`);
+          NODE
+            fi
+          done </tmp/site_ids
