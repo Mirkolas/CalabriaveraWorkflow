@@ -10,6 +10,9 @@ on:
 permissions:
   contents: read
 
+env:
+  ZONE_ID: e49caf5317f6b047d8e87b1a44fe3b8f
+
 jobs:
   diagnose:
     runs-on: ubuntu-latest
@@ -18,46 +21,44 @@ jobs:
       CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
       CLOUDFLARE_ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
     steps:
-      - name: DNS, endpoints and Cloudflare zone diagnostics
+      - name: Inspect DNS proxy, Worker routes and custom domains
         shell: bash
         run: |
           set -euo pipefail
-          echo '=== Authoritative nameservers ==='
-          dig +short NS calabriavera.com || true
-          echo '=== DNS apex ==='
-          dig +short A calabriavera.com || true
-          dig +short AAAA calabriavera.com || true
-          dig +short CNAME calabriavera.com || true
-          echo '=== DNS www ==='
-          dig +short A www.calabriavera.com || true
-          dig +short AAAA www.calabriavera.com || true
-          dig +short CNAME www.calabriavera.com || true
-          echo '=== DNS img ==='
-          dig +short A img.calabriavera.com || true
-          dig +short AAAA img.calabriavera.com || true
-          dig +short CNAME img.calabriavera.com || true
+          auth=(-H "Authorization: Bearer $CLOUDFLARE_API_TOKEN" -H 'Content-Type: application/json')
 
-          for base in \
-            https://calabriavera.sonotacamirko.workers.dev \
-            https://calabriavera.com \
-            https://www.calabriavera.com; do
-            echo "=== $base ==="
-            rm -f /tmp/body
-            curl --silent --show-error --location --connect-timeout 8 --max-time 20 \
-              -D - -o /tmp/body "$base/build-version.txt?diag=$GITHUB_RUN_ID" || true
-            printf 'body: '; head -c 200 /tmp/body 2>/dev/null || true; echo
+          echo '=== DNS records (read-only) ==='
+          for host in calabriavera.com www.calabriavera.com img.calabriavera.com; do
+            raw="$(curl --silent --show-error "${auth[@]}" "https://api.cloudflare.com/client/v4/zones/$ZONE_ID/dns_records?name=$host&per_page=100" || true)"
+            node -e '
+              const host=process.argv[1], raw=process.argv[2]||"";
+              if (!raw) { console.log(host+": unavailable"); process.exit(0); }
+              const j=JSON.parse(raw);
+              console.log(JSON.stringify({host,success:j.success,errors:j.errors,records:(j.result||[]).map(r=>({id:r.id,type:r.type,name:r.name,content:r.content,proxied:r.proxied,ttl:r.ttl}))},null,2));
+            ' "$host" "$raw"
           done
 
-          echo '=== Cloudflare zone lookup (read-only) ==='
-          if [ -n "${CLOUDFLARE_API_TOKEN:-}" ]; then
-            response="$(curl --fail --silent --show-error \
-              -H "Authorization: Bearer $CLOUDFLARE_API_TOKEN" \
-              -H 'Content-Type: application/json' \
-              'https://api.cloudflare.com/client/v4/zones?name=calabriavera.com&status=active' || true)"
-            node -e '
-              const raw = process.argv[1] || "";
-              if (!raw) { console.log("Cloudflare zone lookup unavailable with current token"); process.exit(0); }
-              const j = JSON.parse(raw);
-              console.log(JSON.stringify({success:j.success, errors:j.errors, zones:(j.result||[]).map(z=>({id:z.id,name:z.name,status:z.status,paused:z.paused,type:z.type,name_servers:z.name_servers}))},null,2));
-            ' "$response"
-          fi
+          echo '=== Worker routes (read-only) ==='
+          raw="$(curl --silent --show-error "${auth[@]}" "https://api.cloudflare.com/client/v4/zones/$ZONE_ID/workers/routes" || true)"
+          node -e '
+            const raw=process.argv[1]||"";
+            if (!raw) { console.log("routes unavailable"); process.exit(0); }
+            const j=JSON.parse(raw);
+            console.log(JSON.stringify({success:j.success,errors:j.errors,routes:(j.result||[]).map(r=>({id:r.id,pattern:r.pattern,script:r.script}))},null,2));
+          ' "$raw"
+
+          echo '=== Worker custom domains (read-only) ==='
+          raw="$(curl --silent --show-error "${auth[@]}" "https://api.cloudflare.com/client/v4/accounts/$CLOUDFLARE_ACCOUNT_ID/workers/domains" || true)"
+          node -e '
+            const raw=process.argv[1]||"";
+            if (!raw) { console.log("domains unavailable"); process.exit(0); }
+            const j=JSON.parse(raw);
+            console.log(JSON.stringify({success:j.success,errors:j.errors,domains:(j.result||[]).map(d=>({id:d.id,hostname:d.hostname,service:d.service,zone_id:d.zone_id,zone_name:d.zone_name,environment:d.environment}))},null,2));
+          ' "$raw"
+
+          echo '=== Endpoint build versions ==='
+          for base in https://calabriavera.sonotacamirko.workers.dev https://calabriavera.com https://www.calabriavera.com; do
+            printf '%s -> ' "$base"
+            curl --silent --show-error --location --connect-timeout 8 --max-time 20 "$base/build-version.txt?diag=$GITHUB_RUN_ID" || true
+            echo
+          done
