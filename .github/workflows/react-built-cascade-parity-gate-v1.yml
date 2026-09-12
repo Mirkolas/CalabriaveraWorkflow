@@ -1,0 +1,168 @@
+name: React exact built cascade parity gate v1
+
+on:
+  push:
+    branches: [main]
+    paths: ['.github/workflows/react-built-cascade-parity-gate-v1.yml']
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  patch-gate-commit:
+    runs-on: ubuntu-latest
+    timeout-minutes: 50
+    env:
+      PRIVATE_REPO_PAT: ${{ secrets.PRIVATE_REPO_PAT || secrets.PAT || secrets.GH_PAT || secrets.GITHUB_PAT }}
+      LEGACY_SHA: 7be434e3418e95cff9825e4cc3f4b4ed75cd1076
+      EXPECTED_BASE: 5f145eee5a37c4d765a758f01b83e61e62c3ef0c
+    steps:
+      - uses: actions/checkout@v7
+        with: {path: workflow, persist-credentials: false}
+      - uses: actions/checkout@v7
+        with:
+          repository: ${{ secrets.PRIVATE_REPO }}
+          token: ${{ env.PRIVATE_REPO_PAT }}
+          ref: backup-main-pre-react-2026-09-11
+          path: legacy
+          persist-credentials: false
+      - uses: actions/checkout@v7
+        with:
+          repository: ${{ secrets.PRIVATE_REPO }}
+          token: ${{ env.PRIVATE_REPO_PAT }}
+          ref: react-migration
+          path: source
+          persist-credentials: true
+          fetch-depth: 12
+      - uses: actions/setup-node@v7
+        with: {node-version: '24'}
+
+      - name: Assert exact sources and apply built-cascade patch
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git -C legacy rev-parse HEAD)" = "$LEGACY_SHA"
+          test "$(git -C source rev-parse HEAD)" = "$EXPECTED_BASE"
+          grep -Fq 'fix: preserve admin menu and language state' <(git -C source log -1 --format=%s)
+          cd source
+          python3 ../workflow/scripts/patch-react-built-cascade-parity.py
+          grep -Fq '<div id="site-header">' frontend-react/src/components/Layout.tsx
+          grep -Fq '<div id="site-footer">' frontend-react/src/components/Layout.tsx
+          grep -Fq 'cv-legacy-heading-weight-reset' frontend-react/src/styles.css
+          grep -Fq '"/404": "404.html"' frontend-react/scripts/copy-legacy-assets.mjs
+          grep -Fq 'portal-refresh' frontend-react/scripts/copy-legacy-assets.mjs
+
+      - name: Build exact legacy and patched React
+        shell: bash
+        run: |
+          set -euo pipefail
+          (cd legacy && npm ci && npm run build)
+          (cd source/frontend-react && npm ci && npm run build)
+          if grep -Fq 'portal-refresh.css' source/frontend-react/public/assets/css/responsive.css; then
+            echo 'React copied responsive.css still activates portal-refresh.css'
+            exit 1
+          fi
+          node --input-type=module <<'NODE'
+          import fs from 'node:fs';
+          const data=JSON.parse(fs.readFileSync('source/frontend-react/public/main-route-css.json','utf8'));
+          for(const route of ['/404','/chi-siamo','/contatti','/privacy-policy','/cookie-policy','/termini','/note-legali','/login','/registrazione','/catalogo','/mappa','/blog']){
+            const css=data.routeCss[route];
+            if(!Array.isArray(css)) throw new Error(`Missing route CSS: ${route}`);
+            for(const required of ['/assets/css/redesign-final.css','/assets/css/header-unified.css','/assets/css/activity-experience.css','/assets/css/render-performance.css','/assets/css/review-stars.css','/assets/css/react-live-parity.css']){
+              if(!css.some(x=>String(x).split(/[?#]/)[0]===required)) throw new Error(`${route} missing ${required}`);
+            }
+          }
+          if(data.routePages['/404']!=='notFound') throw new Error('404 page key mismatch');
+          console.log('GENERATED_BUILT_CASCADE_GREEN');
+          NODE
+
+      - name: Install Chromium and serve both builds
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p /tmp/cv-built-gate
+          npm install --prefix /tmp/cv-built-gate --no-package-lock --no-save playwright@1.62.1 serve@14.2.4
+          /tmp/cv-built-gate/node_modules/.bin/playwright install --with-deps chromium >/dev/null
+          nohup /tmp/cv-built-gate/node_modules/.bin/serve legacy/dist -l 4184 >/tmp/cv-built-gate-l.log 2>&1 & echo $! >/tmp/cv-built-gate-l.pid
+          nohup /tmp/cv-built-gate/node_modules/.bin/serve -s source/frontend-react/dist -l 4185 >/tmp/cv-built-gate-r.log 2>&1 & echo $! >/tmp/cv-built-gate-r.pid
+          for attempt in {1..30}; do curl -fsS http://127.0.0.1:4184/404.html >/dev/null 2>&1 && curl -fsS http://127.0.0.1:4185/questa-pagina-non-esiste >/dev/null 2>&1 && exit 0; sleep 1; done
+          exit 1
+
+      - name: Strict browser parity gate
+        env:
+          PLAYWRIGHT_MODULE: /tmp/cv-built-gate/node_modules/playwright
+        shell: bash
+        run: |
+          node --input-type=module <<'NODE'
+          import {createRequire} from 'node:module';
+          const {chromium}=createRequire(import.meta.url)(process.env.PLAYWRIGHT_MODULE);
+          const browser=await chromium.launch({headless:true});
+          const modes=[['desktop',{width:1365,height:900}],['mobile',{width:390,height:844}]];
+          const exactRoutes=[
+            ['404','/404.html','/questa-pagina-non-esiste'],
+            ['about','/chi-siamo.html','/chi-siamo'],['contacts','/contatti.html','/contatti'],
+            ['privacy','/privacy-policy.html','/privacy-policy'],['cookies','/cookie-policy.html','/cookie-policy'],
+            ['terms','/termini.html','/termini'],['legal','/note-legali.html','/note-legali'],
+            ['login','/login.html','/login'],['register','/registrazione.html','/registrazione']
+          ];
+          const smokeRoutes=[['home','/index.html','/'],['catalog','/catalogo.html','/catalogo'],['map','/mappa.html','/mappa'],['blog','/blog.html','/blog']];
+          const near=(a,b,t=.35)=>a!=null&&b!=null&&Math.abs(Number(a)-Number(b))<=t;
+          async function snap(origin,path,viewport,name){
+            const ctx=await browser.newContext({viewport,serviceWorkers:'block'});
+            await ctx.addInitScript(()=>{const n=Date.now();localStorage.setItem('cv-cookie-consent-v3',JSON.stringify({version:3,scope:'technical-only',savedAt:new Date(n).toISOString(),expiresAt:new Date(n+30*86400000).toISOString(),necessary:true,preferences:false,analytics:false,marketing:false,source:'ci'}))});
+            const p=await ctx.newPage(),errors=[];p.on('pageerror',e=>errors.push(String(e.message||e)));
+            await p.goto(origin+path,{waitUntil:'domcontentloaded',timeout:30000});await p.locator('main').waitFor({state:'attached',timeout:15000});
+            if(name==='catalog') await p.waitForFunction(()=>document.querySelector('#result-count')?.textContent?.trim().startsWith('53 '),null,{timeout:15000});
+            if(name==='map') await p.waitForFunction(()=>/53 attività sulla mappa|53/.test(document.querySelector('#map-count')?.textContent||document.body.textContent||''),null,{timeout:15000});
+            if(name==='blog') await p.waitForFunction(()=>document.querySelectorAll('#blog-list article').length>=12,null,{timeout:15000});
+            if(name==='login'||name==='register') await p.locator('main h1').waitFor({state:'visible',timeout:15000});
+            await p.waitForTimeout(500);
+            const d=await p.evaluate(()=>{const q=s=>document.querySelector(s),r=e=>{const x=e?.getBoundingClientRect();return x?{x:x.x,y:x.y,w:x.width,h:x.height}:null};const h=q('main h1'),hs=h?getComputedStyle(h):null,head=q('.site-header'),heads=head?getComputedStyle(head):null;return {page:document.body.dataset.page||'',title:document.title,description:q('meta[name="description"]')?.getAttribute('content')||'',robots:q('meta[name="robots"]')?.getAttribute('content')||'',canonical:q('link[rel="canonical"]')?.getAttribute('href')||'',header:r(head),inner:r(q('.header-inner')),headerStyle:heads?{background:heads.backgroundColor,color:heads.color,position:heads.position}:null,h1:h?.textContent?.trim()||'',h1Rect:r(h),h1Style:hs?{font:hs.fontFamily,size:hs.fontSize,weight:hs.fontWeight,line:hs.lineHeight,letter:hs.letterSpacing,color:hs.color}:null,resultCount:q('#result-count')?.textContent?.trim()||'',cards:document.querySelectorAll('#results > *').length,mapText:q('#map-count')?.textContent?.trim()||'',blogCards:document.querySelectorAll('#blog-list article').length,wrappers:[!!q('#site-header'),!!q('#site-footer')]};});
+            await p.close();await ctx.close();return {...d,errors};
+          }
+          const failures=[];
+          for(const [mode,vp] of modes){
+            for(const [name,lp,rp] of exactRoutes){const a=await snap('http://127.0.0.1:4184',lp,vp,name),b=await snap('http://127.0.0.1:4185',rp,vp,name),m=[];
+              for(const box of ['header','inner'])for(const key of ['x','w','h'])if(!near(a[box]?.[key],b[box]?.[key]))m.push(`${box}.${key}:${a[box]?.[key]}/${b[box]?.[key]}`);
+              if(JSON.stringify(a.headerStyle)!==JSON.stringify(b.headerStyle))m.push('header-style');
+              if(a.h1!==b.h1)m.push(`h1-text:${a.h1}/${b.h1}`);
+              if(Boolean(a.h1Style)!==Boolean(b.h1Style)||(a.h1Style&&JSON.stringify(a.h1Style)!==JSON.stringify(b.h1Style)))m.push(`h1-style:${JSON.stringify(a.h1Style)}/${JSON.stringify(b.h1Style)}`);
+              if(a.h1Rect&&b.h1Rect)for(const key of ['x','y','w','h'])if(!near(a.h1Rect[key],b.h1Rect[key],.6))m.push(`h1.${key}:${a.h1Rect[key]}/${b.h1Rect[key]}`);
+              if(name==='404'){for(const key of ['page','title','description','robots','canonical'])if(a[key]!==b[key])m.push(`${key}:${a[key]}/${b[key]}`)}
+              if(!b.wrappers.every(Boolean))m.push('missing-shell-wrapper');if(b.errors.length)m.push(`errors:${b.errors.join(';')}`);
+              console.log(`${mode}/${name}: ${m.length?m.join(' | '):'OK'}`);if(m.length)failures.push({mode,name,m,a,b});
+            }
+            for(const [name,lp,rp] of smokeRoutes){const a=await snap('http://127.0.0.1:4184',lp,vp,name),b=await snap('http://127.0.0.1:4185',rp,vp,name),m=[];
+              for(const box of ['header','inner'])for(const key of ['x','w','h'])if(!near(a[box]?.[key],b[box]?.[key]))m.push(`${box}.${key}:${a[box]?.[key]}/${b[box]?.[key]}`);
+              if(name==='catalog'&&(!b.resultCount.startsWith('53 ')||b.cards!==18))m.push(`catalog:${b.resultCount}/${b.cards}`);
+              if(name==='map'&&!/53/.test(b.mapText||''))m.push(`map:${b.mapText}`);
+              if(name==='blog'&&b.blogCards!==12)m.push(`blog:${b.blogCards}`);
+              if(!b.wrappers.every(Boolean))m.push('missing-shell-wrapper');if(b.errors.length)m.push(`errors:${b.errors.join(';')}`);
+              console.log(`${mode}/${name}: ${m.length?m.join(' | '):'OK'}`);if(m.length)failures.push({mode,name,m,a,b});
+            }
+          }
+          await browser.close();
+          if(failures.length){console.error(JSON.stringify(failures,null,2));process.exit(1)}
+          console.log('EXACT_BUILT_CASCADE_GATE_GREEN');
+          NODE
+
+      - name: Commit only after strict gate passes
+        working-directory: source
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$EXPECTED_BASE"
+          git config user.name 'calabriavera-parity-bot'
+          git config user.email 'actions@users.noreply.github.com'
+          git add frontend-react/scripts/copy-legacy-assets.mjs frontend-react/src/styles.css frontend-react/src/components/Layout.tsx frontend-react/src/App.tsx
+          git diff --cached --quiet && { echo 'No changes to commit'; exit 0; }
+          git commit -m 'fix: reproduce exact pre-React built CSS cascade'
+          git push origin HEAD:react-migration
+          echo "PATCH_SHA=$(git rev-parse HEAD)"
+
+      - name: Stop servers
+        if: always()
+        run: |
+          kill "$(cat /tmp/cv-built-gate-l.pid 2>/dev/null)" 2>/dev/null || true
+          kill "$(cat /tmp/cv-built-gate-r.pid 2>/dev/null)" 2>/dev/null || true
