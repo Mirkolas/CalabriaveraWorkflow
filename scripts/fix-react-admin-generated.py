@@ -61,7 +61,7 @@ blog=r'''function BlogPanel({posts,sources,busy,action}:{posts:Row[];sources:Row
   return <>
     <div className="section-heading"><div><p className="eyebrow">Contenuti</p><h2>Blog &amp; Magazine</h2></div><button className="button button-primary" type="button" onClick={()=>setEditingPost(null)}>Nuovo articolo</button></div>
     <div className="tabs"><button type="button" className={`tab ${tab==="posts"?"active":""}`} onClick={()=>setTab("posts")}>Articoli</button><button type="button" className={`tab ${tab==="sources"?"active":""}`} onClick={()=>setTab("sources")}>Fonti automatiche</button></div>
-    {tab==="posts"?<><div className="stat-grid"><div className="stat"><div>Totale</div><strong>{posts.length}</strong></div><div className="stat"><div>Editoriali</div><strong>{originals}</strong></div><div className="stat"><div>Importati</div><strong>{imported}</strong></div><div className="stat"><div>Pubblicati</div><strong>{published}</strong></div></div><div className="result-list">{postCards}</div></>:<SourcesList sources={sources} action={action} edit={setEditingSource}/>} 
+    {tab==="posts"?<><div className="stat-grid"><div className="stat"><div>Totale</div><strong>{posts.length}</strong></div><div className="stat"><div>Editoriali</div><strong>{originals}</strong></div><div className="stat"><div>Importati</div><strong>{imported}</strong></div><div className="stat"><div>Pubblicati</div><strong>{published}</strong></div></div><div className="result-list">{postCards}</div></>:<SourcesList sources={sources} action={action} edit={setEditingSource}/>}
   </>;
 }'''
 s=s[:blog_start]+blog+s[blog_end:]
