@@ -1,0 +1,77 @@
+name: React migration - dashboard parity
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/react-dashboard-parity.yml'
+      - 'scripts/patch-react-dashboard-parity.py'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  patch-build-push:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      PRIVATE_REPO: ${{ secrets.PRIVATE_REPO }}
+      PRIVATE_REPO_PAT: ${{ secrets.PRIVATE_REPO_PAT || secrets.PERSONAL_ACCESS_TOKEN || secrets.PAT || secrets.GH_PAT || secrets.GITHUB_PAT }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          path: automation
+          persist-credentials: false
+      - uses: actions/checkout@v7
+        with:
+          repository: ${{ secrets.PRIVATE_REPO }}
+          token: ${{ env.PRIVATE_REPO_PAT }}
+          ref: react-migration
+          path: source
+          fetch-depth: 0
+          persist-credentials: true
+      - uses: actions/setup-node@v7
+        with:
+          node-version: '24'
+          cache: npm
+          cache-dependency-path: source/frontend-react/package-lock.json
+      - name: Assert exact base
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git -C source rev-parse HEAD)" = "c3fc72056fc439884b4a226fe7aaf32bae374842"
+      - name: Apply Dashboard parity patch
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 automation/scripts/patch-react-dashboard-parity.py
+      - name: Build React client SSR and prerender
+        working-directory: source/frontend-react
+        shell: bash
+        run: |
+          set -euo pipefail
+          npm ci
+          npm run build
+      - name: Validate Dashboard parity invariants
+        shell: bash
+        run: |
+          set -euo pipefail
+          grep -q 'id="dashboard-root"' source/frontend-react/src/pages/DashboardPage.tsx
+          grep -q '{business.category || ""}' source/frontend-react/src/pages/DashboardPage.tsx
+          grep -q 'href={withLanguage(`/attivita?id=${encodeURIComponent(business.id)}`' source/frontend-react/src/pages/DashboardPage.tsx
+          grep -q 'LOCALES' source/frontend-react/src/pages/DashboardPage.tsx
+          grep -q 'cv-analytics-grid' source/frontend-react/src/pages/DashboardPage.tsx
+          grep -q 'deleteOwnBusiness' source/frontend-react/src/pages/DashboardPage.tsx
+          ! grep -q 'specificCategory' source/frontend-react/src/pages/DashboardPage.tsx
+          git -C source diff --check
+      - name: Commit and push only after green build
+        shell: bash
+        run: |
+          set -euo pipefail
+          git -C source config user.name 'CalabriaVera Automation'
+          git -C source config user.email 'actions@users.noreply.github.com'
+          git -C source add frontend-react/src/pages/DashboardPage.tsx
+          git -C source diff --cached --quiet && exit 0
+          git -C source commit -m 'fix: match main dashboard structure and actions'
+          git -C source push origin HEAD:react-migration
