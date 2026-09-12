@@ -1,0 +1,132 @@
+name: Cloudflare D1 - Workflow Storage
+
+on:
+  workflow_dispatch:
+    inputs:
+      operation:
+        description: Operazione D1 da eseguire
+        required: true
+        default: status
+        type: choice
+        options:
+          - status
+          - bootstrap
+          - sync-public-data
+          - export
+
+permissions:
+  contents: read
+
+concurrency:
+  group: cloudflare-d1-workflow-storage
+  cancel-in-progress: false
+
+env:
+  D1_DATABASE: calabriavera-workflows
+  CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+  CLOUDFLARE_ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
+  PRIVATE_REPO: ${{ secrets.PRIVATE_REPO }}
+  PRIVATE_REPO_PAT: ${{ secrets.PRIVATE_REPO_PAT || secrets.PERSONAL_ACCESS_TOKEN || secrets.PAT || secrets.GH_PAT || secrets.GITHUB_PAT }}
+
+jobs:
+  d1:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Verifica configurazione
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -n "$CLOUDFLARE_API_TOKEN" || { echo "::error::CLOUDFLARE_API_TOKEN mancante"; exit 1; }
+          test -n "$CLOUDFLARE_ACCOUNT_ID" || { echo "::error::CLOUDFLARE_ACCOUNT_ID mancante"; exit 1; }
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version: '22'
+
+      - name: Controlla database D1
+        id: db
+        shell: bash
+        run: |
+          set -euo pipefail
+          npx --yes wrangler@4 d1 list --json > /tmp/d1-list.json
+          if node -e 'const fs=require("fs");const x=JSON.parse(fs.readFileSync("/tmp/d1-list.json","utf8"));process.exit(x.some(d=>d.name===process.env.D1_DATABASE)?0:1)'; then
+            echo "exists=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "exists=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Crea database D1
+        if: github.event.inputs.operation == 'bootstrap' && steps.db.outputs.exists != 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          npx --yes wrangler@4 d1 create "$D1_DATABASE" --location weur
+
+      - name: Richiede database esistente
+        if: github.event.inputs.operation != 'bootstrap' && steps.db.outputs.exists != 'true'
+        shell: bash
+        run: |
+          echo "::error::Database $D1_DATABASE non esistente. Esegui prima operation=bootstrap."
+          exit 1
+
+      - name: Verifica accesso sorgente privato
+        if: github.event.inputs.operation == 'bootstrap' || github.event.inputs.operation == 'sync-public-data'
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -n "$PRIVATE_REPO" || { echo "::error::PRIVATE_REPO mancante"; exit 1; }
+          test -n "$PRIVATE_REPO_PAT" || { echo "::error::PAT repository privato mancante"; exit 1; }
+
+      - name: Scarica sorgente privato
+        if: github.event.inputs.operation == 'bootstrap' || github.event.inputs.operation == 'sync-public-data'
+        uses: actions/checkout@v7
+        with:
+          repository: ${{ secrets.PRIVATE_REPO }}
+          token: ${{ secrets.PRIVATE_REPO_PAT || secrets.PERSONAL_ACCESS_TOKEN || secrets.PAT || secrets.GH_PAT || secrets.GITHUB_PAT }}
+          ref: migration/cloudflare-d1-phase1
+          path: source
+          persist-credentials: false
+
+      - name: Applica schema D1
+        if: github.event.inputs.operation == 'bootstrap'
+        shell: bash
+        run: |
+          set -euo pipefail
+          npx --yes wrangler@4 d1 execute "$D1_DATABASE" --remote --file=source/frontend-react/d1/migrations/0001_public_content.sql --yes
+
+      - name: Genera seed dai dataset pubblici
+        if: github.event.inputs.operation == 'sync-public-data'
+        working-directory: source/frontend-react
+        run: node scripts/build-d1-seed.mjs
+
+      - name: Sincronizza dataset pubblici in D1
+        if: github.event.inputs.operation == 'sync-public-data'
+        shell: bash
+        run: |
+          set -euo pipefail
+          npx --yes wrangler@4 d1 execute "$D1_DATABASE" --remote --file=source/frontend-react/d1/generated/seed-public.sql --yes
+
+      - name: Stato D1
+        if: github.event.inputs.operation == 'status' || github.event.inputs.operation == 'bootstrap' || github.event.inputs.operation == 'sync-public-data'
+        shell: bash
+        run: |
+          set -euo pipefail
+          npx --yes wrangler@4 d1 info "$D1_DATABASE" --json
+          npx --yes wrangler@4 d1 execute "$D1_DATABASE" --remote --command='SELECT key, value, updated_at FROM migration_meta ORDER BY key;' --json || true
+
+      - name: Esporta D1
+        if: github.event.inputs.operation == 'export'
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p export
+          npx --yes wrangler@4 d1 export "$D1_DATABASE" --remote --output=export/calabriavera-workflows.sql --skip-confirmation
+
+      - name: Carica export come artifact
+        if: github.event.inputs.operation == 'export'
+        uses: actions/upload-artifact@v4
+        with:
+          name: calabriavera-workflows-d1-export
+          path: export/calabriavera-workflows.sql
+          retention-days: 7
