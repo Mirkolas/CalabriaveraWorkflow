@@ -51,8 +51,13 @@ jobs:
         with:
           node-version: '22'
 
-      - name: Applica menu originale, fallback galleria e favicon
-        run: node workflow-repo/scripts/fix-menu-gallery-favicon-2026-09-12.mjs source
+      - name: Applica menu originale, fallback galleria e favicon R2
+        shell: bash
+        run: |
+          set -euo pipefail
+          node workflow-repo/scripts/fix-menu-gallery-favicon-2026-09-12.mjs source
+          perl -0pi -e 's#href="/assets/Logo\.png\?v=20260912b"#href="https://img.calabriavera.com/static/assets/Logo.png?v=20260912c"#g' source/frontend-react/index.html
+          grep -Fq 'https://img.calabriavera.com/static/assets/Logo.png?v=20260912c' source/frontend-react/index.html
 
       - name: Verifica diff
         shell: bash
@@ -139,8 +144,9 @@ jobs:
           version="$(get -H 'Cache-Control: no-cache' "https://calabriavera.com/build-version.txt?repair=$GITHUB_RUN_ID" | tr -d '\r\n')"
           test "$version" = "$SHA"
           html="$(get -H 'Cache-Control: no-cache' "https://calabriavera.com/?repair=$GITHUB_RUN_ID")"
-          printf '%s' "$html" | grep -Fq 'Logo.png?v=20260912b'
-          echo "OK .com build $version e favicon nuovo"
+          printf '%s' "$html" | grep -Fq 'Logo.png?v=20260912c'
+          get --head 'https://img.calabriavera.com/static/assets/Logo.png?v=20260912c' >/dev/null
+          echo "OK .com build $version e favicon R2 nuovo"
 
       - name: Installa Chromium per verifica reale
         run: |
@@ -173,13 +179,14 @@ jobs:
             await card.waitFor({state:'visible',timeout:20000});
             const img=card.locator('img').first();
             await img.waitFor({state:'visible',timeout:20000});
-            await page.waitForFunction(el=>el.complete&&el.naturalWidth>20,await img.elementHandle(),{timeout:20000});
+            const handle=await img.elementHandle();
+            await page.waitForFunction(el=>el.complete&&el.naturalWidth>20,handle,{timeout:20000});
             const src=await img.getAttribute('src');
             console.log('Le Ninfee image:',src);
             await page.screenshot({path:'/tmp/cv-prod-check/catalogo.png',fullPage:true});
             await page.goto('https://calabriavera.com/?repair='+Date.now(),{waitUntil:'networkidle',timeout:60000});
             const favicon=await page.locator('link[rel="icon"]').first().getAttribute('href');
-            if(!String(favicon).includes('Logo.png?v=20260912b')) throw new Error('Favicon non aggiornato: '+favicon);
+            if(!String(favicon).includes('Logo.png?v=20260912c')) throw new Error('Favicon non aggiornato: '+favicon);
             await browser.close();
           })().catch(e=>{console.error(e);process.exit(1)});
           NODE
