@@ -1,0 +1,214 @@
+name: React final UI parity repair v4
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/react-final-ui-parity-repair-v4.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  repair:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      PRIVATE_REPO_PAT: ${{ secrets.PRIVATE_REPO_PAT || secrets.PERSONAL_ACCESS_TOKEN || secrets.PAT || secrets.GH_PAT || secrets.GITHUB_PAT }}
+    steps:
+      - name: Checkout private React branch
+        uses: actions/checkout@v7
+        with:
+          repository: Mirkolas/calabriavera
+          token: ${{ env.PRIVATE_REPO_PAT }}
+          ref: react-migration
+          path: source
+          fetch-depth: 0
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version: '22'
+
+      - name: Repair catalog, blog and legal runtime parity
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd source
+          python - <<'PY'
+          from pathlib import Path
+
+          # Catalogo: reproduce the final pre-React i18n values, not the newer home-search copy.
+          p = Path('frontend-react/src/pages/CatalogPage.tsx')
+          s = p.read_text()
+          marker = 'const PAGE_SIZE = 18;\n'
+          insert = '''const PAGE_SIZE = 18;
+          const LEGACY_CATALOG_SEARCH: Record<Language, string> = {
+            it: "Cosa stai cercando", en: "What are you looking for", fr: "Que cherchez-vous", de: "Wonach suchst du", es: "Qué buscas",
+          };
+          const LEGACY_CATALOG_ALL: Record<Language, string> = {
+            it: "Tutti", en: "All", fr: "Tous", de: "Alle", es: "Todos",
+          };
+          '''.replace('          ', '')
+          if marker not in s or 'LEGACY_CATALOG_SEARCH' in s:
+            raise SystemExit('Catalog constants insertion point missing or already patched')
+          s = s.replace(marker, insert, 1)
+          old = 'placeholder={uiText("searchWhatHint",language)}'
+          if old not in s:
+            raise SystemExit('Catalog placeholder target missing')
+          s = s.replace(old, 'placeholder={LEGACY_CATALOG_SEARCH[language]}', 1)
+          old = '<option value="">{uiText("all",language)}</option>{categoryOptions.map'
+          if old not in s:
+            raise SystemExit('Catalog category all target missing')
+          s = s.replace(old, '<option value="">{LEGACY_CATALOG_ALL[language]}</option>{categoryOptions.map', 1)
+          old = '<option value="">{uiText("all",language)}</option>{PROVINCES.map'
+          if old not in s:
+            raise SystemExit('Catalog province all target missing')
+          s = s.replace(old, '<option value="">{LEGACY_CATALOG_ALL[language]}</option>{PROVINCES.map', 1)
+          old = '<option value="">{uiText("allCities",language)}</option>{cities.map'
+          if old not in s:
+            raise SystemExit('Catalog city all target missing')
+          s = s.replace(old, '<option value="">{LEGACY_CATALOG_ALL[language]}</option>{cities.map', 1)
+          p.write_text(s)
+
+          # Exact legacy supplemental CSS: the old build applied these after the base bundles.
+          p = Path('frontend-react/src/styles.css')
+          s = p.read_text()
+          stale = 'body[data-page="catalog"] .cv-smart-hint{font-size:10px;line-height:1.45;color:#607080;margin-top:-5px}'
+          if stale not in s:
+            raise SystemExit('Catalog smart-hint override target missing')
+          s = s.replace(stale, '')
+          css_marker = '/* cv-blog-tabs-legacy-parity */'
+          if css_marker in s:
+            raise SystemExit('Blog tab CSS already patched unexpectedly')
+          s += '''
+
+/* cv-blog-tabs-legacy-parity */
+body[data-page="blog"] .cv-blog-tabs{display:flex;gap:10px;flex-wrap:wrap;margin:0 0 1.4rem;padding:6px;border:1px solid rgba(0,52,91,.12);border-radius:14px;background:#f5f8fa;width:max-content;max-width:100%}
+body[data-page="blog"] .cv-blog-tab{appearance:none;border:0;border-radius:10px;padding:.72rem 1rem;background:transparent;color:#00345b;font-weight:800;line-height:1.15;cursor:pointer}
+body[data-page="blog"] .cv-blog-tab:hover,body[data-page="blog"] .cv-blog-tab:focus-visible{background:#e8f0f5;outline:none}
+body[data-page="blog"] .cv-blog-tab.is-active{background:#00345b;color:#fff;box-shadow:0 4px 14px rgba(0,52,91,.18)}
+@media(max-width:560px){body[data-page="blog"] .cv-blog-tabs{display:grid;grid-template-columns:1fr 1fr;width:100%;gap:6px}body[data-page="blog"] .cv-blog-tab{padding:.68rem .55rem;font-size:.9rem}}
+'''
+          p.write_text(s)
+
+          # Remove the now-unnecessary request to a CSS file that was never copied into React public assets.
+          p = Path('frontend-react/src/pages/MagazinePage.tsx')
+          s = p.read_text()
+          block = '''  useEffect(() => {
+            if (document.querySelector('link[data-cv-blog-sections]')) return;
+            const link = document.createElement("link");
+            link.rel = "stylesheet";
+            link.href = "/assets/css/blog-sections.css?v=20260905-2";
+            link.dataset.cvBlogSections = "";
+            document.head.appendChild(link);
+          }, []);
+
+          '''.replace('          ', '')
+          if block not in s:
+            raise SystemExit('Magazine stale CSS-loader block missing')
+          p.write_text(s.replace(block, '', 1))
+
+          # Legal pages: reproduce assets/js/legal-identity.js final runtime transformation in React.
+          Path('frontend-react/src/pages/LegalPage.tsx').write_text(r'''import { useEffect, useRef } from "react";
+          import { LEGAL_CONTENT } from "../generated/legal-content";
+          import { languageFromPath, type Language } from "../lib/language";
+          import { setPageSeo } from "../lib/seo";
+
+          type Kind = keyof typeof LEGAL_CONTENT;
+          type Identity = { heading: string; text: string };
+
+          const LEGAL_IDENTITY: Record<Language, Identity> = {
+            it: {
+              heading: "Titolare del sito e del trattamento",
+              text: 'Il titolare del sito CalabriaVera e del trattamento dei dati personali è <strong>Mirko Sonotaca</strong>, con località di riferimento <strong>Marina di Gioiosa Ionica (RC), Italia</strong>, codice fiscale <strong>SNTMRK03C29D976R</strong>. Per comunicazioni, richieste privacy, rettifiche o segnalazioni è disponibile l’indirizzo <a href="mailto:info.calabriavera@gmail.com">info.calabriavera@gmail.com</a> e il numero <a href="tel:+393479975255">+39 347 997 5255</a>.'
+            },
+            en: {
+              heading: "Website operator and data controller",
+              text: 'The operator of the CalabriaVera website and the controller of personal data is <strong>Mirko Sonotaca</strong>, based in <strong>Marina di Gioiosa Ionica (RC), Italy</strong>, Italian tax code <strong>SNTMRK03C29D976R</strong>. For communications, privacy requests, corrections or reports, contact <a href="mailto:info.calabriavera@gmail.com">info.calabriavera@gmail.com</a> or <a href="tel:+393479975255">+39 347 997 5255</a>.'
+            },
+            fr: {
+              heading: "Titulaire du site et responsable du traitement",
+              text: 'Le titulaire du site CalabriaVera et responsable du traitement des données personnelles est <strong>Mirko Sonotaca</strong>, établi à <strong>Marina di Gioiosa Ionica (RC), Italie</strong>, code fiscal italien <strong>SNTMRK03C29D976R</strong>. Pour toute communication, demande relative à la vie privée, rectification ou signalement : <a href="mailto:info.calabriavera@gmail.com">info.calabriavera@gmail.com</a> ou <a href="tel:+393479975255">+39 347 997 5255</a>.'
+            },
+            de: {
+              heading: "Websitebetreiber und Verantwortlicher für die Datenverarbeitung",
+              text: 'Betreiber der Website CalabriaVera und Verantwortlicher für die Verarbeitung personenbezogener Daten ist <strong>Mirko Sonotaca</strong> mit Sitz in <strong>Marina di Gioiosa Ionica (RC), Italien</strong>, italienische Steuernummer <strong>SNTMRK03C29D976R</strong>. Für Mitteilungen, Datenschutzanfragen, Berichtigungen oder Meldungen: <a href="mailto:info.calabriavera@gmail.com">info.calabriavera@gmail.com</a> oder <a href="tel:+393479975255">+39 347 997 5255</a>.'
+            },
+            es: {
+              heading: "Titular del sitio y responsable del tratamiento",
+              text: 'El titular del sitio CalabriaVera y responsable del tratamiento de los datos personales es <strong>Mirko Sonotaca</strong>, con sede en <strong>Marina di Gioiosa Ionica (RC), Italia</strong>, código fiscal italiano <strong>SNTMRK03C29D976R</strong>. Para comunicaciones, solicitudes de privacidad, rectificaciones o avisos: <a href="mailto:info.calabriavera@gmail.com">info.calabriavera@gmail.com</a> o <a href="tel:+393479975255">+39 347 997 5255</a>.'
+            },
+          };
+
+          export default function LegalPage({ kind }: { kind: Kind }) {
+            const page = LEGAL_CONTENT[kind];
+            const rootRef = useRef<HTMLDivElement>(null);
+            const language = languageFromPath();
+
+            useEffect(() => {
+              setPageSeo({
+                title: page.title || "CalabriaVera",
+                description: page.description || "CalabriaVera",
+                path: location.pathname,
+                robots: "index,follow",
+              });
+            }, [kind, page.title, page.description]);
+
+            useEffect(() => {
+              const root = rootRef.current;
+              const prose = root?.querySelector<HTMLElement>(".legal-page .legal-prose");
+              if (!prose) return;
+              const data = LEGAL_IDENTITY[language] || LEGAL_IDENTITY.it;
+              if (kind === "privacy") {
+                const firstHeading = prose.querySelector<HTMLHeadingElement>("h2");
+                const firstParagraph = firstHeading?.nextElementSibling;
+                if (firstHeading) firstHeading.textContent = `1. ${data.heading}`;
+                if (firstParagraph?.tagName === "P") firstParagraph.innerHTML = data.text;
+                return;
+              }
+              const existing = prose.querySelector<HTMLElement>(".legal-owner");
+              if (!existing) return;
+              existing.setAttribute("aria-label", data.heading);
+              const heading = existing.querySelector<HTMLHeadingElement>("h2");
+              const paragraph = existing.querySelector<HTMLParagraphElement>("p");
+              if (heading) heading.textContent = data.heading;
+              if (paragraph) paragraph.innerHTML = data.text;
+            }, [kind, language, page.html]);
+
+            return <div ref={rootRef} className="cv-legacy-content" dangerouslySetInnerHTML={{ __html: page.html }} />;
+          }
+          '''.replace('          ', ''))
+          PY
+
+          git diff --check
+          git diff -- frontend-react/src/pages/CatalogPage.tsx frontend-react/src/pages/MagazinePage.tsx frontend-react/src/pages/LegalPage.tsx frontend-react/src/styles.css
+
+      - name: Full regression suite
+        working-directory: source
+        shell: bash
+        run: |
+          set -euo pipefail
+          npm ci --no-audit --no-fund
+          npm test
+
+      - name: React build
+        working-directory: source/frontend-react
+        env:
+          CV_PRERENDER_OFFLINE: '1'
+        shell: bash
+        run: |
+          set -euo pipefail
+          npm ci --no-audit --no-fund
+          npm run build
+
+      - name: Commit verified repair to react-migration
+        working-directory: source
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name 'CalabriaVera CI'
+          git config user.email 'actions@users.noreply.github.com'
+          git add frontend-react/src/pages/CatalogPage.tsx frontend-react/src/pages/MagazinePage.tsx frontend-react/src/pages/LegalPage.tsx frontend-react/src/styles.css
+          git commit -m 'fix: close remaining React visual parity gaps'
+          git push origin HEAD:react-migration
