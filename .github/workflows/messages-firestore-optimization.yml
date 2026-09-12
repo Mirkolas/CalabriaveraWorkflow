@@ -1,0 +1,78 @@
+name: One-time messages Firestore optimization
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/messages-firestore-optimization.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  optimize:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    env:
+      PRIVATE_REPO: ${{ secrets.PRIVATE_REPO }}
+      PRIVATE_REPO_PAT: ${{ secrets.PRIVATE_REPO_PAT || secrets.PERSONAL_ACCESS_TOKEN || secrets.PAT || secrets.GH_PAT || secrets.GITHUB_PAT }}
+    steps:
+      - name: Checkout main privato
+        uses: actions/checkout@v7
+        with:
+          repository: ${{ secrets.PRIVATE_REPO }}
+          token: ${{ env.PRIVATE_REPO_PAT }}
+          ref: main
+          path: source
+          persist-credentials: true
+          fetch-depth: 1
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version: '22'
+
+      - name: Evita riletture profili già caricati
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          from pathlib import Path
+          p=Path('source/frontend-react/src/pages/MessagesPage.tsx')
+          s=p.read_text()
+          old='''  useEffect(()=>{if(!userId||!conversations?.length)return;let active=true;const ids=[...new Set(conversations.map((row)=>peerId(row,userId)).filter(Boolean))];void Promise.all(ids.map(async(id)=>[id,await getPublicProfile(id)] as const)).then((pairs)=>{if(active)setProfiles((current)=>({...current,...Object.fromEntries(pairs)}));});return()=>{active=false};},[conversations,userId]);'''
+          new='''  useEffect(()=>{if(!userId||!conversations?.length)return;let active=true;const ids=[...new Set(conversations.map((row)=>peerId(row,userId)).filter(Boolean))].filter((id)=>!(id in profiles));if(!ids.length)return;void Promise.all(ids.map(async(id)=>[id,await getPublicProfile(id)] as const)).then((pairs)=>{if(active)setProfiles((current)=>({...current,...Object.fromEntries(pairs)}));});return()=>{active=false};},[conversations,userId,profiles]);'''
+          if old not in s:
+              raise SystemExit('Pattern MessagesPage non trovato')
+          p.write_text(s.replace(old,new))
+          PY
+          git -C source diff --check -- frontend-react/src/pages/MessagesPage.tsx
+          git -C source diff -- frontend-react/src/pages/MessagesPage.tsx
+
+      - name: Suite completa
+        working-directory: source
+        run: |
+          set -euo pipefail
+          npm ci --no-audit --no-fund
+          npm test
+
+      - name: Build React
+        working-directory: source/frontend-react
+        env:
+          CV_PRERENDER_OFFLINE: '1'
+        run: |
+          set -euo pipefail
+          npm ci --no-audit --no-fund
+          npm run build
+
+      - name: Commit privato senza Actions private
+        working-directory: source
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name 'CalabriaVera Public Workflow'
+          git config user.email 'actions@users.noreply.github.com'
+          git add frontend-react/src/pages/MessagesPage.tsx
+          git commit -m 'perf: cache message participant profiles [skip ci]'
+          git push origin HEAD:main
+          echo "Private main: $(git rev-parse HEAD)"
