@@ -1,0 +1,72 @@
+name: Validate Private React PR 140
+
+on:
+  pull_request:
+    paths:
+      - '.github/workflows/validate-private-react-pr140.yml'
+      - '.github/workflows/cloudflare-r2-migrate-business-images.yml'
+      - '.github/workflows/cloudflare-r2-static-images.yml'
+      - '.github/workflows/architecture-contract.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 35
+    env:
+      PRIVATE_REPO: ${{ secrets.PRIVATE_REPO }}
+      PRIVATE_REPO_PAT: ${{ secrets.PRIVATE_REPO_PAT || secrets.PERSONAL_ACCESS_TOKEN || secrets.PAT || secrets.GH_PAT || secrets.GITHUB_PAT }}
+    steps:
+      - name: Verifica accesso sorgente privato
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -n "$PRIVATE_REPO"
+          test -n "$PRIVATE_REPO_PAT"
+
+      - name: Scarica branch privato PR 140
+        uses: actions/checkout@v7
+        with:
+          repository: ${{ secrets.PRIVATE_REPO }}
+          token: ${{ env.PRIVATE_REPO_PAT }}
+          ref: migration/react-static-r2-boundary
+          path: source
+          persist-credentials: false
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: |
+            source/package-lock.json
+            source/frontend-react/package-lock.json
+
+      - name: Verifica sintassi bridge R2 legacy
+        working-directory: source
+        run: |
+          node --check assets/js/business-images-r2.js
+          node --check assets/js/activity-data.js
+          node --check assets/js/activity-data-core.js
+          node --check tools/admin/migrate-business-images-r2.mjs
+
+      - name: Installa dipendenze sito Firebase
+        working-directory: source
+        run: npm ci --no-audit --no-fund
+
+      - name: Test sito Firebase legacy
+        working-directory: source
+        run: npm test
+
+      - name: Installa dipendenze React
+        working-directory: source/frontend-react
+        run: npm ci --no-audit --no-fund
+
+      - name: Verifica architettura definitiva
+        working-directory: source/frontend-react
+        run: npm run architecture:check
+
+      - name: Build React completa
+        working-directory: source/frontend-react
+        run: npm run build
