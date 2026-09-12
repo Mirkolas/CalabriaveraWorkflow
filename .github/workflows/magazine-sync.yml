@@ -117,10 +117,6 @@ jobs:
         working-directory: source
         env:
           NODE_OPTIONS: --import=./tools/source-fetch-compat.mjs
-          AUTOMATION_STATE_BACKEND: d1
-          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
-          CLOUDFLARE_ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
-          D1_DATABASE: calabriavera-workflows
           AUTOMATION_INTERVAL_MINUTES: '360'
           AUTOMATION_LOCK_MINUTES: '35'
           AUTOMATION_FORCE: ${{ (github.event_name == 'workflow_dispatch' && inputs.mode == 'blog') || (github.event_name == 'repository_dispatch' && github.event.client_payload.magazine_force == true) }}
@@ -164,10 +160,6 @@ jobs:
           SOCIAL_FORCE_INSTAGRAM_REPUBLISH: ${{ github.event_name == 'repository_dispatch' && github.event.client_payload.social_republish_instagram == true }}
           SOCIAL_FORCE_POST_ID: ${{ github.event_name == 'repository_dispatch' && github.event.client_payload.social_republish_ricadi == true && 'ext-b531af8d21e352c377ddff4c712d' || '' }}
           SOCIAL_DRY_RUN: ${{ (github.event_name == 'workflow_dispatch' && inputs.mode == 'social-dry-run') || (github.event_name == 'repository_dispatch' && github.event.client_payload.social_dry_run == true) }}
-          AUTOMATION_STATE_BACKEND: d1
-          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
-          CLOUDFLARE_ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
-          D1_DATABASE: calabriavera-workflows
           AUTOMATION_INTERVAL_MINUTES: '360'
           AUTOMATION_LOCK_MINUTES: '35'
           AUTOMATION_ADVANCE_ON_FAILURE: 'true'
@@ -198,10 +190,6 @@ jobs:
           SOCIAL_INSTAGRAM_ENABLED: ${{ vars.SOCIAL_INSTAGRAM_ENABLED }}
           PROMO_STORY_TARGET: both
           PROMO_STORY_DRY_RUN: 'false'
-          AUTOMATION_STATE_BACKEND: d1
-          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
-          CLOUDFLARE_ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
-          D1_DATABASE: calabriavera-workflows
           AUTOMATION_INTERVAL_MINUTES: '1440'
           AUTOMATION_LOCK_MINUTES: '30'
           AUTOMATION_FORCE: ${{ github.event_name == 'workflow_dispatch' && inputs.mode == 'promo-story-publish' }}
