@@ -1,10 +1,23 @@
-name: Firebase - Backup completo cifrato
+name: Firebase - Backup cifrato incrementale
 
-# Il backup completo attraversa ricorsivamente tutto Firestore e può consumare da solo
-# la quota giornaliera gratuita di letture. Finché non viene sostituito con un backup
-# incrementale, resta disponibile solo su avvio manuale esplicito.
 on:
+  schedule:
+    - cron: '41 2 * * *'
   workflow_dispatch:
+    inputs:
+      mode:
+        description: 'Modalità backup'
+        required: true
+        default: incremental
+        type: choice
+        options:
+          - incremental
+          - full-emergency
+          - baseline-v1
+      confirm:
+        description: 'Per baseline-v1 scrivere: ACTIVATE BASELINE V1'
+        required: false
+        type: string
 
 permissions:
   contents: read
@@ -12,14 +25,14 @@ permissions:
   id-token: write
 
 concurrency:
-  group: firebase-production
+  group: firebase-production-backup
   cancel-in-progress: false
 
 jobs:
   backup:
     if: vars.BACKUPS_ENABLED == 'true' && github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 20
     env:
       PRIVATE_REPO: ${{ secrets.PRIVATE_REPO }}
       PRIVATE_REPO_PAT: ${{ secrets.PRIVATE_REPO_PAT || secrets.PERSONAL_ACCESS_TOKEN || secrets.PAT || secrets.GH_PAT || secrets.GITHUB_PAT }}
@@ -32,39 +45,114 @@ jobs:
           test -n "$PRIVATE_REPO" || { echo "::error::PRIVATE_REPO mancante"; exit 1; }
           test -n "$PRIVATE_REPO_PAT" || { echo "::error::PAT per repository privato mancante"; exit 1; }
 
-      - name: Scarica sorgente privato
+      # Durante la migrazione il motore incrementale vive su react-migration.
+      # Quando React diventerà main, questo ref verrà riallineato a main.
+      - name: Scarica motore backup incrementale
         uses: actions/checkout@v7
         with:
           repository: ${{ secrets.PRIVATE_REPO }}
           token: ${{ secrets.PRIVATE_REPO_PAT || secrets.PERSONAL_ACCESS_TOKEN || secrets.PAT || secrets.GH_PAT || secrets.GITHUB_PAT }}
-          ref: main
+          ref: react-migration
           path: source
+          fetch-depth: 0
           persist-credentials: false
 
       - uses: actions/setup-node@v7
         with:
           node-version: '22'
+          cache: npm
+          cache-dependency-path: |
+            source/package-lock.json
+            source/tools/package-lock.json
 
-      - name: Installa dipendenze
+      - name: Installa dipendenze backup
         working-directory: source
         run: npm ci && npm --prefix tools ci --no-audit --no-fund
 
-      - name: Build e test backup
+      - name: Preflight senza Firebase
+        id: preflight
         working-directory: source
-        run: npm run build && npm run test:backup
+        env:
+          GITHUB_TOKEN: ${{ secrets.PRIVATE_REPO_PAT || secrets.PERSONAL_ACCESS_TOKEN || secrets.PAT || secrets.GH_PAT || secrets.GITHUB_PAT }}
+          CALABRIAVERA_BACKUP_ENCRYPTION_KEY: ${{ secrets.CALABRIAVERA_BACKUP_ENCRYPTION_KEY }}
+          REQUESTED_MODE: ${{ github.event_name == 'schedule' && 'incremental' || inputs.mode }}
+          BASELINE_CONFIRM: ${{ inputs.confirm }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          mode="${REQUESTED_MODE:-incremental}"
+          case "$mode" in
+            incremental)
+              node --input-type=module <<'NODE'
+              import { downloadBackup, latestVerifiedBackup } from './tools/backup/releases.mjs';
+              const repository = process.env.PRIVATE_REPO || 'Mirkolas/calabriavera';
+              const key = process.env.CALABRIAVERA_BACKUP_ENCRYPTION_KEY;
+              const latest = await latestVerifiedBackup(repository);
+              if (!latest) {
+                console.log('Nessun backup verificato: incrementale in safe-skip, zero letture Firestore.');
+                console.log('ready=false');
+                process.exit(0);
+              }
+              const { archive } = await downloadBackup(repository, latest.tag_name, key);
+              const ready = Number(archive.metadata.incrementalSchemaVersion || 0) === 1;
+              console.log(`Ultimo backup ${latest.tag_name}: schema incrementale ${archive.metadata.incrementalSchemaVersion || 0}; ready=${ready}`);
+              console.log(`ready=${ready}`);
+              NODE
+              ready="$(node --input-type=module <<'NODE'
+              import { downloadBackup, latestVerifiedBackup } from './tools/backup/releases.mjs';
+              const repository = process.env.PRIVATE_REPO || 'Mirkolas/calabriavera';
+              const latest = await latestVerifiedBackup(repository);
+              if (!latest) { console.log('false'); process.exit(0); }
+              const { archive } = await downloadBackup(repository, latest.tag_name, process.env.CALABRIAVERA_BACKUP_ENCRYPTION_KEY);
+              console.log(Number(archive.metadata.incrementalSchemaVersion || 0) === 1 ? 'true' : 'false');
+              NODE
+              )"
+              echo "ready=$ready" >> "$GITHUB_OUTPUT"
+              echo "mode=incremental" >> "$GITHUB_OUTPUT"
+              ;;
+            full-emergency)
+              echo 'Backup completo di emergenza richiesto esplicitamente; non abiliterà la baseline incrementale.'
+              echo 'ready=true' >> "$GITHUB_OUTPUT"
+              echo 'mode=full-emergency' >> "$GITHUB_OUTPUT"
+              ;;
+            baseline-v1)
+              test "$BASELINE_CONFIRM" = 'ACTIVATE BASELINE V1' || { echo '::error::Conferma baseline non corretta.'; exit 1; }
+              echo 'Baseline v1 esplicitamente autorizzata.'
+              echo 'ready=true' >> "$GITHUB_OUTPUT"
+              echo 'mode=baseline-v1' >> "$GITHUB_OUTPUT"
+              ;;
+            *) echo "::error::Modalità backup sconosciuta: $mode"; exit 1 ;;
+          esac
+
+      - name: Safe-skip senza letture Firestore
+        if: steps.preflight.outputs.ready != 'true'
+        run: echo 'Incrementale non ancora attivato. Nessuna lettura Firestore eseguita.'
+
+      - name: Test backup locale
+        if: steps.preflight.outputs.ready == 'true'
+        working-directory: source
+        run: npm run test:backup
 
       - uses: google-github-actions/auth@v3
+        if: steps.preflight.outputs.ready == 'true'
         with:
           workload_identity_provider: ${{ vars.FIREBASE_WIF_PROVIDER }}
           service_account: ${{ vars.FIREBASE_BACKUP_SERVICE_ACCOUNT }}
 
+      - name: Build locale per verifica Hosting
+        if: steps.preflight.outputs.ready == 'true'
+        working-directory: source
+        run: npm run build
+
       - name: Allinea dist alla release Hosting pubblicata
+        if: steps.preflight.outputs.ready == 'true'
         working-directory: source
         env:
           FIREBASE_PROJECT_ID: calabriavera-e08d4
         run: node tools/backup/prepare-hosting-dist.mjs
 
-      - name: Backup, verifica remota e rotazione a gruppi di cinque copie riuscite
+      - name: Backup cifrato, verifica remota e rotazione
+        if: steps.preflight.outputs.ready == 'true'
         working-directory: source
         env:
           FIREBASE_PROJECT_ID: calabriavera-e08d4
@@ -73,4 +161,13 @@ jobs:
           GITHUB_ACTIONS_REPOSITORY: ${{ github.repository }}
           CALABRIAVERA_BACKUP_ENCRYPTION_KEY: ${{ secrets.CALABRIAVERA_BACKUP_ENCRYPTION_KEY }}
           FIREBASE_AUTH_HASH_CONFIG: ${{ secrets.FIREBASE_AUTH_HASH_CONFIG }}
-        run: node tools/backup/run.mjs
+          BACKUP_MODE: ${{ steps.preflight.outputs.mode }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          case "$BACKUP_MODE" in
+            incremental) node tools/backup/run.mjs --incremental ;;
+            full-emergency) node tools/backup/run.mjs ;;
+            baseline-v1) node tools/backup/run.mjs --baseline-v1 ;;
+            *) echo "::error::Modalità inattesa $BACKUP_MODE"; exit 1 ;;
+          esac
