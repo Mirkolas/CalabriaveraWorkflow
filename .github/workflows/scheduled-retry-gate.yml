@@ -17,7 +17,7 @@ on:
         type: number
     outputs:
       should_run:
-        description: true when this scheduled attempt must execute the real job
+        description: true when this attempt may execute the real job
         value: ${{ jobs.gate.outputs.should_run }}
       campaign:
         description: Logical campaign identifier
@@ -35,7 +35,7 @@ jobs:
       should_run: ${{ steps.guard.outputs.should_run }}
       campaign: ${{ steps.guard.outputs.campaign }}
     steps:
-      - name: Ferma i tentativi successivi dopo il primo successo
+      - name: Proteggi la quota Firestore e deduplica i tentativi
         id: guard
         shell: bash
         env:
@@ -49,38 +49,33 @@ jobs:
         run: |
           set -euo pipefail
 
-          # Dispatch manuali e repository_dispatch non fanno parte dei tentativi schedulati.
-          if [ "$EVENT_NAME" != "schedule" ]; then
+          # Un avvio umano esplicito resta sempre disponibile per emergenze/manutenzione.
+          if [ "$EVENT_NAME" = "workflow_dispatch" ]; then
             echo "should_run=true" >> "$GITHUB_OUTPUT"
             echo "campaign=manual" >> "$GITHUB_OUTPUT"
-            echo "Evento $EVENT_NAME: esecuzione consentita senza deduplicazione schedulata."
+            echo "Avvio manuale: esecuzione consentita."
             exit 0
           fi
 
           cadence="$CADENCE_MINUTES"
           anchor="$ANCHOR_OFFSET_MINUTES"
           if ! [[ "$cadence" =~ ^[0-9]+$ ]] || [ "$cadence" -le 0 ]; then
-            echo "::warning::Cadenza non valida ($cadence): per sicurezza eseguo il tentativo."
-            echo "should_run=true" >> "$GITHUB_OUTPUT"
-            echo "campaign=invalid-cadence" >> "$GITHUB_OUTPUT"
-            exit 0
+            echo "::error::Cadenza non valida: $cadence"
+            exit 1
           fi
           if ! [[ "$anchor" =~ ^-?[0-9]+$ ]]; then
-            echo "::warning::Anchor non valido ($anchor): per sicurezza eseguo il tentativo."
-            echo "should_run=true" >> "$GITHUB_OUTPUT"
-            echo "campaign=invalid-anchor" >> "$GITHUB_OUTPUT"
-            exit 0
+            echo "::error::Anchor non valido: $anchor"
+            exit 1
           fi
 
-          # Protezione centralizzata della quota Firestore gratuita.
-          # I cron multipli restano come retry GitHub, ma il lavoro reale non può essere
-          # eseguito più spesso di queste soglie sui workflow che leggono Firestore.
+          # Tetti conservativi per il piano gratuito Firestore. I valori qui prevalgono
+          # sulle cadenze più aggressive dichiarate dai singoli workflow.
           quota_floor=0
           case "$WORKFLOW_FILE" in
-            magazine-sync.yml) quota_floor=240 ;;      # max 6 cicli completi/giorno
-            seo-sync.yml) quota_floor=360 ;;           # max 4 scansioni SEO/giorno
-            firebase-deploy.yml) quota_floor=720 ;;    # manutenzione admin max 2 volte/giorno
-            daily-backup.yml) quota_floor=2880 ;;      # backup Firestore completo max 1 ogni 2 giorni
+            magazine-sync.yml) quota_floor=360 ;;      # max 4 cicli/giorno
+            seo-sync.yml) quota_floor=720 ;;           # max 2 scansioni SEO/giorno
+            firebase-deploy.yml) quota_floor=1440 ;;   # manutenzione admin max 1/giorno
+            daily-backup.yml) quota_floor=10080 ;;     # backup completo max 1/settimana
           esac
           if [ "$quota_floor" -gt 0 ] && [ "$cadence" -lt "$quota_floor" ]; then
             echo "Protezione quota Firestore: cadenza $WORKFLOW_FILE aumentata da ${cadence} a ${quota_floor} minuti."
@@ -96,44 +91,51 @@ jobs:
           campaign_end="$(date -u -d "@$((campaign_end_minutes * 60))" '+%Y-%m-%dT%H:%M:%SZ')"
 
           echo "campaign=$campaign" >> "$GITHUB_OUTPUT"
-          echo "Campagna schedulata $campaign: $campaign_start -> $campaign_end"
+          echo "Finestra quota $campaign: $campaign_start -> $campaign_end ($cadence minuti)"
 
-          # Se l'API Actions ha un problema, non blocchiamo il backup/deploy/automazione:
-          # meglio eseguire un tentativo in più che perdere la campagna.
+          # Per schedule e repository_dispatch conta QUALSIASI tentativo reale completato
+          # nella finestra, non soltanto i successi. In questo modo un errore quota non
+          # scatena altri 4-5 retry costosi nella stessa campagna.
           set +e
           runs_json="$(gh api \
             -H "Accept: application/vnd.github+json" \
             -H "X-GitHub-Api-Version: 2022-11-28" \
-            "repos/$REPO/actions/workflows/$WORKFLOW_FILE/runs?branch=main&event=schedule&per_page=100" 2>/tmp/retry-gate.err)"
+            "repos/$REPO/actions/workflows/$WORKFLOW_FILE/runs?branch=main&status=completed&per_page=100" 2>/tmp/retry-gate.err)"
           api_code=$?
           set -e
 
           if [ "$api_code" -ne 0 ]; then
-            echo "::warning::Impossibile verificare i successi precedenti; eseguo il tentativo corrente."
-            cat /tmp/retry-gate.err || true
+            # Fail closed sui workflow quota-sensitive: un problema dell'API GitHub non
+            # deve trasformarsi in migliaia di letture Firestore duplicate.
+            if [ "$quota_floor" -gt 0 ]; then
+              echo "::warning::Impossibile verificare i tentativi precedenti: blocco prudenziale di $WORKFLOW_FILE."
+              cat /tmp/retry-gate.err || true
+              echo "should_run=false" >> "$GITHUB_OUTPUT"
+              exit 0
+            fi
+            echo "::warning::Impossibile verificare i tentativi precedenti; workflow non Firestore consentito."
             echo "should_run=true" >> "$GITHUB_OUTPUT"
             exit 0
           fi
 
-          previous_success="$(printf '%s' "$runs_json" | jq -r \
+          previous_attempt="$(printf '%s' "$runs_json" | jq -r \
             --arg current "$RUN_ID" \
             --arg start "$campaign_start" \
             --arg end "$campaign_end" '
               first(
                 .workflow_runs[]
                 | select((.id | tostring) != $current)
-                | select(.event == "schedule")
-                | select(.conclusion == "success")
                 | select(.created_at >= $start and .created_at < $end)
-                | [.id, .created_at] | @tsv
+                | select(.event == "schedule" or .event == "repository_dispatch")
+                | [.id, .event, .conclusion, .created_at] | @tsv
               ) // empty
             ')"
 
-          if [ -n "$previous_success" ]; then
+          if [ -n "$previous_attempt" ]; then
             echo "should_run=false" >> "$GITHUB_OUTPUT"
-            echo "Successo già registrato nella stessa campagna: $previous_success"
-            echo "Questo tentativo termina senza avviare il lavoro reale."
+            echo "Tentativo reale già completato nella finestra: $previous_attempt"
+            echo "Nuove letture Firestore bloccate fino alla prossima finestra."
           else
             echo "should_run=true" >> "$GITHUB_OUTPUT"
-            echo "Nessun successo precedente nella campagna: eseguo questo tentativo."
+            echo "Nessun tentativo precedente nella finestra: esecuzione consentita."
           fi
