@@ -1,0 +1,91 @@
+name: React CSS winner diagnostic v1
+
+on:
+  push:
+    branches: [main]
+    paths: ['.github/workflows/react-css-winner-diagnostic-v1.yml']
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  diagnose:
+    runs-on: ubuntu-latest
+    timeout-minutes: 35
+    env:
+      PRIVATE_REPO_PAT: ${{ secrets.PRIVATE_REPO_PAT || secrets.PERSONAL_ACCESS_TOKEN || secrets.PAT || secrets.GH_PAT || secrets.GITHUB_PAT }}
+      LEGACY_SHA: 7be434e3418e95cff9825e4cc3f4b4ed75cd1076
+      EXPECTED_BASE: f16b18b93d91b4e1ac278351c6ef7507f3f7a04e
+    steps:
+      - uses: actions/checkout@v7
+        with: {path: workflow, persist-credentials: false}
+      - uses: actions/checkout@v7
+        with:
+          repository: ${{ secrets.PRIVATE_REPO }}
+          token: ${{ env.PRIVATE_REPO_PAT }}
+          ref: backup-main-pre-react-2026-09-11
+          path: legacy
+          persist-credentials: false
+      - uses: actions/checkout@v7
+        with:
+          repository: ${{ secrets.PRIVATE_REPO }}
+          token: ${{ env.PRIVATE_REPO_PAT }}
+          ref: react-migration
+          path: source
+          persist-credentials: false
+      - uses: actions/setup-node@v7
+        with: {node-version: '24'}
+      - name: Build outputs with exact built cascade simulation
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git -C legacy rev-parse HEAD)" = "$LEGACY_SHA"
+          test "$(git -C source rev-parse HEAD)" = "$EXPECTED_BASE"
+          (cd source && python3 ../workflow/scripts/patch-react-built-cascade-parity.py)
+          (cd legacy && npm ci && npm run build)
+          (cd source/frontend-react && npm ci && npm run build)
+      - name: Install Chromium and serve
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p /tmp/cv-css-winner
+          npm install --prefix /tmp/cv-css-winner --no-package-lock --no-save playwright@1.62.1 serve@14.2.4
+          /tmp/cv-css-winner/node_modules/.bin/playwright install --with-deps chromium >/dev/null
+          nohup /tmp/cv-css-winner/node_modules/.bin/serve legacy/dist -l 4184 >/tmp/cv-css-winner-l.log 2>&1 & echo $! >/tmp/cv-css-winner-l.pid
+          nohup /tmp/cv-css-winner/node_modules/.bin/serve -s source/frontend-react/dist -l 4185 >/tmp/cv-css-winner-r.log 2>&1 & echo $! >/tmp/cv-css-winner-r.pid
+          for attempt in {1..30}; do curl -fsS http://127.0.0.1:4184/404.html >/dev/null 2>&1 && curl -fsS http://127.0.0.1:4185/questa-pagina-non-esiste >/dev/null 2>&1 && exit 0; sleep 1; done
+          exit 1
+      - name: Dump matching CSS rules and stylesheet order
+        env:
+          PLAYWRIGHT_MODULE: /tmp/cv-css-winner/node_modules/playwright
+        shell: bash
+        run: |
+          node --input-type=module <<'NODE'
+          import {createRequire} from 'node:module';
+          const {chromium}=createRequire(import.meta.url)(process.env.PLAYWRIGHT_MODULE);
+          const browser=await chromium.launch({headless:true});
+          async function inspect(origin,path,label){
+            const ctx=await browser.newContext({viewport:{width:1365,height:900},serviceWorkers:'block'});
+            await ctx.addInitScript(()=>{const n=Date.now();localStorage.setItem('cv-cookie-consent-v3',JSON.stringify({version:3,scope:'technical-only',savedAt:new Date(n).toISOString(),expiresAt:new Date(n+30*86400000).toISOString(),necessary:true,preferences:false,analytics:false,marketing:false,source:'ci'}))});
+            const p=await ctx.newPage();await p.goto(origin+path,{waitUntil:'networkidle',timeout:30000});
+            const out=await p.evaluate(()=>{
+              const targets={h1:document.querySelector('main h1'),header:document.querySelector('.site-header'),inner:document.querySelector('.header-inner'),container:document.querySelector('main .container')};
+              const props=['font-family','font-weight','font-size','line-height','letter-spacing','width','max-width','min-height','height','padding-left','padding-right','margin-left','margin-right','background-color','position'];
+              function rulesFor(el){const out=[];if(!el)return out;for(const sheet of [...document.styleSheets]){let rules;try{rules=sheet.cssRules}catch{continue}for(const rule of [...rules]){if(!(rule instanceof CSSStyleRule))continue;let match=false;try{match=el.matches(rule.selectorText)}catch{}if(!match)continue;const chosen={};for(const prop of props){const value=rule.style.getPropertyValue(prop);if(value)chosen[prop]={value,priority:rule.style.getPropertyPriority(prop)}}if(Object.keys(chosen).length)out.push({href:sheet.href?new URL(sheet.href,location.href).pathname:'INLINE',selector:rule.selectorText,style:chosen});} }return out;}
+              const computed={};for(const [k,e] of Object.entries(targets)){if(!e)continue;const s=getComputedStyle(e);computed[k]=Object.fromEntries(props.map(x=>[x,s.getPropertyValue(x)]));}
+              return {sheets:[...document.styleSheets].map((s,i)=>({i,href:s.href?new URL(s.href,location.href).pathname:'INLINE',disabled:s.disabled})),computed,rules:Object.fromEntries(Object.entries(targets).map(([k,e])=>[k,rulesFor(e)]))};
+            });
+            console.log('CSS_WINNER '+label+' '+JSON.stringify(out));await p.close();await ctx.close();
+          }
+          await inspect('http://127.0.0.1:4184','/404.html','legacy404');
+          await inspect('http://127.0.0.1:4185','/questa-pagina-non-esiste','react404');
+          await inspect('http://127.0.0.1:4184','/chi-siamo.html','legacyAbout');
+          await inspect('http://127.0.0.1:4185','/chi-siamo','reactAbout');
+          await browser.close();
+          NODE
+      - name: Stop
+        if: always()
+        run: |
+          kill "$(cat /tmp/cv-css-winner-l.pid 2>/dev/null)" 2>/dev/null || true
+          kill "$(cat /tmp/cv-css-winner-r.pid 2>/dev/null)" 2>/dev/null || true
