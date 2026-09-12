@@ -129,6 +129,9 @@ jobs:
             set -euo pipefail
             export MAGAZINE_CYCLE_STARTED_AT_MS=$(date +%s%3N)
             node tools/enforce-source-rights.mjs
+            # Il registro sorgenti e gia stato allineato nello step precedente: gli
+            # importer possono evitare di riscrivere la stessa configurazione.
+            export SOURCE_REGISTRY_ENFORCED=true
             node tools/cleanup-ingv-magnitude.mjs
             set +e
             node tools/sync-magazine-v2.mjs; rss_code=$?
