@@ -1,6 +1,7 @@
 from pathlib import Path
 
 # Trigger the dynamic cutover gate for the validated Firebase production bridge.
+# Re-run against the final hosting/R2 candidate after Firebase-emulator validation.
 path = Path('automation/scripts/react-parity-audit-v2.cjs')
 s = path.read_text()
 
