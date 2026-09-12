@@ -1,0 +1,103 @@
+name: React migration - tourism shadow fix
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/react-tourism-shadow-fix.yml'
+      - 'scripts/patch-react-tourism-shadow-fix.py'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: react-tourism-shadow-fix
+  cancel-in-progress: true
+
+jobs:
+  patch-build-push:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    env:
+      PRIVATE_REPO: ${{ secrets.PRIVATE_REPO }}
+      PRIVATE_REPO_PAT: ${{ secrets.PRIVATE_REPO_PAT || secrets.PERSONAL_ACCESS_TOKEN || secrets.PAT || secrets.GH_PAT || secrets.GITHUB_PAT }}
+    steps:
+      - name: Verify private repository access
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -n "$PRIVATE_REPO"
+          test -n "$PRIVATE_REPO_PAT"
+      - uses: actions/checkout@v7
+        with:
+          path: automation
+          persist-credentials: false
+      - uses: actions/checkout@v7
+        with:
+          repository: ${{ secrets.PRIVATE_REPO }}
+          token: ${{ env.PRIVATE_REPO_PAT }}
+          ref: react-migration
+          path: source
+          fetch-depth: 0
+          persist-credentials: true
+      - uses: actions/setup-node@v7
+        with:
+          node-version: '24'
+          cache: npm
+          cache-dependency-path: source/frontend-react/package-lock.json
+      - name: Assert exact base
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git -C source rev-parse HEAD)" = "c828a8a22ac045a3c307df71063c852e4a950eaa"
+      - name: Apply definitive tourism shadow fix
+        run: python3 automation/scripts/patch-react-tourism-shadow-fix.py
+      - name: Build client SSR and prerender
+        working-directory: source/frontend-react
+        shell: bash
+        run: |
+          set -euo pipefail
+          npm ci
+          npm run build
+      - name: Validate source resolution and emitted runtime data
+        shell: bash
+        run: |
+          set -euo pipefail
+          test ! -e source/frontend-react/src/generated/tourism-data-core.js
+          test ! -e source/frontend-react/src/generated/tourism-data-core.d.ts
+          grep -q 'tourismShadowTargets' source/frontend-react/scripts/copy-legacy-assets.mjs
+          python3 - <<'PY'
+          from pathlib import Path
+          import re
+          root=Path('source/frontend-react')
+          generated=(root/'src/generated/tourism-data-core.ts').read_text(encoding='utf-8')
+          ids=re.findall(r'"id"\s*:\s*"([^"]+)"', generated)
+          print('GENERATED_COUNT',len(ids))
+          assert len(ids)==52 and len(set(ids))==52
+          for wanted in ['turismo-isola-dino','turismo-catanzaro-centro','turismo-paola-san-francesco']:
+              assert wanted in ids, wanted
+          assets=list((root/'dist/assets').glob('*.js'))
+          merged='\n'.join(p.read_text(encoding='utf-8',errors='ignore') for p in assets)
+          print('CLIENT_HAS_ISOLA_DINO','turismo-isola-dino' in merged)
+          print('CLIENT_HAS_CATANZARO','turismo-catanzaro-centro' in merged)
+          assert 'turismo-isola-dino' in merged
+          assert 'turismo-catanzaro-centro' in merged
+          map_src=(root/'src/pages/MapPage.tsx').read_text(encoding='utf-8')
+          assert '<label><span><input id="verified" type="checkbox"' in map_src
+          assert '<div id="map-results" className="stack"' in map_src
+          PY
+          git -C source diff --check
+      - name: Commit and push only after all checks pass
+        shell: bash
+        run: |
+          set -euo pipefail
+          git -C source config user.name 'CalabriaVera Automation'
+          git -C source config user.email 'actions@users.noreply.github.com'
+          git -C source add -A frontend-react/scripts/copy-legacy-assets.mjs frontend-react/src/generated/tourism-data-core.js frontend-react/src/generated/tourism-data-core.d.ts frontend-react/src/pages/MapPage.tsx
+          if git -C source diff --cached --quiet; then
+            echo 'No staged changes'
+            exit 0
+          fi
+          git -C source commit -m 'fix: resolve canonical tourism dataset in React build'
+          git -C source push origin HEAD:react-migration
