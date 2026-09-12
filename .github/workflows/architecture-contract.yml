@@ -63,20 +63,54 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          if grep -Eq '"d1_databases"|\[\[d1_databases\]\]' source/frontend-react/wrangler.jsonc; then
-            echo "::error::D1 non può essere collegato al Cloudflare Worker del sito."
-            exit 1
-          fi
-          grep -q '"binding"[[:space:]]*:[[:space:]]*"IMAGES"' source/frontend-react/wrangler.jsonc
-          grep -q '"bucket_name"[[:space:]]*:[[:space:]]*"calabriavera-images"' source/frontend-react/wrangler.jsonc
-          test ! -e source/frontend-react/d1
-          test ! -e source/frontend-react/scripts/build-d1-seed.mjs
-          test ! -e source/tools/lib/d1-workflow-store.mjs
-          if grep -REqi --exclude='architecture-contract.yml' 'AUTOMATION_STATE_BACKEND:[[:space:]]*d1|D1_DATABASE|wrangler@4[[:space:]]+d1' workflow-repo/.github/workflows; then
-            echo "::error::I workflow non devono più usare D1."
-            exit 1
-          fi
-          echo "Architettura: Firebase Auth/Firestore + R2 + Worker; D1 rimosso."
+          node <<'NODE'
+          const fs = require('node:fs');
+          const path = require('node:path');
+
+          const fail = message => {
+            console.error(`::error::${message}`);
+            process.exitCode = 1;
+          };
+
+          const wranglerPath = 'source/frontend-react/wrangler.jsonc';
+          const wrangler = fs.readFileSync(wranglerPath, 'utf8');
+          if (/"d1_databases"|\[\[d1_databases\]\]/i.test(wrangler)) {
+            fail('D1 non può essere collegato al Cloudflare Worker del sito.');
+          }
+          if (!/"binding"\s*:\s*"IMAGES"/.test(wrangler)) {
+            fail('Binding R2 IMAGES mancante dal Worker del sito.');
+          }
+          if (!/"bucket_name"\s*:\s*"calabriavera-images"/.test(wrangler)) {
+            fail('Il binding IMAGES deve puntare al bucket calabriavera-images.');
+          }
+
+          const obsoletePrivate = [
+            'source/frontend-react/d1',
+            'source/frontend-react/scripts/build-d1-seed.mjs',
+            'source/tools/lib/d1-workflow-store.mjs',
+          ];
+          for (const file of obsoletePrivate) {
+            if (fs.existsSync(file)) fail(`Artefatto D1 obsoleto ancora presente nel privato: ${file}`);
+          }
+
+          const workflowDir = 'workflow-repo/.github/workflows';
+          const forbidden = [
+            /AUTOMATION_STATE_BACKEND\s*:\s*d1/i,
+            /\bD1_DATABASE\b/,
+            /wrangler@4\s+d1/i,
+          ];
+          for (const name of fs.readdirSync(workflowDir).filter(name => name.endsWith('.yml') || name.endsWith('.yaml'))) {
+            if (name === 'architecture-contract.yml') continue;
+            const file = path.join(workflowDir, name);
+            const text = fs.readFileSync(file, 'utf8');
+            for (const pattern of forbidden) {
+              if (pattern.test(text)) fail(`Uso D1 vietato trovato in ${name}: ${pattern}`);
+            }
+          }
+
+          if (process.exitCode) process.exit(process.exitCode);
+          console.log('Architettura: Firebase Auth/Firestore + R2 + Worker; D1 rimosso.');
+          NODE
 
       - name: Verifica migrazione immagini R2 a letture Firestore limitate
         shell: bash
