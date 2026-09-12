@@ -1,0 +1,215 @@
+name: React account and shell parity gate
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/react-account-shell-parity-gate.yml'
+
+permissions:
+  contents: read
+
+env:
+  EXPECTED_PRIVATE_SHA: 1756a75c574f8b48633827bfaa9955f59498c409
+  ORACLE_SHA: 7be434e3418e95cff9825e4cc3f4b4ed75cd1076
+
+jobs:
+  parity:
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    concurrency:
+      group: private-react-migration-writer
+      cancel-in-progress: false
+    env:
+      PRIVATE_REPO_PAT: ${{ secrets.PRIVATE_REPO_PAT || secrets.PERSONAL_ACCESS_TOKEN || secrets.PAT || secrets.GH_PAT || secrets.GITHUB_PAT }}
+    steps:
+      - name: Verifica credenziali
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -n "$PRIVATE_REPO_PAT" || { echo "::error::PAT privato mancante"; exit 1; }
+
+      - name: Checkout React migration
+        uses: actions/checkout@v7
+        with:
+          repository: Mirkolas/calabriavera
+          token: ${{ env.PRIVATE_REPO_PAT }}
+          ref: react-migration
+          path: source
+          persist-credentials: true
+          fetch-depth: 0
+
+      - name: Checkout oracle legacy
+        uses: actions/checkout@v7
+        with:
+          repository: Mirkolas/calabriavera
+          token: ${{ env.PRIVATE_REPO_PAT }}
+          ref: ${{ env.ORACLE_SHA }}
+          path: oracle
+          persist-credentials: false
+
+      - name: Blocca base inattesa
+        working-directory: source
+        shell: bash
+        run: |
+          set -euo pipefail
+          actual="$(git rev-parse HEAD)"
+          echo "React base: $actual"
+          test "$actual" = "$EXPECTED_PRIVATE_SHA" || { echo "::error::react-migration è avanzato: atteso $EXPECTED_PRIVATE_SHA, trovato $actual"; exit 1; }
+
+      - name: Applica parità account e shell
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          from pathlib import Path
+
+          root = Path('source/frontend-react/src')
+
+          # Le quattro pagine account devono mantenere il contratto SEO dell'oracle.
+          for name in ('DashboardPage.tsx', 'FavoritesPage.tsx', 'ProfilePage.tsx', 'MessagesPage.tsx'):
+              path = root / 'pages' / name
+              text = path.read_text()
+              old = 'robots: "noindex,nofollow"'
+              if old not in text:
+                  raise SystemExit(f'{name}: robots legacy target non trovato')
+              text = text.replace(old, 'robots: "index,follow"', 1)
+              path.write_text(text)
+
+          # Dashboard: replica toast e stati legacy, senza introdurre UI aggiuntiva.
+          path = root / 'pages' / 'DashboardPage.tsx'
+          text = path.read_text()
+          anchor = 'function statusLabel(status: unknown) { return ({ approved: "Pubblicata", pending: "In revisione", rejected: "Rifiutata", suspended: "Sospesa" } as Record<string, string>)[String(status || "")] || String(status || "Bozza"); }\n'
+          if anchor not in text:
+              raise SystemExit('Dashboard: anchor statusLabel non trovato')
+          toast = '''function legacyToast(message: string) {\n  const root = document.getElementById("toast-root");\n  if (!root) return;\n  root.innerHTML = `<div class="toast">${String(message || "")}</div>`;\n  window.setTimeout(() => { if (root) root.innerHTML = ""; }, 3800);\n}\n'''
+          text = text.replace(anchor, anchor + toast, 1)
+
+          old_remove = '''  const removeBusiness = async (business: Business) => {\n    if (admin || deletingId || !window.confirm(`Eliminare definitivamente “${business.name || "questa attività"}”?`)) return;\n    setDeletingId(business.id); setError("");\n    try { await deleteOwnBusiness(business.id); setItems((current) => current ? current.filter((item) => item.id !== business.id) : current); }\n    catch { setError("Impossibile eliminare l’attività."); }\n    finally { setDeletingId(""); }\n  };\n'''
+          new_remove = '''  const removeBusiness = async (business: Business) => {\n    if (admin || deletingId || !window.confirm(`Eliminare definitivamente “${business.name || ""}”?`)) return;\n    setDeletingId(business.id);\n    try {\n      await deleteOwnBusiness(business.id);\n      legacyToast("Attività eliminata.");\n      setItems((current) => current ? current.filter((item) => item.id !== business.id) : current);\n    } catch { legacyToast("Impossibile eliminare l’attività."); }\n    finally { setDeletingId(""); }\n  };\n'''
+          if old_remove not in text:
+              raise SystemExit('Dashboard: blocco delete atteso non trovato')
+          text = text.replace(old_remove, new_remove, 1)
+
+          loading = '  if (items === null) return <section className="section container"><div className="notice"><strong>CalabriaVera</strong><p>Caricamento della dashboard…</p></div></section>;\n'
+          if loading not in text:
+              raise SystemExit('Dashboard: loading anchor non trovato')
+          load_error = '  if (error) return <section className="section container"><div id="dashboard-root"><div className="notice"><strong>Impossibile caricare la dashboard.</strong><p>Riprova tra poco.</p></div></div></section>;\n'
+          text = text.replace(loading, loading + load_error, 1)
+          inline_error = '    {error ? <div className="notice"><strong>{error}</strong></div> : null}\n'
+          if inline_error not in text:
+              raise SystemExit('Dashboard: inline error non trovato')
+          text = text.replace(inline_error, '', 1)
+          old_button = '<button className="button button-secondary danger" type="button" disabled={Boolean(deletingId)} onClick={() => void removeBusiness(business)}>{deletingId === business.id ? "Eliminazione…" : "Elimina"}</button>'
+          new_button = '<button className="button button-secondary danger" type="button" disabled={deletingId === business.id} onClick={() => void removeBusiness(business)}>Elimina</button>'
+          if old_button not in text:
+              raise SystemExit('Dashboard: delete button non trovato')
+          text = text.replace(old_button, new_button, 1)
+          path.write_text(text)
+
+          # Layout: ripristina i due mount-point legacy e il contratto del badge preferiti.
+          path = root / 'components' / 'Layout.tsx'
+          lines = path.read_text().splitlines()
+          fav_index = next((i for i, line in enumerate(lines) if 'href={user ? withLanguage("/preferiti"' in line), None)
+          if fav_index is None:
+              raise SystemExit('Layout: shortcut preferiti non trovato')
+          lines[fav_index] = '              <Link className="cv-icon-action" data-header-favorites href={user ? withLanguage("/preferiti", language) : withLanguage(`/login?next=${encodeURIComponent("/preferiti")}`, language)} aria-label={uiText("favorites", language)} title={uiText("favorites", language)}><HeartIcon /><span className="cv-counter-badge cv-favorite-badge" data-favorites-badge data-count={String(favoriteCount)} hidden={favoriteCount === 0} aria-label={`${favoriteCount} preferiti`}>{favoriteCount > 99 ? "99+" : favoriteCount}</span></Link>'
+
+          footer_start = next((i for i, line in enumerate(lines) if '<footer className="footer">' in line), None)
+          footer_end = next((i for i, line in enumerate(lines) if footer_start is not None and i > footer_start and line.strip() == '</footer>'), None)
+          report_index = next((i for i, line in enumerate(lines) if '{showBusinessReport ?' in line), None)
+          whatsapp_index = next((i for i, line in enumerate(lines) if '<a className="whatsapp-float"' in line), None)
+          cookie_index = next((i for i, line in enumerate(lines) if '<CookieConsent />' in line), None)
+          if None in (footer_start, footer_end, report_index, whatsapp_index, cookie_index):
+              raise SystemExit('Layout: tail shell non riconosciuta')
+          if not (footer_start < footer_end < report_index < whatsapp_index < cookie_index):
+              raise SystemExit('Layout: ordine shell inatteso')
+
+          footer = lines[footer_start:footer_end + 1]
+          report = lines[report_index]
+          whatsapp = lines[whatsapp_index]
+          cookie = lines[cookie_index]
+          replacement = [
+              '      <div id="site-footer">',
+              *footer,
+              whatsapp,
+              '      </div>',
+              '',
+              report,
+              '      <div id="toast-root" aria-live="polite"></div>',
+              cookie,
+          ]
+          lines = lines[:footer_start] + replacement + lines[cookie_index + 1:]
+          path.write_text('\n'.join(lines) + '\n')
+          PY
+
+      - name: Installa dipendenze React
+        working-directory: source/frontend-react
+        run: npm ci --no-audit --no-fund
+
+      - name: Gate TypeScript e Vite offline
+        working-directory: source/frontend-react
+        shell: bash
+        run: |
+          set -euo pipefail
+          npx tsc --noEmit
+          npx vite build --outDir dist-account-gate
+
+      - name: Verifica contratti oracle
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          from pathlib import Path
+
+          oracle = Path('oracle')
+          react = Path('source/frontend-react/src')
+
+          for html in ('dashboard.html', 'preferiti.html', 'profilo.html', 'messaggi.html'):
+              legacy = (oracle / html).read_text()
+              assert '<meta name="robots" content="index,follow">' in legacy, html
+
+          legacy_components = (oracle / 'assets/js/components.js').read_text()
+          legacy_dashboard = (oracle / 'assets/js/dashboard.js').read_text()
+          dashboard = (react / 'pages/DashboardPage.tsx').read_text()
+          layout = (react / 'components/Layout.tsx').read_text()
+
+          assert 'setTimeout(() => { if (root) root.innerHTML = ""; }, 3800)' in legacy_components
+          assert 'toast("Attività eliminata.")' in legacy_dashboard
+          assert 'toast("Impossibile eliminare l’attività.")' in legacy_dashboard
+          assert '<p>Riprova tra poco.</p>' in legacy_dashboard
+
+          for name in ('DashboardPage.tsx', 'FavoritesPage.tsx', 'ProfilePage.tsx', 'MessagesPage.tsx'):
+              value = (react / 'pages' / name).read_text()
+              assert 'robots: "index,follow"' in value, name
+              assert 'robots: "noindex,nofollow"' not in value, name
+
+          assert 'legacyToast("Attività eliminata.")' in dashboard
+          assert 'legacyToast("Impossibile eliminare l’attività.")' in dashboard
+          assert '<p>Riprova tra poco.</p>' in dashboard
+          assert 'window.setTimeout(() => { if (root) root.innerHTML = ""; }, 3800)' in dashboard
+          assert 'id="site-footer"' in layout
+          assert 'id="toast-root" aria-live="polite"' in layout
+          assert 'data-favorites-badge' in layout
+          assert 'data-header-favorites' in layout
+          print('Account/shell parity contract: OK')
+          PY
+
+      - name: Commit React migration
+        working-directory: source
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name "CalabriaVera CI"
+          git config user.email "actions@users.noreply.github.com"
+          git add frontend-react/src/pages/DashboardPage.tsx \
+                  frontend-react/src/pages/FavoritesPage.tsx \
+                  frontend-react/src/pages/ProfilePage.tsx \
+                  frontend-react/src/pages/MessagesPage.tsx \
+                  frontend-react/src/components/Layout.tsx
+          git diff --cached --check
+          git diff --cached --quiet && { echo "::error::Nessuna modifica da committare"; exit 1; }
+          git commit -m "fix: match legacy account and shell parity"
+          git push origin HEAD:react-migration
