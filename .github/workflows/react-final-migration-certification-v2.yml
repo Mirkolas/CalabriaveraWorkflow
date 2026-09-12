@@ -1,0 +1,304 @@
+name: React final migration certification v2
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/react-final-migration-certification-v2.yml'
+
+permissions:
+  contents: read
+
+env:
+  EXPECTED_PRIVATE_SHA: e40507825df1880ed14ecc0d32e1ae73f2f992bf
+  ORACLE_SHA: 7be434e3418e95cff9825e4cc3f4b4ed75cd1076
+
+jobs:
+  certify:
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    concurrency:
+      group: react-final-migration-certification-v2
+      cancel-in-progress: true
+    env:
+      PRIVATE_REPO_PAT: ${{ secrets.PRIVATE_REPO_PAT || secrets.PERSONAL_ACCESS_TOKEN || secrets.PAT || secrets.GH_PAT || secrets.GITHUB_PAT }}
+    steps:
+      - name: Checkout React migration
+        uses: actions/checkout@v7
+        with:
+          repository: Mirkolas/calabriavera
+          token: ${{ env.PRIVATE_REPO_PAT }}
+          ref: react-migration
+          path: source
+          persist-credentials: false
+          fetch-depth: 1
+
+      - name: Checkout oracle pre-React
+        uses: actions/checkout@v7
+        with:
+          repository: Mirkolas/calabriavera
+          token: ${{ env.PRIVATE_REPO_PAT }}
+          ref: ${{ env.ORACLE_SHA }}
+          path: oracle
+          persist-credentials: false
+          fetch-depth: 1
+
+      - name: Pin exact React commit
+        working-directory: source
+        shell: bash
+        run: |
+          set -euo pipefail
+          actual="$(git rev-parse HEAD)"
+          echo "React SHA: $actual"
+          test "$actual" = "$EXPECTED_PRIVATE_SHA" || { echo "::error::react-migration inatteso: $actual"; exit 1; }
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version: '22'
+
+      - name: Install dependencies
+        shell: bash
+        run: |
+          set -euo pipefail
+          (cd source && npm ci --no-audit --no-fund)
+          (cd oracle && npm ci --no-audit --no-fund)
+          (cd source/frontend-react && npm ci --no-audit --no-fund)
+
+      - name: Full legacy and migration regression suite
+        working-directory: source
+        shell: bash
+        run: |
+          set -euo pipefail
+          npm test
+
+      - name: Build oracle
+        working-directory: oracle
+        run: npm run build
+
+      - name: Build React offline
+        working-directory: source/frontend-react
+        env:
+          CV_PRERENDER_OFFLINE: '1'
+        run: npm run build
+
+      - name: Structural route CSS runtime and semantic parity gate
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import json
+          from pathlib import Path
+
+          root = Path('source/frontend-react')
+          oracle = Path('oracle/dist')
+          route_map = json.loads((root / 'public/main-route-css.json').read_text())
+          css = route_map['routeCss']
+          pages = route_map['routePages']
+
+          expected_top = {
+            '/404','/','/catalogo','/mappa','/blog','/blog/:detail','/attivita/:detail',
+            '/login','/registrazione','/profilo','/preferiti','/dashboard','/messaggi',
+            '/aggiungi-attivita','/chi-siamo','/contatti','/privacy-policy','/cookie-policy',
+            '/termini','/note-legali','/backup','/admin','/admin/attivita','/admin/recensioni',
+            '/admin/segnalazioni','/admin/blog','/admin/categorie','/admin/comuni','/admin/utenti',
+            '/admin/messaggi','/admin/comunicazioni','/admin/seo','/admin/sistema','/admin/impostazioni'
+          }
+          missing = expected_top - set(css)
+          assert not missing, f'Route mancanti: {sorted(missing)}'
+          assert '/admin/backup' not in css and '/admin/backup' not in pages
+
+          unique_bundles = sorted({item for values in css.values() for item in values})
+          assert len(unique_bundles) == 9, unique_bundles
+          for url in unique_bundles:
+            name = Path(url).name
+            expected = oracle / 'assets/css' / name
+            public = root / 'public/assets/css' / name
+            built = root / 'dist/assets/css' / name
+            assert expected.is_file(), f'Bundle oracle mancante: {name}'
+            assert public.read_bytes() == expected.read_bytes(), f'CSS public diverso: {name}'
+            assert built.read_bytes() == expected.read_bytes(), f'CSS dist diverso: {name}'
+          print(f'CSS route: {len(css)} route, {len(unique_bundles)} bundle byte-per-byte OK')
+
+          oracle_js = oracle / 'assets/js'
+          public_js = root / 'public/assets/js'
+          dist_js = root / 'dist/assets/js'
+          oracle_files = sorted(p.relative_to(oracle_js) for p in oracle_js.rglob('*') if p.is_file())
+          assert oracle_files
+          for rel in oracle_files:
+            data = (oracle_js / rel).read_bytes()
+            assert (public_js / rel).read_bytes() == data, f'Runtime public diverso: {rel}'
+            assert (dist_js / rel).read_bytes() == data, f'Runtime dist diverso: {rel}'
+          assert sorted(p.relative_to(public_js) for p in public_js.rglob('*') if p.is_file()) == oracle_files
+          assert sorted(p.relative_to(dist_js) for p in dist_js.rglob('*') if p.is_file()) == oracle_files
+          print(f'Runtime legacy: {len(oracle_files)} file byte-per-byte OK')
+
+          app = (root / 'src/App.tsx').read_text()
+          layout = (root / 'src/components/Layout.tsx').read_text()
+          styles = (root / 'src/styles.css').read_text()
+          backup = (root / 'src/pages/BackupPage.tsx').read_text()
+          catalog = (root / 'src/pages/CatalogPage.tsx').read_text()
+          map_page = (root / 'src/pages/MapPage.tsx').read_text()
+          magazine = (root / 'src/pages/MagazinePage.tsx').read_text()
+
+          assert '<div id="site-footer">' in layout
+          assert 'id="toast-root"' in layout and 'aria-live="polite"' in layout
+          assert 'path === "/backup"' in app
+          assert 'ADMIN_ROUTES.has(path)' in app and 'path.startsWith("/admin/")' not in app
+          assert '.cv-legacy-content{display:contents}' in styles
+          assert '.cv-legacy-content h1' not in styles and '.cv-legacy-content p' not in styles
+
+          for fragment in ('Backup cifrati','Ripristino protetto','Controlla o avvia backup','Apri la guida'):
+            assert fragment in backup, fragment
+          assert 'id="backup-root"' in backup
+          assert 'rel="noopener"' in backup and 'noopener noreferrer' not in backup
+
+          for value in ('id="filters"','id="keyword"','id="category"','id="province"','id="city"','id="verified"','id="sort"','id="result-count"','id="results"','id="load-more"'):
+            assert value in catalog, f'Catalogo senza {value}'
+          for value in ('id="map"','id="map-count"','id="map-zoom"','id="map-filters"','id="category"','id="province"','id="city"','id="verified"','id="use-location"','id="map-fit-results"','id="map-near-radius"','cv-map-aside-head'):
+            assert value in map_page, f'Mappa senza {value}'
+          for value in ('id="blog-lane-tabs"','id="blog-list"','id="blog-more"','data-blog-lane'):
+            assert value in magazine, f'Blog senza {value}'
+
+          langs = ['', 'en', 'fr', 'de', 'es']
+          stable = ['catalogo','mappa','blog','chi-siamo','contatti','privacy-policy','cookie-policy','termini','note-legali']
+          for lang in langs:
+            for route in stable:
+              path = root / 'dist' / lang / route / 'index.html' if lang else root / 'dist' / route / 'index.html'
+              assert path.is_file(), f'Prerender mancante: {path}'
+          assert (root / 'dist/index.html').is_file()
+          print('Route, shell, pagine, controlli e prerender multilingua: OK')
+          PY
+
+      - name: Install Chromium visual tools
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p /tmp/cv-visual
+          npm install --prefix /tmp/cv-visual --no-package-lock --no-save playwright@1.62.1 pixelmatch@7.1.0 pngjs@7.0.0
+          /tmp/cv-visual/node_modules/.bin/playwright install --with-deps chromium
+
+      - name: Deterministic visual parity desktop and mobile
+        shell: bash
+        run: |
+          set -euo pipefail
+          cat > /tmp/cv-visual/compare.mjs <<'NODE'
+          import { createServer } from 'node:http';
+          import { readFile, stat, mkdir, writeFile } from 'node:fs/promises';
+          import { extname, join, normalize } from 'node:path';
+          import { chromium } from 'playwright';
+          import pixelmatch from 'pixelmatch';
+          import { PNG } from 'pngjs';
+
+          const [oracleRoot, reactRoot] = process.argv.slice(2);
+          const out = '/tmp/cv-visual/out-v2';
+          await mkdir(out, { recursive: true });
+          const mime = {'.html':'text/html; charset=utf-8','.js':'text/javascript; charset=utf-8','.css':'text/css; charset=utf-8','.json':'application/json','.png':'image/png','.jpg':'image/jpeg','.jpeg':'image/jpeg','.webp':'image/webp','.svg':'image/svg+xml','.ico':'image/x-icon','.woff2':'font/woff2'};
+
+          function safe(root, rel) {
+            const cleaned = normalize(rel).replace(/^(\.\.(\/|\\|$))+/, '').replace(/^[/\\]+/, '');
+            return join(root, cleaned);
+          }
+          async function exists(path) { try { return (await stat(path)).isFile(); } catch { return false; } }
+          function serve(root, mode, port) {
+            const server = createServer(async (req, res) => {
+              try {
+                const url = new URL(req.url || '/', `http://127.0.0.1:${port}`);
+                const pathname = decodeURIComponent(url.pathname);
+                const rel = pathname.replace(/^\//, '');
+                let candidates = pathname === '/' ? ['index.html'] : mode === 'oracle' ? [rel, `${rel}.html`] : [rel, `${rel}/index.html`, 'index.html'];
+                let file = null;
+                for (const candidateRel of candidates) {
+                  const candidate = safe(root, candidateRel);
+                  if (await exists(candidate)) { file = candidate; break; }
+                }
+                if (!file) { res.writeHead(404); res.end('not found'); return; }
+                const body = await readFile(file);
+                res.writeHead(200, {'content-type': mime[extname(file).toLowerCase()] || 'application/octet-stream', 'cache-control':'no-store'});
+                res.end(body);
+              } catch (error) { res.writeHead(500); res.end(String(error)); }
+            });
+            return new Promise(resolve => server.listen(port, '127.0.0.1', () => resolve(server)));
+          }
+
+          const oracleServer = await serve(oracleRoot, 'oracle', 4173);
+          const reactServer = await serve(reactRoot, 'react', 4174);
+          const browser = await chromium.launch({ headless: true });
+          const routes = ['/', '/catalogo', '/mappa', '/blog', '/chi-siamo', '/contatti', '/privacy-policy', '/cookie-policy', '/termini', '/note-legali', '/login', '/registrazione'];
+          const dynamic = new Set(['/catalogo','/mappa','/blog']);
+          const viewports = [{name:'desktop', width:1365, height:900}, {name:'mobile', width:390, height:844}];
+          const results = [], failures = [];
+
+          function normalizeCss(route) {
+            const base = '*,*::before,*::after{animation:none!important;transition:none!important;caret-color:transparent!important}html{scroll-behavior:auto!important}';
+            if (route === '/catalogo') return base + '#results,#result-count,#load-more{visibility:hidden!important}';
+            if (route === '/blog') return base + '#blog-list,#blog-more{visibility:hidden!important}';
+            if (route === '/mappa') return base + '#map,#map-count{visibility:hidden!important}';
+            return base;
+          }
+
+          async function shot(port, route, viewport, tag) {
+            const context = await browser.newContext({ viewport: {width:viewport.width,height:viewport.height}, locale:'it-IT', serviceWorkers:'block' });
+            await context.addInitScript(() => { try { localStorage.setItem('cv-consent','rejected'); } catch {} });
+            const page = await context.newPage();
+            await page.route('**/*', async r => {
+              const u = new URL(r.request().url());
+              if (u.hostname === '127.0.0.1' || u.protocol === 'data:' || u.protocol === 'blob:') return r.continue();
+              if (tag === 'legacy' && route === '/mappa' && u.hostname === 'unpkg.com') return r.continue();
+              return r.abort();
+            });
+            await page.goto(`http://127.0.0.1:${port}${route}`, { waitUntil:'domcontentloaded', timeout:30000 });
+            if (route === '/mappa') await page.waitForSelector('.cv-map-aside-head', { timeout: 8000 }).catch(()=>{});
+            await page.addStyleTag({content:normalizeCss(route)}).catch(()=>{});
+            await page.evaluate(() => document.fonts?.ready).catch(()=>{});
+            await page.waitForTimeout(dynamic.has(route) ? 1800 : 900);
+            await page.evaluate(() => scrollTo(0,0)).catch(()=>{});
+            const name = route === '/' ? 'home' : route.slice(1).replaceAll('/','-');
+            const path = `${out}/${name}-${viewport.name}-${tag}.png`;
+            await page.screenshot({path, fullPage:false, animations:'disabled'});
+            await context.close();
+            return path;
+          }
+
+          try {
+            for (const viewport of viewports) {
+              for (const route of routes) {
+                const aPath = await shot(4173, route, viewport, 'legacy');
+                const bPath = await shot(4174, route, viewport, 'react');
+                const a = PNG.sync.read(await readFile(aPath));
+                const b = PNG.sync.read(await readFile(bPath));
+                if (a.width !== b.width || a.height !== b.height) throw new Error(`dimension mismatch ${route} ${viewport.name}`);
+                const diff = new PNG({width:a.width,height:a.height});
+                const changed = pixelmatch(a.data,b.data,diff.data,a.width,a.height,{threshold:0.1,includeAA:false});
+                const ratio = changed/(a.width*a.height);
+                const name = route === '/' ? 'home' : route.slice(1).replaceAll('/','-');
+                await writeFile(`${out}/${name}-${viewport.name}-diff.png`, PNG.sync.write(diff));
+                results.push({route, viewport:viewport.name, changed, ratio, mode:dynamic.has(route)?'stable-ui':'full-page'});
+                console.log(`VISUAL ${viewport.name.padEnd(7)} ${route.padEnd(18)} ${(ratio*100).toFixed(3)}% ${dynamic.has(route)?'[stable UI]':'[full]'}`);
+                if (ratio > 0.010) failures.push(`${viewport.name} ${route}: ${(ratio*100).toFixed(3)}%`);
+              }
+            }
+            await writeFile(`${out}/results.json`, JSON.stringify(results,null,2));
+            if (failures.length) {
+              console.error('::error::Visual parity >1%: '+failures.join(' | '));
+              process.exitCode = 1;
+            } else {
+              console.log('Visual parity v2: tutte le route deterministic/stable UI <= 1% pixel diff');
+            }
+          } finally {
+            await browser.close();
+            oracleServer.close(); reactServer.close();
+          }
+          NODE
+          cd /tmp/cv-visual
+          node compare.mjs "$GITHUB_WORKSPACE/oracle/dist" "$GITHUB_WORKSPACE/source/frontend-react/dist"
+
+      - name: Upload final visual certification
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: react-final-migration-certification-v2
+          path: /tmp/cv-visual/out-v2
+          if-no-files-found: ignore
+          retention-days: 7
