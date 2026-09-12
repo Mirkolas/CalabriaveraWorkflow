@@ -1,6 +1,6 @@
 from pathlib import Path
 
-# Runtime public dataset: merge the static snapshot with current approved Firestore rows.
+# Runtime public dataset: merge the deploy snapshot with current approved Firestore rows.
 p = Path('frontend-react/src/lib/public-data.ts')
 s = p.read_text()
 old = '''      let publicRows: Business[] = [];
@@ -51,6 +51,16 @@ if old2 not in s:
 s = s.replace(old2, new2, 1)
 p.write_text(s)
 
+# Match the legacy public resolver ceiling: query up to 1000 approved businesses.
+p = Path('frontend-react/src/lib/businesses.ts')
+s = p.read_text()
+old_limit = 'f.query(f.collection(db, "businesses"), f.where("status", "==", "approved"), f.limit(500)),'
+new_limit = 'f.query(f.collection(db, "businesses"), f.where("status", "==", "approved"), f.limit(1000)),'
+if old_limit not in s:
+    raise SystemExit('approved business query limit contract changed')
+s = s.replace(old_limit, new_limit, 1)
+p.write_text(s)
+
 # Prerender every approved business returned by the 1000-row Firestore query, not an arbitrary 96-row subset.
 p = Path('frontend-react/scripts/prerender-home.mjs')
 s = p.read_text()
@@ -73,4 +83,4 @@ if old3 not in s:
 s = s.replace(old3, new3, 1)
 p.write_text(s)
 
-print('Activity indexing patch applied: live approved merge, Firestore detail fallback, uncapped prerender')
+print('Activity indexing patch applied: live approved merge, Firestore detail fallback, 1000-row resolver, uncapped prerender')
