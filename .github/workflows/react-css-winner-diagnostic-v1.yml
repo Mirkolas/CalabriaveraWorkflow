@@ -14,7 +14,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 35
     env:
-      PRIVATE_REPO_PAT: ${{ secrets.PRIVATE_REPO_PAT || secrets.PERSONAL_ACCESS_TOKEN || secrets.PAT || secrets.GH_PAT || secrets.GITHUB_PAT }}
+      PRIVATE_REPO_PAT: ${{ secrets.PRIVATE_REPO_PAT || secrets.PAT || secrets.GH_PAT || secrets.GITHUB_PAT }}
       LEGACY_SHA: 7be434e3418e95cff9825e4cc3f4b4ed75cd1076
       EXPECTED_BASE: f16b18b93d91b4e1ac278351c6ef7507f3f7a04e
     steps:
@@ -68,7 +68,8 @@ jobs:
           async function inspect(origin,path,label){
             const ctx=await browser.newContext({viewport:{width:1365,height:900},serviceWorkers:'block'});
             await ctx.addInitScript(()=>{const n=Date.now();localStorage.setItem('cv-cookie-consent-v3',JSON.stringify({version:3,scope:'technical-only',savedAt:new Date(n).toISOString(),expiresAt:new Date(n+30*86400000).toISOString(),necessary:true,preferences:false,analytics:false,marketing:false,source:'ci'}))});
-            const p=await ctx.newPage();await p.goto(origin+path,{waitUntil:'networkidle',timeout:30000});
+            const p=await ctx.newPage();await p.goto(origin+path,{waitUntil:'domcontentloaded',timeout:30000});
+            await p.locator('main h1').waitFor({state:'visible',timeout:15000});await p.waitForTimeout(650);
             const out=await p.evaluate(()=>{
               const targets={h1:document.querySelector('main h1'),header:document.querySelector('.site-header'),inner:document.querySelector('.header-inner'),container:document.querySelector('main .container')};
               const props=['font-family','font-weight','font-size','line-height','letter-spacing','width','max-width','min-height','height','padding-left','padding-right','margin-left','margin-right','background-color','position'];
