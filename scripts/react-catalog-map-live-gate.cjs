@@ -16,7 +16,12 @@ async function capture(browser, base, route, label){
   const page=await context.newPage();
   const errors=[];
   page.on('pageerror',e=>errors.push(`page:${e.message||e}`));
-  page.on('console',m=>{ if(m.type()==='error'&&!/favicon|ERR_BLOCKED_BY_CLIENT|tile|net::ERR_ABORTED/i.test(m.text())) errors.push(`console:${m.text()}`); });
+  page.on('console',m=>{
+    if(m.type()!=='error') return;
+    const t=m.text();
+    if(/favicon|ERR_BLOCKED_BY_CLIENT|tile|net::ERR_ABORTED|(?:status of )?429|RESOURCE_EXHAUSTED/i.test(t)) return;
+    errors.push(`console:${t}`);
+  });
   const suffix=base===REACT?`${route.includes('?')?'&':'?'}gate=${encodeURIComponent(EXPECTED_SHA||Date.now())}`:'';
   const response=await page.goto(base+route+suffix,{waitUntil:'domcontentloaded',timeout:20000}).catch(()=>null);
   if(route==='/catalogo'){
@@ -85,7 +90,7 @@ async function capture(browser, base, route, label){
   if(!reactMap.leaflet||reactMap.zoomControls<1||reactMap.scaleControls<1) f.push(`map controls incomplete leaflet=${reactMap.leaflet} zoom=${reactMap.zoomControls} scale=${reactMap.scaleControls}`);
   if(reactMap.clusters<1||reactMap.pins<1) f.push(`map marker shell incomplete clusters=${reactMap.clusters} pins=${reactMap.pins}`);
   if(!reactMap.mapPanel||!reactMap.fitButton||!reactMap.mobileFilterButton) f.push('map toolbar/sidebar DOM incomplete');
-  if(reactMap.serviceVisible||reactMap.verifiedVisible||reactMap.mapResultsVisible) f.push(`map hidden controls differ service=${reactMap.serviceVisible} verified=${reactMap.verifiedVisible} results=${reactMap.mapResultsVisible}`);
+  for(const key of ['serviceVisible','verifiedVisible','mapResultsVisible']) if(mainMap[key]!==reactMap[key]) f.push(`map ${key} mismatch main=${mainMap[key]} react=${reactMap[key]}`);
   fs.writeFileSync(path.join(OUT,'catalog-map-exact.json'),JSON.stringify(report,null,2));
   console.log(f.length?f.join('\n'):'CATALOG_MAP_EXACT_GREEN');
   process.exitCode=f.length?1:0;
