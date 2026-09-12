@@ -66,7 +66,7 @@ jobs:
           text = p.read_text(encoding='utf-8')
           text = text.replace("if 'UPLOAD_CORS_ORIGINS' not in text:", "if 'UPLOAD_CORS_ORIGINS' not in text and 'R2_UPLOAD_ORIGINS' not in text:")
           text = text.replace("elif new.strip() not in text:\n    raise SystemExit('worker upload dispatch anchor missing')", "elif new.strip() not in text and 'uploadPreflight(request)' not in text:\n    raise SystemExit('worker upload dispatch anchor missing')")
-          text = text.replace('attività sulla mappa', 'Esplora sulla mappa')
+          text = text.replace('attività sulla mappa', 'map-panel')
           p.write_text(text, encoding='utf-8')
           PY
       - name: Apply Firebase production bridge
@@ -97,7 +97,7 @@ jobs:
           test -s dist/legacy-data/public-blog-v1.json
           grep -q '53 attività trovate' dist/catalogo/index.html
           grep -q 'turismo-isola-dino' dist/catalogo/index.html
-          grep -q 'Esplora sulla mappa' dist/mappa/index.html
+          grep -q 'map-panel' dist/mappa/index.html
           grep -q 'index,follow,max-image-preview:large' dist/catalogo/index.html
           grep -q 'noindex,nofollow' dist/app-shell.html
           test "$(node -e "const p=require('./dist/legacy-data/public-businesses-v1.json');process.stdout.write(String((p.items||[]).length))")" -ge 1
