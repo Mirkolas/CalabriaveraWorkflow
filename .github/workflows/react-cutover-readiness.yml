@@ -24,8 +24,6 @@ jobs:
     env:
       PRIVATE_REPO: ${{ secrets.PRIVATE_REPO }}
       PRIVATE_REPO_PAT: ${{ secrets.PRIVATE_REPO_PAT || secrets.PERSONAL_ACCESS_TOKEN || secrets.PAT || secrets.GH_PAT || secrets.GITHUB_PAT }}
-      EXPECTED_REACT_SHA: b3e3bc4e06f038b8cb6bb9065a3e94c95db551f9
-      EXPECTED_MAIN_SHA: c008d517ded2ae66836ea08d45541a82bccd8653
       MAIN_BASE_URL: https://calabriavera.com
       STAGING_BASE_URL: https://calabriavera.sonotacamirko.workers.dev
     steps:
@@ -42,7 +40,7 @@ jobs:
           path: automation
           persist-credentials: false
 
-      - name: Checkout exact React migration branch
+      - name: Checkout React migration branch
         uses: actions/checkout@v7
         with:
           repository: ${{ secrets.PRIVATE_REPO }}
@@ -52,14 +50,21 @@ jobs:
           fetch-depth: 0
           persist-credentials: true
 
-      - name: Verify branch ancestry and current main
+      - name: Freeze branch revisions and verify ancestry
         shell: bash
         run: |
           set -euo pipefail
-          test "$(git -C source rev-parse HEAD)" = "$EXPECTED_REACT_SHA"
+          react_sha="$(git -C source rev-parse HEAD)"
           git -C source fetch origin main --prune
-          test "$(git -C source rev-parse origin/main)" = "$EXPECTED_MAIN_SHA"
-          git -C source merge-base --is-ancestor "$EXPECTED_MAIN_SHA" "$EXPECTED_REACT_SHA"
+          main_sha="$(git -C source rev-parse origin/main)"
+          git -C source merge-base --is-ancestor "$main_sha" "$react_sha" || {
+            echo "::error::react-migration does not contain current main $main_sha"
+            exit 1
+          }
+          echo "EXPECTED_REACT_SHA=$react_sha" >> "$GITHUB_ENV"
+          echo "EXPECTED_MAIN_SHA=$main_sha" >> "$GITHUB_ENV"
+          echo "Frozen React: $react_sha"
+          echo "Frozen main: $main_sha"
 
       - uses: actions/setup-node@v7
         with:
@@ -202,7 +207,6 @@ jobs:
         working-directory: source
         env:
           PLAYWRIGHT_MODULE: /tmp/cv-cutover/node_modules/playwright
-          EXPECTED_SHA: ${{ env.EXPECTED_REACT_SHA }}
           PARITY_OUT: parity-audit-fast
         shell: bash
         run: |
