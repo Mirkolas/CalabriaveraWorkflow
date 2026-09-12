@@ -1,0 +1,48 @@
+name: Production live UI audit - one time
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/production-live-ui-audit.yml'
+      - 'scripts/live-production-ui-audit.cjs'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: production-live-ui-audit
+  cancel-in-progress: true
+
+jobs:
+  audit:
+    runs-on: ubuntu-latest
+    timeout-minutes: 18
+    env:
+      SMOKE_TEST_EMAIL: ${{ secrets.SMOKE_TEST_EMAIL }}
+      SMOKE_TEST_PASSWORD: ${{ secrets.SMOKE_TEST_PASSWORD }}
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: '22'
+      - name: Installa browser isolato
+        run: |
+          set -euo pipefail
+          mkdir -p /tmp/cv-live-audit
+          npm install --prefix /tmp/cv-live-audit --no-package-lock --no-save playwright@1.62.1
+          /tmp/cv-live-audit/node_modules/.bin/playwright install --with-deps chromium
+      - name: Audit grafico e logico calabriavera.com
+        env:
+          PLAYWRIGHT_MODULE: /tmp/cv-live-audit/node_modules/playwright
+          AUDIT_OUT: live-audit
+        run: node scripts/live-production-ui-audit.cjs
+      - name: Carica screenshot audit
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: production-live-ui-audit
+          path: live-audit
+          retention-days: 3
+          if-no-files-found: warn
