@@ -1,12 +1,9 @@
 name: Firebase - Backup completo cifrato
 
+# Il backup completo attraversa ricorsivamente tutto Firestore e può consumare da solo
+# la quota giornaliera gratuita di letture. Finché non viene sostituito con un backup
+# incrementale, resta disponibile solo su avvio manuale esplicito.
 on:
-  schedule:
-    - cron: '30 2 * * *'
-    - cron: '50 2 * * *'
-    - cron: '10 3 * * *'
-    - cron: '30 3 * * *'
-    - cron: '50 3 * * *'
   workflow_dispatch:
 
 permissions:
@@ -19,16 +16,8 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
-  retry_gate:
-    uses: ./.github/workflows/scheduled-retry-gate.yml
-    with:
-      workflow_file: daily-backup.yml
-      cadence_minutes: 2880
-      anchor_offset_minutes: 150
-
   backup:
-    needs: retry_gate
-    if: needs.retry_gate.outputs.should_run == 'true' && vars.BACKUPS_ENABLED == 'true' && github.ref == 'refs/heads/main'
+    if: vars.BACKUPS_ENABLED == 'true' && github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     timeout-minutes: 15
     env:
