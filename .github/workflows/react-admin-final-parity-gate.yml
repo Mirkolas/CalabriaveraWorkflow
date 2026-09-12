@@ -88,75 +88,63 @@ jobs:
         working-directory: oracle
         run: npm run build
 
-      - name: Correggi bridge verso output legacy finale
+      - name: Vendor runtime oracle e abilita gate offline
         shell: bash
         run: |
           set -euo pipefail
+          rm -rf source/frontend-react/oracle-admin
+          mkdir -p source/frontend-react/oracle-admin/assets source/frontend-react/oracle-admin/firebase
+          cp -a oracle/dist/assets/js source/frontend-react/oracle-admin/assets/js
+          cp oracle/dist/firebase/firebase-config.js source/frontend-react/oracle-admin/firebase/firebase-config.js
+
           python - <<'PY'
           from pathlib import Path
-          path = Path('source/frontend-react/scripts/copy-legacy-assets.mjs')
-          text = path.read_text()
-          old = '''const legacyBuild = spawnSync(process.execPath, [resolve(repoRoot, "scripts/build.mjs")], {
-            cwd: repoRoot,
-            stdio: "inherit",
-          });'''
-          new = '''const npmCommand = process.platform === "win32" ? "npm.cmd" : "npm";
-          const legacyBuild = spawnSync(npmCommand, ["run", "build"], {
-            cwd: repoRoot,
-            stdio: "inherit",
-          });'''
+
+          copier = Path('source/frontend-react/scripts/copy-legacy-assets.mjs')
+          text = copier.read_text()
+          text = text.replace('import { spawnSync } from "node:child_process";\n', '')
+          old = '''// Admin parity uses the exact BUILD-PATCHED legacy modules rather than a rewritten approximation.\n// Running build.mjs here reproduces patchAdminRuntime() from the authoritative pipeline.\nconst legacyBuild = spawnSync(process.execPath, [resolve(repoRoot, "scripts/build.mjs")], {\n  cwd: repoRoot,\n  stdio: "inherit",\n});\nif (legacyBuild.status !== 0) throw new Error(`Build legacy admin fallita (${legacyBuild.status})`);\nconst builtLegacyJs = resolve(repoRoot, "dist/assets/js");\nconst publicLegacyJs = resolve(reactRoot, "public/assets/js");\nif (!existsSync(builtLegacyJs)) throw new Error(`Asset JS legacy build mancanti: ${builtLegacyJs}`);\nif (existsSync(publicLegacyJs)) rmSync(publicLegacyJs, { recursive: true, force: true });\nmkdirSync(dirname(publicLegacyJs), { recursive: true });\ncpSync(builtLegacyJs, publicLegacyJs, { recursive: true });\nconst builtFirebaseConfig = resolve(repoRoot, "dist/firebase/firebase-config.js");\nif (!existsSync(builtFirebaseConfig)) throw new Error(`Config Firebase legacy build mancante: ${builtFirebaseConfig}`);\nconst publicFirebaseConfig = resolve(reactRoot, "public/firebase/firebase-config.js");\nmkdirSync(dirname(publicFirebaseConfig), { recursive: true });\ncopyFileSync(builtFirebaseConfig, publicFirebaseConfig);\nconsole.log(`Bridge admin legacy: ${publicLegacyJs}`);\n'''
+          new = '''// Admin parity is pinned to the immutable BUILD-PATCHED runtime produced by the authoritative pre-React oracle.\n// The vendored files live outside public so every React build recreates public/assets/js deterministically.\nconst oracleAdminRoot = resolve(reactRoot, "oracle-admin");\nconst oracleLegacyJs = resolve(oracleAdminRoot, "assets/js");\nconst publicLegacyJs = resolve(reactRoot, "public/assets/js");\nif (!existsSync(oracleLegacyJs)) throw new Error(`Runtime admin oracle mancante: ${oracleLegacyJs}`);\nif (existsSync(publicLegacyJs)) rmSync(publicLegacyJs, { recursive: true, force: true });\nmkdirSync(dirname(publicLegacyJs), { recursive: true });\ncpSync(oracleLegacyJs, publicLegacyJs, { recursive: true });\nconst oracleFirebaseConfig = resolve(oracleAdminRoot, "firebase/firebase-config.js");\nif (!existsSync(oracleFirebaseConfig)) throw new Error(`Config Firebase oracle mancante: ${oracleFirebaseConfig}`);\nconst publicFirebaseConfig = resolve(reactRoot, "public/firebase/firebase-config.js");\nmkdirSync(dirname(publicFirebaseConfig), { recursive: true });\ncopyFileSync(oracleFirebaseConfig, publicFirebaseConfig);\nconsole.log(`Bridge admin oracle: ${publicLegacyJs}`);\n'''
           if old not in text:
-              raise SystemExit('legacy build bridge marker non trovato')
-          text = text.replace(old, new, 1)
-          text = text.replace(
-              '// Running build.mjs here reproduces patchAdminRuntime() from the authoritative pipeline.',
-              '// Run the complete legacy build so copied JS includes every authoritative post-build transformation.'
-          )
-          path.write_text(text)
+              raise SystemExit('blocco build/copy legacy non riconosciuto')
+          copier.write_text(text.replace(old, new, 1))
+
+          prerender = Path('source/frontend-react/scripts/prerender-home.mjs')
+          text = prerender.read_text()
+          anchor = 'const FIRESTORE_PROJECT_ID = "calabriavera-e08d4";\n'
+          if anchor not in text:
+              raise SystemExit('anchor prerender Firestore non trovato')
+          text = text.replace(anchor, anchor + 'const PRERENDER_OFFLINE = process.env.CV_PRERENDER_OFFLINE === "1";\n', 1)
+          query_anchor = 'async function queryCollection(collectionId, status, fields) {\n'
+          if query_anchor not in text:
+              raise SystemExit('queryCollection non trovata')
+          text = text.replace(query_anchor, query_anchor + '  if (PRERENDER_OFFLINE) return [];\n', 1)
+          prerender.write_text(text)
           PY
 
-      - name: Costruisci React completo
-        working-directory: source/frontend-react
-        run: npm run build
-
-      - name: Verifica moduli admin byte-per-byte
+      - name: Verifica vendor identico all'oracle
         shell: bash
         run: |
           set -euo pipefail
-          files=(
-            admin.js
-            admin-console.js
-            admin-upgrade.js
-            admin-critical-upgrades.js
-            admin-runtime-fixes.js
-            admin-user-profile-ui.js
-            admin-conversation-delete-ui.js
-            admin-conversation-delete.js
-            admin-maintenance-toggle.js
-            admin-automation-status.js
-            auth.js
-            firebase-app.js
-            firebase-auth-init.js
-            firebase-init.js
-            firestore.js
-            utils.js
-            components.js
-          )
-          for file in "${files[@]}"; do
-            test -s "oracle/dist/assets/js/$file"
-            test -s "source/frontend-react/public/assets/js/$file"
-            cmp -s "oracle/dist/assets/js/$file" "source/frontend-react/public/assets/js/$file" || {
-              echo "::error::Modulo admin diverso dall'oracle: $file"
-              sha256sum "oracle/dist/assets/js/$file" "source/frontend-react/public/assets/js/$file"
-              exit 1
-            }
-          done
-          cmp -s oracle/dist/firebase/firebase-config.js source/frontend-react/public/firebase/firebase-config.js || {
-            echo "::error::firebase-config.js diverso dall'oracle"
-            sha256sum oracle/dist/firebase/firebase-config.js source/frontend-react/public/firebase/firebase-config.js
-            exit 1
-          }
-          echo "Moduli admin legacy: parità byte-per-byte OK"
+          diff -qr oracle/dist/assets/js source/frontend-react/oracle-admin/assets/js
+          cmp -s oracle/dist/firebase/firebase-config.js source/frontend-react/oracle-admin/firebase/firebase-config.js
+          echo "Vendor admin oracle: byte-per-byte OK"
+
+      - name: Costruisci React completo offline
+        working-directory: source/frontend-react
+        env:
+          CV_PRERENDER_OFFLINE: '1'
+        run: npm run build
+
+      - name: Verifica runtime pubblico byte-per-byte
+        shell: bash
+        run: |
+          set -euo pipefail
+          diff -qr oracle/dist/assets/js source/frontend-react/public/assets/js
+          cmp -s oracle/dist/firebase/firebase-config.js source/frontend-react/public/firebase/firebase-config.js
+          diff -qr oracle/dist/assets/js source/frontend-react/dist/assets/js
+          cmp -s oracle/dist/firebase/firebase-config.js source/frontend-react/dist/firebase/firebase-config.js
+          echo "Runtime admin pubblico/dist: byte-per-byte OK"
 
       - name: Verifica bundle CSS admin byte-per-byte
         shell: bash
@@ -233,22 +221,28 @@ jobs:
           assert '/* @vite-ignore */ url' in admin
           assert 'robots: "noindex,nofollow"' in admin
 
+          prerender = Path('source/frontend-react/scripts/prerender-home.mjs').read_text()
+          assert 'CV_PRERENDER_OFFLINE' in prerender
+          assert 'if (PRERENDER_OFFLINE) return [];' in prerender
+
           dist = Path('source/frontend-react/dist')
           for route in ('admin', 'admin/attivita', 'admin/utenti', 'admin/messaggi', 'admin/segnalazioni', 'admin/comunicazioni', 'admin/sistema'):
               target = dist / route / 'index.html'
               assert target.exists(), target
-          print('Admin bridge/routes/build: OK')
+          print('Admin bridge/routes/offline build: OK')
           PY
 
-      - name: Commit bridge finale
+      - name: Commit runtime oracle immutabile
         working-directory: source
         shell: bash
         run: |
           set -euo pipefail
           git config user.name "CalabriaVera CI"
           git config user.email "actions@users.noreply.github.com"
-          git add frontend-react/scripts/copy-legacy-assets.mjs
+          git add frontend-react/oracle-admin \
+                  frontend-react/scripts/copy-legacy-assets.mjs \
+                  frontend-react/scripts/prerender-home.mjs
           git diff --cached --check
           git diff --cached --quiet && { echo "::error::Nessuna modifica da committare"; exit 1; }
-          git commit -m "fix: copy final legacy admin build output"
+          git commit -m "fix: pin admin runtime to authoritative oracle build"
           git push origin HEAD:react-migration
