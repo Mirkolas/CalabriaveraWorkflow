@@ -11,7 +11,9 @@ on:
         options:
           - status
           - bootstrap
+          - migrate
           - sync-public-data
+          - cadence-smoke-test
           - export
 
 permissions:
@@ -71,7 +73,7 @@ jobs:
           exit 1
 
       - name: Verifica accesso sorgente privato
-        if: github.event.inputs.operation == 'bootstrap' || github.event.inputs.operation == 'sync-public-data'
+        if: github.event.inputs.operation == 'bootstrap' || github.event.inputs.operation == 'migrate' || github.event.inputs.operation == 'sync-public-data' || github.event.inputs.operation == 'cadence-smoke-test'
         shell: bash
         run: |
           set -euo pipefail
@@ -79,7 +81,7 @@ jobs:
           test -n "$PRIVATE_REPO_PAT" || { echo "::error::PAT repository privato mancante"; exit 1; }
 
       - name: Scarica sorgente privato
-        if: github.event.inputs.operation == 'bootstrap' || github.event.inputs.operation == 'sync-public-data'
+        if: github.event.inputs.operation == 'bootstrap' || github.event.inputs.operation == 'migrate' || github.event.inputs.operation == 'sync-public-data' || github.event.inputs.operation == 'cadence-smoke-test'
         uses: actions/checkout@v7
         with:
           repository: ${{ secrets.PRIVATE_REPO }}
@@ -89,7 +91,7 @@ jobs:
           persist-credentials: false
 
       - name: Verifica modalità workflow-only
-        if: github.event.inputs.operation == 'bootstrap' || github.event.inputs.operation == 'sync-public-data'
+        if: github.event.inputs.operation == 'bootstrap' || github.event.inputs.operation == 'migrate' || github.event.inputs.operation == 'sync-public-data' || github.event.inputs.operation == 'cadence-smoke-test'
         shell: bash
         run: |
           set -euo pipefail
@@ -100,12 +102,18 @@ jobs:
             exit 1
           fi
 
-      - name: Applica schema D1
-        if: github.event.inputs.operation == 'bootstrap'
+      - name: Applica migrazioni D1
+        if: github.event.inputs.operation == 'bootstrap' || github.event.inputs.operation == 'migrate' || github.event.inputs.operation == 'sync-public-data' || github.event.inputs.operation == 'cadence-smoke-test'
         shell: bash
         run: |
           set -euo pipefail
-          npx --yes wrangler@4 d1 execute "$D1_DATABASE" --remote --file=source/frontend-react/d1/migrations/0001_public_content.sql --yes
+          shopt -s nullglob
+          migrations=(source/frontend-react/d1/migrations/*.sql)
+          test "${#migrations[@]}" -gt 0 || { echo "::error::Nessuna migrazione D1 trovata"; exit 1; }
+          for migration in "${migrations[@]}"; do
+            echo "Applico $(basename "$migration")"
+            npx --yes wrangler@4 d1 execute "$D1_DATABASE" --remote --file="$migration" --yes
+          done
 
       - name: Genera seed dai dataset pubblici
         if: github.event.inputs.operation == 'sync-public-data'
@@ -119,13 +127,27 @@ jobs:
           set -euo pipefail
           npx --yes wrangler@4 d1 execute "$D1_DATABASE" --remote --file=source/frontend-react/d1/generated/seed-public.sql --yes
 
+      - name: Test lock/cadenza workflow su D1
+        if: github.event.inputs.operation == 'cadence-smoke-test'
+        working-directory: source
+        env:
+          AUTOMATION_STATE_BACKEND: d1
+          AUTOMATION_INTERVAL_MINUTES: '1'
+          AUTOMATION_LOCK_MINUTES: '5'
+          AUTOMATION_FORCE: 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          node tools/automation-cadence-runner.mjs maintenance-smoke -- node -e 'process.exit(0)'
+
       - name: Stato D1
-        if: github.event.inputs.operation == 'status' || github.event.inputs.operation == 'bootstrap' || github.event.inputs.operation == 'sync-public-data'
+        if: github.event.inputs.operation == 'status' || github.event.inputs.operation == 'bootstrap' || github.event.inputs.operation == 'migrate' || github.event.inputs.operation == 'sync-public-data' || github.event.inputs.operation == 'cadence-smoke-test'
         shell: bash
         run: |
           set -euo pipefail
           npx --yes wrangler@4 d1 info "$D1_DATABASE" --json
           npx --yes wrangler@4 d1 execute "$D1_DATABASE" --remote --command='SELECT key, value, updated_at FROM migration_meta ORDER BY key;' --json || true
+          npx --yes wrangler@4 d1 execute "$D1_DATABASE" --remote --command='SELECT key, interval_minutes, lock_id, lock_until_ms, next_due_at_ms, last_success_at_ms, last_failure_at_ms, last_exit_code, updated_at FROM automation_cadence ORDER BY key;' --json || true
 
       - name: Esporta D1
         if: github.event.inputs.operation == 'export'
