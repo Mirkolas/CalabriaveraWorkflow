@@ -1,0 +1,214 @@
+name: React final admin parity gate
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/react-admin-final-parity-gate.yml'
+
+permissions:
+  contents: read
+
+env:
+  EXPECTED_PRIVATE_SHA: 282b428ac9dc24b7c1da476544d5c3e91ab4f858
+  ORACLE_SHA: 7be434e3418e95cff9825e4cc3f4b4ed75cd1076
+
+jobs:
+  parity:
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    concurrency:
+      group: private-react-migration-writer
+      cancel-in-progress: false
+    env:
+      PRIVATE_REPO_PAT: ${{ secrets.PRIVATE_REPO_PAT || secrets.PERSONAL_ACCESS_TOKEN || secrets.PAT || secrets.GH_PAT || secrets.GITHUB_PAT }}
+    steps:
+      - name: Checkout React migration
+        uses: actions/checkout@v7
+        with:
+          repository: Mirkolas/calabriavera
+          token: ${{ env.PRIVATE_REPO_PAT }}
+          ref: react-migration
+          path: source
+          persist-credentials: false
+          fetch-depth: 1
+
+      - name: Checkout oracle legacy
+        uses: actions/checkout@v7
+        with:
+          repository: Mirkolas/calabriavera
+          token: ${{ env.PRIVATE_REPO_PAT }}
+          ref: ${{ env.ORACLE_SHA }}
+          path: oracle
+          persist-credentials: false
+          fetch-depth: 1
+
+      - name: Blocca base inattesa
+        working-directory: source
+        shell: bash
+        run: |
+          set -euo pipefail
+          actual="$(git rev-parse HEAD)"
+          echo "React base: $actual"
+          test "$actual" = "$EXPECTED_PRIVATE_SHA" || { echo "::error::react-migration inatteso: $actual"; exit 1; }
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version: '22'
+
+      - name: Installa dipendenze oracle
+        working-directory: oracle
+        run: npm ci --no-audit --no-fund
+
+      - name: Installa dipendenze sorgente
+        working-directory: source
+        run: npm ci --no-audit --no-fund
+
+      - name: Installa dipendenze React
+        working-directory: source/frontend-react
+        run: npm ci --no-audit --no-fund
+
+      - name: Test legacy admin
+        working-directory: source
+        shell: bash
+        run: |
+          set -euo pipefail
+          npm run test:syntax
+          node --test \
+            tests/admin-control.test.mjs \
+            tests/admin-backend.test.mjs \
+            tests/admin-conversation-delete.test.mjs \
+            tests/admin-conversation-delete-ui.test.mjs \
+            tests/admin-user-profile-ui.test.mjs \
+            tests/admin-critical-upgrades.test.mjs
+
+      - name: Costruisci oracle finale
+        working-directory: oracle
+        run: npm run build
+
+      - name: Costruisci React completo
+        working-directory: source/frontend-react
+        run: npm run build
+
+      - name: Verifica moduli admin byte-per-byte
+        shell: bash
+        run: |
+          set -euo pipefail
+          files=(
+            admin.js
+            admin-console.js
+            admin-upgrade.js
+            admin-critical-upgrades.js
+            admin-runtime-fixes.js
+            admin-user-profile-ui.js
+            admin-conversation-delete-ui.js
+            admin-conversation-delete.js
+            admin-maintenance-toggle.js
+            admin-automation-status.js
+            auth.js
+            firebase-app.js
+            firebase-auth-init.js
+            firebase-init.js
+            firestore.js
+            utils.js
+            components.js
+          )
+          for file in "${files[@]}"; do
+            test -s "oracle/dist/assets/js/$file"
+            test -s "source/frontend-react/public/assets/js/$file"
+            cmp -s "oracle/dist/assets/js/$file" "source/frontend-react/public/assets/js/$file" || {
+              echo "::error::Modulo admin diverso dall'oracle: $file"
+              sha256sum "oracle/dist/assets/js/$file" "source/frontend-react/public/assets/js/$file"
+              exit 1
+            }
+          done
+          cmp -s oracle/dist/firebase/firebase-config.js source/frontend-react/public/firebase/firebase-config.js || {
+            echo "::error::firebase-config.js diverso dall'oracle"
+            exit 1
+          }
+          echo "Moduli admin legacy: parità byte-per-byte OK"
+
+      - name: Verifica bundle CSS admin byte-per-byte
+        shell: bash
+        run: |
+          set -euo pipefail
+          bundles=(
+            cv-bundle-b23bf9fdf406ca6d.css
+            cv-bundle-28783d3e87e06008.css
+            cv-bundle-fe11938d8fd5afe9.css
+          )
+          for file in "${bundles[@]}"; do
+            test -s "oracle/dist/assets/css/$file"
+            test -s "source/frontend-react/public/assets/css/$file"
+            cmp -s "oracle/dist/assets/css/$file" "source/frontend-react/public/assets/css/$file" || {
+              echo "::error::Bundle CSS admin diverso dall'oracle: $file"
+              sha256sum "oracle/dist/assets/css/$file" "source/frontend-react/public/assets/css/$file"
+              exit 1
+            }
+          done
+          echo "Bundle CSS admin: parità byte-per-byte OK"
+
+      - name: Verifica bridge, route e output build
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import json
+          from pathlib import Path
+
+          admin = Path('source/frontend-react/src/pages/AdminPage.tsx').read_text()
+          route_map = json.loads(Path('source/frontend-react/public/main-route-css.json').read_text())
+          css = route_map['routeCss']
+          pages = route_map['routePages']
+
+          expected_css = {
+            '/admin': '/assets/css/cv-bundle-28783d3e87e06008.css',
+            '/admin/attivita': '/assets/css/cv-bundle-b23bf9fdf406ca6d.css',
+            '/admin/recensioni': '/assets/css/cv-bundle-28783d3e87e06008.css',
+            '/admin/segnalazioni': '/assets/css/cv-bundle-28783d3e87e06008.css',
+            '/admin/blog': '/assets/css/cv-bundle-28783d3e87e06008.css',
+            '/admin/categorie': '/assets/css/cv-bundle-28783d3e87e06008.css',
+            '/admin/comuni': '/assets/css/cv-bundle-28783d3e87e06008.css',
+            '/admin/utenti': '/assets/css/cv-bundle-fe11938d8fd5afe9.css',
+            '/admin/messaggi': '/assets/css/cv-bundle-b23bf9fdf406ca6d.css',
+            '/admin/comunicazioni': '/assets/css/cv-bundle-28783d3e87e06008.css',
+            '/admin/seo': '/assets/css/cv-bundle-28783d3e87e06008.css',
+            '/admin/sistema': '/assets/css/cv-bundle-28783d3e87e06008.css',
+            '/admin/impostazioni': '/assets/css/cv-bundle-28783d3e87e06008.css',
+            '/admin/backup': '/assets/css/cv-bundle-28783d3e87e06008.css',
+          }
+          for route, bundle in expected_css.items():
+            assert css.get(route) == [bundle], (route, css.get(route), bundle)
+
+          for route in ('/admin/segnalazioni', '/admin/comunicazioni', '/admin/sistema'):
+            assert pages.get(route) == 'admin-index', (route, pages.get(route))
+
+          required = [
+            'importLegacy("auth.js")',
+            'importLegacy("admin.js")',
+            'importLegacy("admin-runtime-fixes.js")',
+            'importLegacy("admin-maintenance-toggle.js")',
+            'importLegacy("admin-automation-status.js")',
+            'importLegacy("admin-critical-upgrades.js")',
+            'importLegacy("admin-conversation-delete-ui.js")',
+            'importLegacy("admin-user-profile-ui.js")',
+            'importLegacy("admin-console.js")',
+            'importLegacy("admin-upgrade.js")',
+          ]
+          for token in required:
+            assert token in admin, token
+          assert admin.index('importLegacy("auth.js")') < admin.index('importLegacy("admin.js")') < admin.index('importLegacy("admin-runtime-fixes.js")')
+          assert admin.index('importLegacy("admin-console.js")') < admin.index('importLegacy("admin-upgrade.js")')
+          assert 'const url = `/assets/js/${file}`' in admin
+          assert '/* @vite-ignore */ url' in admin
+          assert 'robots: "noindex,nofollow"' in admin
+
+          dist = Path('source/frontend-react/dist')
+          assert dist.exists()
+          for route in ('admin', 'admin/attivita', 'admin/utenti', 'admin/messaggi', 'admin/segnalazioni', 'admin/comunicazioni', 'admin/sistema'):
+            target = dist / route / 'index.html'
+            assert target.exists(), target
+          print('Admin bridge/routes/build: OK')
+          PY
