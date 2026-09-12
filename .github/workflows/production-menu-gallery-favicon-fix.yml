@@ -1,0 +1,195 @@
+name: Production repair - menu gallery favicon
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/production-menu-gallery-favicon-fix.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  id-token: write
+
+concurrency:
+  group: production-menu-gallery-favicon-fix
+  cancel-in-progress: false
+
+env:
+  PRIVATE_REPO: ${{ secrets.PRIVATE_REPO }}
+  PRIVATE_REPO_PAT: ${{ secrets.PRIVATE_REPO_PAT || secrets.PERSONAL_ACCESS_TOKEN || secrets.PAT || secrets.GH_PAT || secrets.GITHUB_PAT }}
+
+jobs:
+  repair:
+    runs-on: ubuntu-latest
+    timeout-minutes: 35
+    steps:
+      - name: Verifica configurazione
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -n "$PRIVATE_REPO"
+          test -n "$PRIVATE_REPO_PAT"
+
+      - name: Checkout runner pubblico
+        uses: actions/checkout@v7
+        with:
+          path: workflow-repo
+          persist-credentials: false
+
+      - name: Checkout main privato
+        uses: actions/checkout@v7
+        with:
+          repository: ${{ secrets.PRIVATE_REPO }}
+          token: ${{ env.PRIVATE_REPO_PAT }}
+          ref: main
+          path: source
+          persist-credentials: true
+          fetch-depth: 1
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version: '22'
+
+      - name: Applica menu originale, fallback galleria e favicon
+        run: node workflow-repo/scripts/fix-menu-gallery-favicon-2026-09-12.mjs source
+
+      - name: Verifica diff
+        shell: bash
+        run: |
+          set -euo pipefail
+          git -C source diff --check -- \
+            frontend-react/src/components/Layout.tsx \
+            frontend-react/src/components/LegacyCatalogCard.tsx \
+            frontend-react/src/components/BusinessCard.tsx \
+            frontend-react/src/styles.css \
+            frontend-react/index.html
+          git -C source status --short
+
+      - name: Suite completa repository privato
+        working-directory: source
+        run: |
+          set -euo pipefail
+          npm ci --no-audit --no-fund
+          npm test
+
+      - name: Build React
+        working-directory: source/frontend-react
+        env:
+          CV_PRERENDER_OFFLINE: '1'
+        run: |
+          set -euo pipefail
+          npm ci --no-audit --no-fund
+          npm run build
+
+      - name: Commit privato senza Actions private
+        id: commit
+        working-directory: source
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name 'CalabriaVera Public Workflow'
+          git config user.email 'actions@users.noreply.github.com'
+          git add \
+            frontend-react/src/components/Layout.tsx \
+            frontend-react/src/components/LegacyCatalogCard.tsx \
+            frontend-react/src/components/BusinessCard.tsx \
+            frontend-react/src/styles.css \
+            frontend-react/index.html
+          if ! git diff --cached --quiet; then
+            git commit -m 'fix: restore original menu gallery cover and favicon [skip ci]'
+            git push origin HEAD:main
+          fi
+          sha="$(git rev-parse HEAD)"
+          echo "sha=$sha" >> "$GITHUB_OUTPUT"
+          echo "Private main: $sha"
+
+      - name: Build finale sul nuovo SHA
+        working-directory: source/frontend-react
+        env:
+          CV_PRERENDER_OFFLINE: '1'
+        shell: bash
+        run: |
+          set -euo pipefail
+          npm run build
+          test "$(tr -d '\r\n' < dist/build-version.txt)" = "${{ steps.commit.outputs.sha }}"
+
+      - name: Autenticazione Firebase
+        uses: google-github-actions/auth@v3
+        with:
+          workload_identity_provider: ${{ vars.FIREBASE_WIF_PROVIDER }}
+          service_account: ${{ vars.FIREBASE_DEPLOY_SERVICE_ACCOUNT }}
+
+      - name: Deploy React su calabriavera.com
+        working-directory: source/frontend-react
+        run: |
+          set -euo pipefail
+          npx --yes firebase-tools@15.22.1 deploy \
+            --project calabriavera-e08d4 \
+            --config firebase.react.json \
+            --only hosting
+
+      - name: Verifica HTTP produzione
+        env:
+          SHA: ${{ steps.commit.outputs.sha }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          get() { curl --fail --silent --show-error --location --connect-timeout 8 --max-time 30 --retry 6 --retry-delay 3 --retry-all-errors "$@"; }
+          version="$(get -H 'Cache-Control: no-cache' "https://calabriavera.com/build-version.txt?repair=$GITHUB_RUN_ID" | tr -d '\r\n')"
+          test "$version" = "$SHA"
+          html="$(get -H 'Cache-Control: no-cache' "https://calabriavera.com/?repair=$GITHUB_RUN_ID")"
+          printf '%s' "$html" | grep -Fq 'Logo.png?v=20260912b'
+          echo "OK .com build $version e favicon nuovo"
+
+      - name: Installa Chromium per verifica reale
+        run: |
+          set -euo pipefail
+          mkdir -p /tmp/cv-prod-check
+          npm install --prefix /tmp/cv-prod-check --no-package-lock --no-save playwright@1.62.1
+          /tmp/cv-prod-check/node_modules/.bin/playwright install --with-deps chromium
+
+      - name: Verifica browser menu e Le Ninfee
+        env:
+          PLAYWRIGHT_PATH: /tmp/cv-prod-check/node_modules/playwright
+        shell: bash
+        run: |
+          set -euo pipefail
+          cat > /tmp/cv-prod-check/check.cjs <<'NODE'
+          const { chromium } = require(process.env.PLAYWRIGHT_PATH);
+          (async()=>{
+            const browser=await chromium.launch({headless:true});
+            const page=await browser.newPage({viewport:{width:1024,height:900}});
+            await page.goto('https://calabriavera.com/catalogo?repair='+Date.now(),{waitUntil:'networkidle',timeout:60000});
+            const menu=page.locator('#menu-toggle');
+            if(!(await menu.isVisible())) throw new Error('Menu compatto non visibile a 1024px');
+            await menu.click();
+            const mobile=page.locator('#mobile-nav');
+            if(!(await mobile.isVisible())) throw new Error('Menu mobile non si apre');
+            const box=await mobile.boundingBox();
+            if(!box || box.height>520 || box.width>1024) throw new Error('Menu mobile fuori geometria originale: '+JSON.stringify(box));
+            await menu.click();
+            const card=page.locator('article.activity-item').filter({hasText:'Le Ninfee B&B'}).first();
+            await card.waitFor({state:'visible',timeout:20000});
+            const img=card.locator('img').first();
+            await img.waitFor({state:'visible',timeout:20000});
+            await page.waitForFunction(el=>el.complete&&el.naturalWidth>20,await img.elementHandle(),{timeout:20000});
+            const src=await img.getAttribute('src');
+            console.log('Le Ninfee image:',src);
+            await page.screenshot({path:'/tmp/cv-prod-check/catalogo.png',fullPage:true});
+            await page.goto('https://calabriavera.com/?repair='+Date.now(),{waitUntil:'networkidle',timeout:60000});
+            const favicon=await page.locator('link[rel="icon"]').first().getAttribute('href');
+            if(!String(favicon).includes('Logo.png?v=20260912b')) throw new Error('Favicon non aggiornato: '+favicon);
+            await browser.close();
+          })().catch(e=>{console.error(e);process.exit(1)});
+          NODE
+          node /tmp/cv-prod-check/check.cjs
+
+      - name: Carica screenshot finale
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: production-menu-gallery-favicon-check
+          path: /tmp/cv-prod-check/catalogo.png
+          retention-days: 3
+          if-no-files-found: warn
