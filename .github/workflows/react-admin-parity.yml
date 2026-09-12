@@ -6,6 +6,7 @@ on:
     paths:
       - '.github/workflows/react-admin-parity.yml'
       - 'scripts/patch-react-admin-parity.py'
+      - 'scripts/fix-react-admin-generated.py'
   workflow_dispatch:
 
 permissions:
@@ -46,6 +47,7 @@ jobs:
         run: |
           set -euo pipefail
           python3 automation/scripts/patch-react-admin-parity.py
+          python3 automation/scripts/fix-react-admin-generated.py
       - name: Build React client SSR and prerender
         working-directory: source/frontend-react
         shell: bash
