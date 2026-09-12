@@ -1,0 +1,42 @@
+name: Audit exact backup consent runtime
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/react-exact-consent-audit.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  audit:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      PRIVATE_REPO_PAT: ${{ secrets.PRIVATE_REPO_PAT || secrets.PERSONAL_ACCESS_TOKEN || secrets.PAT || secrets.GH_PAT || secrets.GITHUB_PAT }}
+      LEGACY_SHA: 7be434e3418e95cff9825e4cc3f4b4ed75cd1076
+    steps:
+      - name: Checkout exact backup
+        uses: actions/checkout@v7
+        with:
+          repository: ${{ secrets.PRIVATE_REPO }}
+          token: ${{ env.PRIVATE_REPO_PAT }}
+          ref: backup-main-pre-react-2026-09-11
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: Audit consent activation
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$LEGACY_SHA"
+          echo '=== privacy-consent references ==='
+          grep -RIn --exclude-dir=.git --exclude='privacy-consent.js' 'privacy-consent\.js' . || true
+          echo '=== analytics flag references ==='
+          grep -RIn --exclude-dir=.git 'CALABRIAVERA_ANALYTICS_ENABLED' . || true
+          echo '=== cv-consent references ==='
+          grep -RIn --exclude-dir=.git 'cv-consent' . || true
+          echo '=== scripts in top-level public HTML ==='
+          grep -Hn '<script' ./*.html || true
