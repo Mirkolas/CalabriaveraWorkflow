@@ -76,22 +76,43 @@ jobs:
           python3 - <<'PY'
           from pathlib import Path
           import re
-          generated = Path('source/frontend-react/src/generated/tourism-data-core.ts').read_text(encoding='utf-8')
+          import subprocess
+
+          root = Path('source/frontend-react')
+          generated = (root / 'src/generated/tourism-data-core.ts').read_text(encoding='utf-8')
           ids = re.findall(r'"id"\s*:\s*"([^"]+)"', generated)
+          print(f'generated tourism ids: {len(ids)}')
           assert len(ids) == 52, len(ids)
           assert len(set(ids)) == 52
           assert 'turismo-isola-dino' in ids
           assert 'turismo-catanzaro-centro' in ids
-          catalog = Path('source/frontend-react/src/pages/CatalogPage.tsx').read_text(encoding='utf-8')
-          map_page = Path('source/frontend-react/src/pages/MapPage.tsx').read_text(encoding='utf-8')
+
+          catalog = (root / 'src/pages/CatalogPage.tsx').read_text(encoding='utf-8')
+          map_page = (root / 'src/pages/MapPage.tsx').read_text(encoding='utf-8')
           for token in ['data-react-catalog-revision="20260912-catalog-map-v2"','id="result-count"','id="results"','id="category"','id="province"','id="city"']:
               assert token in catalog, token
           for token in ['data-react-map-revision="20260912-catalog-map-v2"','[mapReady, filtered','id="verified" hidden','id="map-results" hidden','globalThis as unknown as { L?: typeof import("leaflet") }']:
               assert token in map_page, token
+
+          assets = list((root / 'dist/assets').glob('*.js'))
+          bundle = '\n'.join(p.read_text(encoding='utf-8', errors='ignore') for p in assets)
+          marker = '20260912-catalog-map-v2'
+          print(f'revision marker in client bundle: {marker in bundle}')
+          assert marker in bundle
+          tourism_chunks = [p for p in assets if p.name.startswith('tourism-data-core-')]
+          assert tourism_chunks, 'tourism-data-core client chunk missing'
+          tourism_size = max(p.stat().st_size for p in tourism_chunks)
+          print(f'tourism client chunk bytes: {tourism_size}')
+          assert tourism_size > 15000, tourism_size
+          assert any(p.name.startswith('CatalogPage-') for p in assets)
+          assert any(p.name.startswith('MapPage-') for p in assets)
+
+          check = subprocess.run(['git','-C','source','diff','--check'], text=True, capture_output=True)
+          if check.stdout: print(check.stdout)
+          if check.stderr: print(check.stderr)
+          assert check.returncode == 0, 'git diff --check failed'
+          print('RUNTIME_BUNDLE_VALIDATION_GREEN')
           PY
-          grep -R -q '20260912-catalog-map-v2' source/frontend-react/dist/assets
-          grep -R -q 'turismo-isola-dino' source/frontend-react/dist/assets
-          git -C source diff --check
 
       - name: Commit and push only after green build
         shell: bash
