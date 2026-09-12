@@ -48,6 +48,7 @@ jobs:
           set -euo pipefail
           python3 automation/scripts/patch-react-admin-parity.py
           python3 automation/scripts/fix-react-admin-generated.py
+          nl -ba source/frontend-react/src/pages/AdminPage.tsx | sed -n '126,132p'
       - name: Build React client SSR and prerender
         working-directory: source/frontend-react
         shell: bash
