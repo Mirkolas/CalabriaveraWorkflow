@@ -1,0 +1,93 @@
+name: React main R2 background fix
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/react-main-r2-background-fix.yml'
+      - 'scripts/react-main-r2-background-fix.py'
+
+permissions:
+  contents: read
+
+env:
+  EXPECTED_CANDIDATE_SHA: 3c18af318a2067edf8a263bbaa1300e26fc1494e
+
+jobs:
+  repair:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    env:
+      PRIVATE_REPO_PAT: ${{ secrets.PRIVATE_REPO_PAT || secrets.PERSONAL_ACCESS_TOKEN || secrets.PAT || secrets.GH_PAT || secrets.GITHUB_PAT }}
+    steps:
+      - name: Checkout public repair runner
+        uses: actions/checkout@v7
+        with:
+          path: runner
+          persist-credentials: false
+
+      - name: Checkout exact integrated candidate
+        uses: actions/checkout@v7
+        with:
+          repository: Mirkolas/calabriavera
+          token: ${{ env.PRIVATE_REPO_PAT }}
+          ref: react-main-integration-final
+          path: source
+          fetch-depth: 0
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version: '22'
+
+      - name: Verify exact candidate and R2 objects
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git -C source rev-parse HEAD)" = "$EXPECTED_CANDIDATE_SHA"
+          for asset in \
+            assets/images/home/tropea-1600.webp \
+            assets/images/home/tropea-960.webp \
+            assets/images/home/sila-1280.webp \
+            assets/images/home/sila-720.webp; do
+            curl --fail --silent --show-error --location --retry 3 --output /dev/null "https://img.calabriavera.com/static/$asset"
+            echo "R2 reachable: $asset"
+          done
+
+      - name: Apply exact legacy backgrounds with R2 URLs
+        shell: bash
+        run: |
+          set -euo pipefail
+          python runner/scripts/react-main-r2-background-fix.py source
+          git -C source diff --check -- frontend-react/src/pages/OriginalHomePage.tsx frontend-react/src/pages/MagazinePage.tsx
+          git -C source diff -- frontend-react/src/pages/OriginalHomePage.tsx frontend-react/src/pages/MagazinePage.tsx
+
+      - name: Full repository regression suite
+        working-directory: source
+        shell: bash
+        run: |
+          set -euo pipefail
+          npm ci --no-audit --no-fund
+          npm test
+
+      - name: React production build
+        working-directory: source/frontend-react
+        env:
+          CV_PRERENDER_OFFLINE: '1'
+        shell: bash
+        run: |
+          set -euo pipefail
+          npm ci --no-audit --no-fund
+          npm run build
+
+      - name: Commit verified fix to integration branch
+        working-directory: source
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name 'CalabriaVera Public Runner'
+          git config user.email 'actions@users.noreply.github.com'
+          git add frontend-react/src/pages/OriginalHomePage.tsx frontend-react/src/pages/MagazinePage.tsx
+          git commit -m 'fix: preserve legacy backgrounds through R2 [skip ci]'
+          git push origin HEAD:react-main-integration-final
+          echo "Candidate SHA: $(git rev-parse HEAD)"
