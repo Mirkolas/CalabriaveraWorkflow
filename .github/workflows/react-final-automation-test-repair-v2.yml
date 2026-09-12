@@ -1,0 +1,81 @@
+name: React automation parity repair v2
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - .github/workflows/react-final-automation-test-repair-v2.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  repair:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      PRIVATE_REPO_PAT: ${{ secrets.PRIVATE_REPO_PAT || secrets.PERSONAL_ACCESS_TOKEN || secrets.PAT || secrets.GH_PAT || secrets.GITHUB_PAT }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          repository: Mirkolas/calabriavera
+          token: ${{ env.PRIVATE_REPO_PAT }}
+          ref: react-migration
+          path: source
+          fetch-depth: 0
+      - uses: actions/setup-node@v7
+        with:
+          node-version: '22'
+      - name: Patch stale assertions
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd source
+          python - <<'PY'
+          from pathlib import Path
+          p = Path('tests/automation-cadence.test.mjs')
+          s = p.read_text()
+          pairs = [
+            ('assert.match(siteBatch, /filter\\(row => row\\.status === "queued"\\)/);', 'assert.match(siteBatch, /collection\\("blogPosts"\\)\\.where\\("status", "==", "queued"\\)\\.get\\(\\)/);'),
+            ("  const deploy = read('.github/workflows/firebase-deploy.yml');\n", ''),
+            ('  assert.match(deploy, /Story Instagram 9:16 con safe area/);\n  assert.match(deploy, /scale=1080:1920/);\n  assert.match(deploy, /scale=920:1640/);\n  assert.match(deploy, /test "\\$dims" = "1080x1920"/);', '  assert.match(publisher, /assertRemoteImage\\(instagramImageUrl, "Story Instagram 9:16 safe-area"\\)/);\n  assert.match(publisher, /media_type: "STORIES"/);'),
+            ('assert.match(publisher, /\\.filter\\(post => !FORCE_POST_ID \\|\\| post\\.id === FORCE_POST_ID\\)/);', 'assert.match(publisher, /collection\\("blogPosts"\\)\\.doc\\(FORCE_POST_ID\\)\\.get\\(\\)/);\n  assert.match(publisher, /return validCandidate\\(post, oldest\\) \\? \\[post\\] : \\[]/);')
+          ]
+          for old, new in pairs:
+            if old not in s:
+              raise SystemExit('stale fragment missing: ' + old[:80])
+            s = s.replace(old, new)
+          old = """test('Backup ruota la domenica e mantiene le copie giornaliere negli altri giorni', () => {
+            const previous = [1, 2, 3, 4, 5, 6].map(sequence => backupRelease(sequence, '2026-09-05T02:30:00.000Z'));
+            const saturday = backupRelease(7, '2026-09-05T02:30:00.000Z');
+            const sunday = backupRelease(8, '2026-09-06T02:30:00.000Z');
+            assert.deepEqual(retentionPlan(previous, saturday), []);
+            assert.deepEqual(retentionPlan([...previous, saturday], sunday).map(row => row.id), [1, 2, 3, 4, 5, 6, 7]);
+          });""".replace('          ', '')
+          new = """test('Backup ruota soltanto quando il ciclo di copie verificate è completo', () => {
+            const firstThree = [1, 2, 3].map(sequence => backupRelease(sequence, '2026-09-05T02:30:00.000Z'));
+            const fourth = backupRelease(4, '2026-09-05T02:30:00.000Z');
+            const fifth = backupRelease(5, '2026-09-06T02:30:00.000Z');
+            assert.deepEqual(retentionPlan(firstThree, fourth), []);
+            assert.deepEqual(retentionPlan([...firstThree, fourth], fifth).map(row => row.id), [1, 2, 3, 4]);
+          });""".replace('          ', '')
+          if old not in s:
+            raise SystemExit('stale backup test missing')
+          p.write_text(s.replace(old, new))
+          PY
+          git diff --check
+          npm ci --no-audit --no-fund
+          node --test tests/automation-cadence.test.mjs
+          npm test
+      - name: Commit to private react-migration
+        working-directory: source
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name 'CalabriaVera CI'
+          git config user.email 'actions@users.noreply.github.com'
+          git add tests/automation-cadence.test.mjs
+          git commit -m 'test: align automation parity assertions'
+          git push origin HEAD:react-migration
