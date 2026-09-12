@@ -21,6 +21,12 @@ jobs:
     env:
       PRIVATE_REPO_PAT: ${{ secrets.PRIVATE_REPO_PAT || secrets.PERSONAL_ACCESS_TOKEN || secrets.PAT || secrets.GH_PAT || secrets.GITHUB_PAT }}
     steps:
+      - name: Checkout public integration runner
+        uses: actions/checkout@v7
+        with:
+          path: runner
+          persist-credentials: false
+
       - name: Checkout private main as data only
         uses: actions/checkout@v7
         with:
@@ -34,16 +40,16 @@ jobs:
         with:
           node-version: '22'
 
-      - name: Merge certified React and preserve current R2 image architecture
+      - name: Merge certified React and resolve only expected conflicts
         working-directory: source
         shell: bash
         run: |
           set -euo pipefail
-          git fetch origin "$CERTIFIED_REACT_SHA"
           test "$(git rev-parse HEAD)" = "$EXPECTED_MAIN_SHA"
+          git fetch origin "$CERTIFIED_REACT_SHA"
           git config user.name 'CalabriaVera Public Runner'
           git config user.email 'actions@users.noreply.github.com'
-          git checkout -b react-main-integration-final "$EXPECTED_MAIN_SHA"
+          git checkout -B react-main-integration-final "$EXPECTED_MAIN_SHA"
 
           set +e
           git merge --no-ff "$CERTIFIED_REACT_SHA" -m 'merge: integrate certified React migration [skip ci]'
@@ -56,45 +62,14 @@ jobs:
             test "${#conflicts[@]}" -eq 2
             test "${conflicts[0]}" = 'frontend-react/src/components/Layout.tsx'
             test "${conflicts[1]}" = 'frontend-react/src/pages/OriginalHomePage.tsx'
-
-            git checkout --theirs -- frontend-react/src/components/Layout.tsx frontend-react/src/pages/OriginalHomePage.tsx
-
-            python - <<'PY'
-          from pathlib import Path
-
-          layout = Path('frontend-react/src/components/Layout.tsx')
-          text = layout.read_text()
-          old = 'const LOGO = "/assets/Logo.webp";'
-          if old not in text:
-              raise SystemExit('React LOGO target missing')
-          layout.write_text(text.replace(old, 'const LOGO = "https://img.calabriavera.com/static/assets/Logo.png";', 1))
-
-          home = Path('frontend-react/src/pages/OriginalHomePage.tsx')
-          text = home.read_text()
-          if 'const STATIC_IMAGE_CDN = "https://img.calabriavera.com/static";' not in text:
-              anchor = 'import { MAIN_COMMON_CITIES } from "../generated/main-static-options";\n\n'
-              if anchor not in text:
-                  raise SystemExit('Home CDN insertion point missing')
-              text = text.replace(anchor, anchor + 'const STATIC_IMAGE_CDN = "https://img.calabriavera.com/static";\n', 1)
-          for asset in [
-              'assets/images/home/tropea-960.webp',
-              'assets/images/home/sila-720.webp',
-              'assets/images/home/scilla-720.webp',
-              'assets/images/home/capo-colonna-720.webp',
-          ]:
-              text = text.replace(f'image: "/{asset}"', f'image: `${{STATIC_IMAGE_CDN}}/{asset}`')
-          hero = 'src="/assets/Logo.png"'
-          if hero not in text:
-              raise SystemExit('Home logo target missing')
-          text = text.replace(hero, 'src={`${STATIC_IMAGE_CDN}/assets/Logo.png`}', 1)
-          home.write_text(text)
-          PY
-
-            git add frontend-react/src/components/Layout.tsx frontend-react/src/pages/OriginalHomePage.tsx
-            git diff --check
-            git commit -m 'merge: integrate certified React migration with R2 assets [skip ci]'
+            git checkout --theirs -- "${conflicts[@]}"
+            python "$GITHUB_WORKSPACE/runner/scripts/react-main-integration-resolve.py" "$GITHUB_WORKSPACE/source"
+            git add "${conflicts[@]}"
+            git diff --check --cached
+            git commit -m 'merge: certified React plus current R2 architecture [skip ci]'
           fi
 
+          test -z "$(git diff --name-only --diff-filter=U)"
           echo "INTEGRATION_SHA=$(git rev-parse HEAD)" >> "$GITHUB_ENV"
           git log -1 --oneline
 
@@ -117,10 +92,10 @@ jobs:
           npm ci --no-audit --no-fund
           npm run build
 
-      - name: Push validated integration branch
+      - name: Push validated integration branch without private Actions
         working-directory: source
         shell: bash
         run: |
           set -euo pipefail
-          git push origin HEAD:refs/heads/react-main-integration-final
+          git push --force origin HEAD:refs/heads/react-main-integration-final
           echo "Integrated SHA: $(git rev-parse HEAD)"
