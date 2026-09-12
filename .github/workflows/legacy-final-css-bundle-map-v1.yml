@@ -1,0 +1,51 @@
+name: Legacy final CSS bundle map v1
+
+on:
+  push:
+    branches: [main]
+    paths: ['.github/workflows/legacy-final-css-bundle-map-v1.yml']
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  map:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      PRIVATE_REPO_PAT: ${{ secrets.PRIVATE_REPO_PAT || secrets.PERSONAL_ACCESS_TOKEN || secrets.PAT || secrets.GH_PAT || secrets.GITHUB_PAT }}
+      LEGACY_SHA: 7be434e3418e95cff9825e4cc3f4b4ed75cd1076
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          repository: ${{ secrets.PRIVATE_REPO }}
+          token: ${{ env.PRIVATE_REPO_PAT }}
+          ref: backup-main-pre-react-2026-09-11
+          path: legacy
+          persist-credentials: false
+      - uses: actions/setup-node@v7
+        with: {node-version: '24'}
+      - name: Build and print exact mapping
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git -C legacy rev-parse HEAD)" = "$LEGACY_SHA"
+          (cd legacy && npm ci && npm run build)
+          node --input-type=module <<'NODE'
+          import fs from 'node:fs';import path from 'node:path';import crypto from 'node:crypto';
+          function walk(d){return fs.readdirSync(d,{withFileTypes:true}).flatMap(e=>e.isDirectory()?walk(path.join(d,e.name)):(e.name.endsWith('.html')?[path.join(d,e.name)]:[]));}
+          const rows=[];
+          for(const file of walk('legacy/dist').sort()){
+            const html=fs.readFileSync(file,'utf8');
+            const body=html.match(/<body\b[^>]*data-page=["']([^"']+)["']/i)?.[1]||'';
+            const styles=[...html.matchAll(/<link\b[^>]*rel=["']stylesheet["'][^>]*href=["']([^"']+)["'][^>]*>/gi)].map(m=>m[1].split(/[?#]/)[0]).filter(x=>x.startsWith('/assets/css/'));
+            const rel=path.relative('legacy/dist',file);
+            const data=[];
+            for(const href of styles){const css=fs.readFileSync(path.join('legacy/dist',href.replace(/^\//,'')));data.push({href,sha256:crypto.createHash('sha256').update(css).digest('hex'),bytes:css.length});}
+            rows.push({file:rel,body,styles:data});
+          }
+          console.log('FINAL_CSS_BUNDLE_MAP='+JSON.stringify(rows));
+          const unique=new Map();for(const r of rows)for(const s of r.styles)unique.set(s.sha256,s);
+          console.log('UNIQUE_FINAL_BUNDLES='+JSON.stringify([...unique.values()]));
+          NODE
