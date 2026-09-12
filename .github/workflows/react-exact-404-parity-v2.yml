@@ -1,0 +1,104 @@
+name: React exact built 404 parity v2
+
+on:
+  push:
+    branches: [main]
+    paths: ['.github/workflows/react-exact-404-parity-v2.yml']
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  patch-and-gate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 35
+    env:
+      PRIVATE_REPO_PAT: ${{ secrets.PRIVATE_REPO_PAT || secrets.PERSONAL_ACCESS_TOKEN || secrets.PAT || secrets.GH_PAT || secrets.GITHUB_PAT }}
+      LEGACY_SHA: 7be434e3418e95cff9825e4cc3f4b4ed75cd1076
+      EXPECTED_BASE: f16b18b93d91b4e1ac278351c6ef7507f3f7a04e
+    steps:
+      - uses: actions/checkout@v7
+        with: {path: workflow, persist-credentials: false}
+      - uses: actions/checkout@v7
+        with:
+          repository: ${{ secrets.PRIVATE_REPO }}
+          token: ${{ env.PRIVATE_REPO_PAT }}
+          ref: backup-main-pre-react-2026-09-11
+          path: legacy
+          persist-credentials: false
+      - uses: actions/checkout@v7
+        with:
+          repository: ${{ secrets.PRIVATE_REPO }}
+          token: ${{ env.PRIVATE_REPO_PAT }}
+          ref: react-migration
+          path: source
+          persist-credentials: true
+          fetch-depth: 8
+      - uses: actions/setup-node@v7
+        with: {node-version: '24'}
+      - name: Patch and build exact outputs
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git -C legacy rev-parse HEAD)" = "$LEGACY_SHA"
+          test "$(git -C source rev-parse HEAD)" = "$EXPECTED_BASE"
+          (cd legacy && npm ci && npm run build)
+          (cd source && python3 ../workflow/scripts/patch-react-exact-404.py)
+          grep -Fq 'padding:10.24px 14.72px!important' source/frontend-react/public/assets/css/react-live-parity.css
+          grep -Fq 'max-width:817.28px!important' source/frontend-react/public/assets/css/react-live-parity.css
+          (cd source/frontend-react && npm ci && npm run build)
+      - name: Install Chromium and serve
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p /tmp/cv-404-v2
+          npm install --prefix /tmp/cv-404-v2 --no-package-lock --no-save playwright@1.62.1 serve@14.2.4
+          /tmp/cv-404-v2/node_modules/.bin/playwright install --with-deps chromium >/dev/null
+          nohup /tmp/cv-404-v2/node_modules/.bin/serve legacy/dist -l 4184 >/tmp/cv-404-v2-l.log 2>&1 & echo $! >/tmp/cv-404-v2-l.pid
+          nohup /tmp/cv-404-v2/node_modules/.bin/serve -s source/frontend-react/dist -l 4185 >/tmp/cv-404-v2-r.log 2>&1 & echo $! >/tmp/cv-404-v2-r.pid
+          for attempt in {1..30}; do curl -fsS http://127.0.0.1:4184/404.html >/dev/null 2>&1 && curl -fsS http://127.0.0.1:4185/questa-pagina-non-esiste >/dev/null 2>&1 && exit 0; sleep 1; done
+          exit 1
+      - name: Gate built 404 desktop and mobile
+        env:
+          PLAYWRIGHT_MODULE: /tmp/cv-404-v2/node_modules/playwright
+        shell: bash
+        run: |
+          node --input-type=module <<'NODE'
+          import {createRequire} from 'node:module';
+          const {chromium}=createRequire(import.meta.url)(process.env.PLAYWRIGHT_MODULE);
+          const browser=await chromium.launch({headless:true});
+          const modes=[['desktop',{width:1365,height:900}],['mobile',{width:390,height:844}]],fail=[];
+          const near=(a,b,t=.11)=>Math.abs(Number(a)-Number(b))<=t;
+          async function read(origin,path,viewport){
+            const ctx=await browser.newContext({viewport,serviceWorkers:'block'});
+            await ctx.addInitScript(()=>{const now=Date.now();localStorage.setItem('cv-cookie-consent-v3',JSON.stringify({version:3,scope:'technical-only',savedAt:new Date(now).toISOString(),expiresAt:new Date(now+30*86400000).toISOString(),necessary:true,preferences:false,analytics:false,marketing:false,source:'ci'}))});
+            const p=await ctx.newPage(),errors=[];p.on('pageerror',e=>errors.push(String(e.message||e)));
+            await p.goto(origin+path,{waitUntil:'domcontentloaded',timeout:30000});await p.locator('main h1').waitFor({state:'visible',timeout:15000});await p.waitForTimeout(250);
+            const data=await p.evaluate(()=>{const q=s=>document.querySelector(s),rect=e=>{const r=e?.getBoundingClientRect();return r?{x:r.x,y:r.y,w:r.width,h:r.height}:null},st=e=>e?getComputedStyle(e):null;const h=q('main h1'),sec=q('main section.section.container'),prose=q('main .prose'),act=q('main .form-actions'),buttons=[...document.querySelectorAll('main .form-actions a')],hs=st(h),as=st(act);return {bodyPage:document.body.dataset.page||'',title:document.title,description:q('meta[name="description"]')?.getAttribute('content')||'',robots:q('meta[name="robots"]')?.getAttribute('content')||'',canonical:q('link[rel="canonical"]')?.getAttribute('href')||'',eyebrow:q('main .eyebrow')?.textContent?.trim()||'',h1:h?.textContent?.trim()||'',p:q('main .prose>p')?.textContent?.trim()||'',header:rect(q('.site-header')),section:rect(sec),prose:rect(prose),h1Rect:rect(h),actions:rect(act),h1Style:hs?{font:hs.fontFamily,size:hs.fontSize,weight:hs.fontWeight,line:hs.lineHeight,letter:hs.letterSpacing,color:hs.color,margin:hs.margin,maxWidth:hs.maxWidth}:null,actionsStyle:as?{display:as.display,gap:as.gap,margin:as.margin}:null,buttons:buttons.map(x=>{const s=getComputedStyle(x);return {text:x.textContent?.trim(),href:new URL(x.href,location.href).pathname,rect:rect(x),style:{font:s.fontFamily,size:s.fontSize,weight:s.fontWeight,line:s.lineHeight,letter:s.letterSpacing,padding:s.padding,display:s.display,align:s.alignItems}}})}});await p.close();await ctx.close();return {data,errors};
+          }
+          for(const [mode,viewport] of modes){const L=await read('http://127.0.0.1:4184','/404.html',viewport),R=await read('http://127.0.0.1:4185','/questa-pagina-non-esiste',viewport),a=L.data,b=R.data,m=[];
+            for(const k of ['bodyPage','title','description','robots','canonical','eyebrow','h1','p'])if(a[k]!==b[k])m.push(`${k}:${a[k]}/${b[k]}`);
+            if(JSON.stringify(a.h1Style)!==JSON.stringify(b.h1Style))m.push('h1-style');if(JSON.stringify(a.actionsStyle)!==JSON.stringify(b.actionsStyle))m.push('actions-style');
+            for(const key of ['header','section','prose','h1Rect','actions']){for(const d of ['x','y','w','h'])if(!near(a[key]?.[d],b[key]?.[d],key==='prose'&&d==='h'?1:.11))m.push(`${key}.${d}:${a[key]?.[d]}/${b[key]?.[d]}`)}
+            if(a.buttons.length!==b.buttons.length)m.push('button-count');else for(let i=0;i<a.buttons.length;i++){if(a.buttons[i].text!==b.buttons[i].text||a.buttons[i].href!==b.buttons[i].href||JSON.stringify(a.buttons[i].style)!==JSON.stringify(b.buttons[i].style)||!near(a.buttons[i].rect.h,b.buttons[i].rect.h,.11))m.push(`button-${i}`)}
+            if(R.errors.length)m.push(`errors:${R.errors.join(';')}`);console.log(`${mode}: ${m.length?m.join(' | '):'OK'}`);if(m.length)fail.push({mode,m,a,b});}
+          await browser.close();if(fail.length){console.error(JSON.stringify(fail,null,2));process.exit(1)}console.log('EXACT_404_V2_GREEN');
+          NODE
+      - name: Commit exact 404 parity
+        working-directory: source
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name 'calabriavera-parity-bot'
+          git config user.email 'actions@users.noreply.github.com'
+          git add frontend-react/src/App.tsx frontend-react/src/components/Layout.tsx frontend-react/scripts/copy-legacy-assets.mjs frontend-react/public/assets/css/react-live-parity.css
+          git diff --cached --quiet && { echo 'No changes to commit'; exit 0; }
+          git commit -m 'fix: match 404 route to exact pre-React backup'
+          git push origin HEAD:react-migration
+          echo "PATCH_SHA=$(git rev-parse HEAD)"
+      - name: Stop
+        if: always()
+        run: |
+          kill "$(cat /tmp/cv-404-v2-l.pid 2>/dev/null)" 2>/dev/null || true
+          kill "$(cat /tmp/cv-404-v2-r.pid 2>/dev/null)" 2>/dev/null || true
