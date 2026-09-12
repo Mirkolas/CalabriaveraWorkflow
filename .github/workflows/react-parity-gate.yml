@@ -1,6 +1,6 @@
 name: React migration - deterministic parity gate
 
-# Gate revision: react-migration a10c3653d11c6007fbe55767ecd5adf66f3fd787
+# Gate revision: react-migration a8af3493560aebdda7763d3abb896aba0f6eac90
 on:
   push:
     branches: [main]
@@ -34,34 +34,30 @@ jobs:
           set -euo pipefail
           test -n "$PRIVATE_REPO"
           test -n "$PRIVATE_REPO_PAT"
-
       - name: Checkout automation repo
         uses: actions/checkout@v7
         with:
           path: automation
           persist-credentials: false
-
       - name: Checkout React migration
         uses: actions/checkout@v7
         with:
           repository: ${{ secrets.PRIVATE_REPO }}
-          token: ${{ secrets.PRIVATE_REPO_PAT || secrets.PERSONAL_ACCESS_TOKEN || secrets.PAT || secrets.GH_PAT || secrets.GITHUB_PAT }}
+          token: ${{ env.PRIVATE_REPO_PAT }}
           ref: react-migration
           path: source
           persist-credentials: false
           fetch-depth: 0
-
       - uses: actions/setup-node@v7
         with:
           node-version: '24'
-
       - name: Wait for exact Cloudflare staging commit
         id: staging
         shell: bash
         run: |
           set -euo pipefail
           expected="$(git -C source rev-parse HEAD)"
-          test "$expected" = "a10c3653d11c6007fbe55767ecd5adf66f3fd787"
+          test "$expected" = "a8af3493560aebdda7763d3abb896aba0f6eac90"
           echo "expected=$expected" >> "$GITHUB_OUTPUT"
           echo "Expected staging commit: $expected"
           for attempt in {1..72}; do
@@ -75,7 +71,6 @@ jobs:
           done
           echo "::error::Cloudflare did not publish $expected"
           exit 1
-
       - name: Install isolated Chromium
         shell: bash
         run: |
@@ -83,13 +78,11 @@ jobs:
           mkdir -p /tmp/cv-parity
           npm install --prefix /tmp/cv-parity --no-package-lock --no-save playwright@1.62.1
           /tmp/cv-parity/node_modules/.bin/playwright install --with-deps chromium
-
       - name: Prepare reference-aware final parity audit
         shell: bash
         run: |
           set -euo pipefail
           python3 automation/scripts/prepare-final-parity-audit.py
-
       - name: Run broad data-ready parity audit
         working-directory: source
         env:
@@ -99,7 +92,6 @@ jobs:
         run: |
           set -euo pipefail
           node ../automation/scripts/react-parity-audit-v2.cjs
-
       - name: Run strict Catalog and Map live parity gate
         working-directory: source
         env:
@@ -110,7 +102,6 @@ jobs:
         run: |
           set -euo pipefail
           node ../automation/scripts/react-catalog-map-live-gate.cjs
-
       - name: Upload parity evidence
         if: always()
         uses: actions/upload-artifact@v6
