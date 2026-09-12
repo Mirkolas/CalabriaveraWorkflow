@@ -1,6 +1,10 @@
 name: Production - Apps Script Deploy
 
 on:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/apps-script-deploy.yml'
   workflow_dispatch:
   repository_dispatch:
     types: [source-apps-script-deploy]
@@ -56,6 +60,34 @@ jobs:
           fi
           grep -q "https://calabriavera.com" apps-script/EmailAutomation.gs
 
+      - name: Applica protezione quota Firestore al worker email
+        working-directory: source
+        shell: bash
+        run: |
+          set -euo pipefail
+          node <<'NODE'
+          const fs = require('node:fs');
+          const file = 'apps-script/EmailAutomation.gs';
+          let s = fs.readFileSync(file, 'utf8');
+          const replacements = [
+            ["const EMAIL_AUTOMATION_INTERVAL_MINUTES = 1;", "const EMAIL_AUTOMATION_INTERVAL_MINUTES = 10;"],
+            ["const EMAIL_AUTOMATION_MAX_EVENTS = 50;", "const EMAIL_AUTOMATION_MAX_EVENTS = 10;"],
+            ["const EMAIL_AUTOMATION_CAMPAIGN_BATCH = 50;", "const EMAIL_AUTOMATION_CAMPAIGN_BATCH = 10;"],
+            ["const EMAIL_AUTOMATION_WELCOME_RECOVERY_USERS = 120;", "const EMAIL_AUTOMATION_WELCOME_RECOVERY_USERS = 50;"],
+            ["const EMAIL_AUTOMATION_WELCOME_RECOVERY_INTERVAL_MS = 6 * 60 * 60 * 1000;", "const EMAIL_AUTOMATION_WELCOME_RECOVERY_INTERVAL_MS = 24 * 60 * 60 * 1000;"]
+          ];
+          for (const [before, after] of replacements) {
+            if (!s.includes(before)) throw new Error(`Contratto EmailAutomation non trovato: ${before}`);
+            s = s.replace(before, after);
+          }
+          fs.writeFileSync(file, s);
+          NODE
+          grep -q 'EMAIL_AUTOMATION_INTERVAL_MINUTES = 10' apps-script/EmailAutomation.gs
+          grep -q 'EMAIL_AUTOMATION_MAX_EVENTS = 10' apps-script/EmailAutomation.gs
+          grep -q 'EMAIL_AUTOMATION_CAMPAIGN_BATCH = 10' apps-script/EmailAutomation.gs
+          grep -q 'EMAIL_AUTOMATION_WELCOME_RECOVERY_USERS = 50' apps-script/EmailAutomation.gs
+          grep -q 'EMAIL_AUTOMATION_WELCOME_RECOVERY_INTERVAL_MS = 24' apps-script/EmailAutomation.gs
+
       - name: Verifica credenziale senza mostrarla
         if: vars.APPS_SCRIPT_ENABLED == 'true'
         working-directory: source
@@ -98,7 +130,7 @@ jobs:
             echo "::error::Aggiornamento Apps Script non riuscito."
             exit 1
           fi
-          if ! npx --yes @google/clasp@3.4.1 deploy --deploymentId AKfycbybzwBASQBXjcITav3u40hM12SSezzBdBL9UyIJI-ld1eGNQ8Uly96iOdO4E_bVIbVMGQ --description "GitHub Actions ${SOURCE_SHA}" > /tmp/clasp-deploy.log 2>&1; then
+          if ! npx --yes @google/clasp@3.4.1 deploy --deploymentId AKfycbybzwBASQBXjcITav3u40hM12SSezzBdBL9UyIJI-ld1eGNQ8Uly96iOdO4E_bVIbVMGQ --description "GitHub Actions ${SOURCE_SHA} quota-safe" > /tmp/clasp-deploy.log 2>&1; then
             node ../scripts/clasp-error.cjs /tmp/clasp-deploy.log
             echo "::error::Codice aggiornato ma implementazione non riuscita."
             exit 1
@@ -120,7 +152,7 @@ jobs:
             exit 0
           fi
           if printf '%s' "$output" | grep -Eqi 'FIRESTORE_429|ADMIN_FIRESTORE_429|RESOURCE_EXHAUSTED|Quota exceeded|(^|[^0-9])429([^0-9]|$)'; then
-            echo "::warning::Deploy Apps Script completato; verifica Firestore rinviata per quota temporaneamente esaurita. Il worker continuerà a essere verificato nelle esecuzioni successive."
+            echo "::warning::Deploy Apps Script completato; verifica Firestore rinviata per quota temporaneamente esaurita. Il codice quota-safe resta pubblicato."
             exit 0
           fi
           exit "$code"
