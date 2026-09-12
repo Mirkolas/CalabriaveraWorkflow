@@ -115,7 +115,31 @@ jobs:
             npx --yes wrangler@4 d1 execute "$D1_DATABASE" --remote --file="$migration" --yes
           done
 
-      - name: Genera seed dai dataset pubblici
+      - name: Scarica snapshot pubblici live
+        if: github.event.inputs.operation == 'sync-public-data'
+        shell: bash
+        run: |
+          set -euo pipefail
+          data_dir="$RUNNER_TEMP/calabriavera-public-data"
+          mkdir -p "$data_dir"
+          curl --fail --silent --show-error --location --retry 3 --retry-delay 2 \
+            https://calabriavera.com/assets/data/public-businesses-v1.json \
+            --output "$data_dir/public-businesses-v1.json"
+          curl --fail --silent --show-error --location --retry 3 --retry-delay 2 \
+            https://calabriavera.com/assets/data/public-blog-v1.json \
+            --output "$data_dir/public-blog-v1.json"
+          D1_PUBLIC_DATA_DIR="$data_dir" node - <<'NODE'
+          const fs = require('fs');
+          const dir = process.env.D1_PUBLIC_DATA_DIR;
+          for (const name of ['public-businesses-v1.json', 'public-blog-v1.json']) {
+            const value = JSON.parse(fs.readFileSync(`${dir}/${name}`, 'utf8'));
+            if (!value || !Array.isArray(value.items) || value.items.length === 0) throw new Error(`${name}: snapshot live non valido o vuoto`);
+            console.log(`${name}: ${value.items.length} elementi, generatedAt=${value.generatedAt || 'n/d'}`);
+          }
+          NODE
+          echo "D1_PUBLIC_DATA_DIR=$data_dir" >> "$GITHUB_ENV"
+
+      - name: Genera seed dai dataset pubblici live
         if: github.event.inputs.operation == 'sync-public-data'
         working-directory: source/frontend-react
         run: node scripts/build-d1-seed.mjs
