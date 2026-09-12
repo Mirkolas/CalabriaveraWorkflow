@@ -27,6 +27,43 @@ if asset_replacement not in c:
     if asset_marker not in c:
         raise SystemExit('legacy asset copy contract changed')
     c = c.replace(asset_marker, asset_replacement, 1)
+
+# The deployable legacy build rewrites/unifies page CSS after privacy-postbuild. The
+# raw privacy stylesheet therefore is not, by itself, the final cascade seen by a
+# browser. Keep the React copy raw for every rule except the two mobile banner
+# values measured from the exact built backup output. Scope them to the banner so
+# the already-matching preferences modal remains untouched.
+loop_tail = '''for (const relative of assetFiles) {
+  const source = resolve(repoRoot, relative);
+  if (!existsSync(source)) continue;
+  const target = resolve(reactRoot, "public", relative);
+  mkdirSync(dirname(target), { recursive: true });
+  copyFileSync(source, target);
+}
+
+const staticPublicFiles = ['''
+loop_replacement = '''for (const relative of assetFiles) {
+  const source = resolve(repoRoot, relative);
+  if (!existsSync(source)) continue;
+  const target = resolve(reactRoot, "public", relative);
+  mkdirSync(dirname(target), { recursive: true });
+  copyFileSync(source, target);
+}
+const privacyTarget = resolve(reactRoot, "public/assets/css/privacy-consent.css");
+if (existsSync(privacyTarget)) {
+  const deployParityMarker = "cv-consent-built-parity";
+  let privacyCss = readFileSync(privacyTarget, "utf8");
+  if (!privacyCss.includes(deployParityMarker)) {
+    privacyCss += `\n/* ${deployParityMarker}: exact computed values from backup deploy output. */\n@media(max-width:760px){.cv-consent-banner h2{font-size:25.35px;line-height:28.392px;max-width:100%}.cv-consent-banner .cv-consent-actions .button{padding:10.24px 14.72px;max-width:100%}}\n`;
+    writeFileSync(privacyTarget, privacyCss, "utf8");
+  }
+}
+
+const staticPublicFiles = ['''
+if 'cv-consent-built-parity' not in c:
+    if loop_tail not in c:
+        raise SystemExit('legacy asset copy loop contract changed')
+    c = c.replace(loop_tail, loop_replacement, 1)
 copy.write_text(c)
 
 p = Path('frontend-react/src/components/CookieConsent.tsx')
