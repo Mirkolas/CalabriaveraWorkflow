@@ -2,11 +2,7 @@ name: Firebase - Deploy CalabriaVera
 
 on:
   schedule:
-    - cron: '17 */4 * * *'
-    - cron: '32 */4 * * *'
-    - cron: '47 */4 * * *'
-    - cron: '2 1-21/4 * * *'
-    - cron: '17 1-21/4 * * *'
+    - cron: '17 2 * * *'
   workflow_dispatch:
   repository_dispatch:
     types: [source-deploy]
@@ -25,8 +21,8 @@ jobs:
     uses: ./.github/workflows/scheduled-retry-gate.yml
     with:
       workflow_file: firebase-deploy.yml
-      cadence_minutes: 240
-      anchor_offset_minutes: 17
+      cadence_minutes: 1440
+      anchor_offset_minutes: 137
 
   deploy:
     needs: retry_gate
@@ -191,7 +187,7 @@ jobs:
               return 0
             fi
             if printf '%s' "$output" | grep -Eqi 'RESOURCE_EXHAUSTED|Quota exceeded|FIRESTORE_429|ADMIN_FIRESTORE_429|(^|[^0-9])429([^0-9]|$)'; then
-              echo "::warning::${label} rinviata: quota Firestore temporaneamente esaurita. Il prossimo tentativo della stessa campagna riproverà automaticamente."
+              echo "::warning::${label} fermata: quota Firestore temporaneamente esaurita. Nessun retry automatico nella stessa finestra."
               return 75
             fi
             return "$code"
