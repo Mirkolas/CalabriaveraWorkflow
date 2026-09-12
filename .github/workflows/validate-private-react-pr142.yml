@@ -1,3 +1,4 @@
+# Temporary cross-repo validator; remove after PR 142 is validated.
 name: Validate Private React PR 142
 
 on:
