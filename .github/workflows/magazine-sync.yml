@@ -39,7 +39,7 @@ jobs:
     uses: ./.github/workflows/scheduled-retry-gate.yml
     with:
       workflow_file: magazine-sync.yml
-      cadence_minutes: 120
+      cadence_minutes: 240
       anchor_offset_minutes: 17
 
   import:
@@ -116,12 +116,12 @@ jobs:
           fi
           node tools/check-meta-token-expiry.mjs
 
-      - name: Controlla tutte le fonti e pubblica i nuovi contenuti ogni 2 ore
+      - name: Controlla tutte le fonti e pubblica i nuovi contenuti
         if: github.event_name == 'schedule' || github.event_name == 'repository_dispatch' || (github.event_name == 'workflow_dispatch' && inputs.mode == 'blog')
         working-directory: source
         env:
           NODE_OPTIONS: --import=./tools/source-fetch-compat.mjs
-          AUTOMATION_INTERVAL_MINUTES: '120'
+          AUTOMATION_INTERVAL_MINUTES: '240'
           AUTOMATION_LOCK_MINUTES: '35'
           AUTOMATION_FORCE: ${{ (github.event_name == 'workflow_dispatch' && inputs.mode == 'blog') || (github.event_name == 'repository_dispatch' && github.event.client_payload.magazine_force == true) }}
         run: |
@@ -132,19 +132,22 @@ jobs:
             node tools/cleanup-ingv-magnitude.mjs
             set +e
             node tools/sync-magazine-v2.mjs; rss_code=$?
-            set -e
-            node tools/queue-new-magazine-items.mjs
-            set +e
             node tools/sync-tourism-opendata.mjs; tourism_code=$?
-            set -e
-            node tools/queue-new-magazine-items.mjs
-            set +e
             node tools/sync-regional-opendata.mjs; regional_code=$?
             set -e
+
+            # Una sola scansione di blogPosts per accodare tutti gli elementi importati
+            # nel ciclo, invece di ripetere la stessa query dopo ogni sorgente.
             node tools/queue-new-magazine-items.mjs
-            node tools/reconcile-magazine.mjs
-            node tools/enforce-positive-magazine.mjs
-            node tools/backfill-blog-covers.mjs
+
+            # Le scansioni storiche sono manutenzione: eseguirle una volta al giorno
+            # evita di rileggere migliaia di documenti ad ogni ciclo.
+            if [ "$(date -u +%H)" = "01" ]; then
+              node tools/reconcile-magazine.mjs
+              node tools/enforce-positive-magazine.mjs
+              node tools/backfill-blog-covers.mjs
+            fi
+
             node tools/publish-magazine-batch.mjs
             if [ "$rss_code" -ne 0 ] && [ "$tourism_code" -ne 0 ] && [ "$regional_code" -ne 0 ]; then exit 1; fi
           '
