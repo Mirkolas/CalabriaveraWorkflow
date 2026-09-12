@@ -62,3 +62,21 @@ if old_key not in l:
     raise SystemExit('main route key contract changed')
 l = l.replace(old_key, new_key, 1)
 layout.write_text(l)
+
+css_path = Path('frontend-react/public/assets/css/react-live-parity.css')
+css = css_path.read_text()
+marker = '/* exact built 404 parity */'
+block = r'''
+/* exact built 404 parity */
+body[data-page="notFound"] .site-header .header-inner{min-height:72px}
+body[data-page="notFound"] #main-content>section.section.container{width:min(1200px,calc(100% - 18px));max-width:1440px;margin-inline:auto;padding:57.33px 0}
+body[data-page="notFound"] #main-content h1{font-family:Georgia,"Times New Roman",serif;font-size:75.075px;font-weight:700;line-height:73.5735px;letter-spacing:-2.1021px;color:#172033;max-width:920px;margin:2.4px 0 12.8px}
+body[data-page="notFound"] #main-content .form-actions{gap:8px}
+body[data-page="notFound"] #main-content .form-actions .button{font-family:Inter,ui-sans-serif,system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;font-size:16.48px;line-height:27.192px;padding:10.24px 14.72px;letter-spacing:normal;max-width:100%}
+@media(max-width:700px){body[data-page="notFound"] #main-content>section.section.container{width:calc(100% - 18px);max-width:1200px;padding:28px 0}body[data-page="notFound"] #main-content h1{font-size:31.2px;line-height:32.76px;letter-spacing:-.8736px}}
+'''.strip()
+if marker in css:
+    css = css[:css.index(marker)].rstrip() + '\n' + block + '\n'
+else:
+    css = css.rstrip() + '\n' + block + '\n'
+css_path.write_text(css)
