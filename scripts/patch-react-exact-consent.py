@@ -1,0 +1,120 @@
+from pathlib import Path
+
+layout = Path('frontend-react/src/components/Layout.tsx')
+s = layout.read_text()
+old_import = 'import CookieConsent from "./CookieConsent";'
+if old_import not in s:
+    raise SystemExit('CookieConsent import contract changed')
+s = s.replace(old_import, 'import CookieConsent, { openCookiePreferences } from "./CookieConsent";', 1)
+footer_anchor = '''          <div><strong>{uiText("information", language)}</strong><p><Link href={withLanguage("/privacy-policy", language)}>{uiText("privacy", language)}</Link><br/><Link href={withLanguage("/cookie-policy", language)}>{uiText("cookies", language)}</Link><br/><Link href={withLanguage("/termini", language)}>{uiText("terms", language)}</Link><br/><Link href={withLanguage("/note-legali", language)}>{uiText("legalNotes", language)}</Link><br/><Link href={withLanguage("/contatti", language)}>{uiText("contacts", language)}</Link></p></div>\n'''
+footer_line = '''          <div className="cv-consent-footer-line"><button type="button" data-cv-open-consent onClick={openCookiePreferences}>Preferenze cookie</button><span aria-hidden="true">·</span><Link href="/privacy-policy">Privacy</Link><span aria-hidden="true">·</span><Link href="/cookie-policy">Cookie</Link></div>\n'''
+if footer_line not in s:
+    if footer_anchor not in s:
+        raise SystemExit('footer information block not found')
+    s = s.replace(footer_anchor, footer_anchor + footer_line, 1)
+layout.write_text(s)
+
+p = Path('frontend-react/src/components/CookieConsent.tsx')
+p.write_text(r'''import { useEffect, useState } from "react";
+import Link from "./Link";
+
+const CONSENT_KEY = "cv-cookie-consent-v3";
+const CONSENT_VERSION = 3;
+const CONSENT_MAX_AGE_MS = 180 * 24 * 60 * 60 * 1000;
+
+type ConsentRecord = {
+  version: 3;
+  scope: "technical-only";
+  savedAt: string;
+  expiresAt: string;
+  necessary: true;
+  preferences: false;
+  analytics: false;
+  marketing: false;
+  source: string;
+};
+
+function emptyRecord(source: string): ConsentRecord {
+  const savedAt = Date.now();
+  return {
+    version: CONSENT_VERSION,
+    scope: "technical-only",
+    savedAt: new Date(savedAt).toISOString(),
+    expiresAt: new Date(savedAt + CONSENT_MAX_AGE_MS).toISOString(),
+    necessary: true,
+    preferences: false,
+    analytics: false,
+    marketing: false,
+    source,
+  };
+}
+
+function readConsent(): ConsentRecord | null {
+  try {
+    const value = JSON.parse(localStorage.getItem(CONSENT_KEY) || "null") as ConsentRecord | null;
+    if (!value || value.version !== CONSENT_VERSION || value.scope !== "technical-only") return null;
+    if (!Number.isFinite(Date.parse(value.savedAt || "")) || !Number.isFinite(Date.parse(value.expiresAt || "")) || Date.parse(value.expiresAt) <= Date.now()) return null;
+    return value;
+  } catch { return null; }
+}
+
+function persist(source: string) {
+  const record = emptyRecord(source);
+  try {
+    localStorage.setItem(CONSENT_KEY, JSON.stringify(record));
+    localStorage.removeItem("cv-cookie-consent-v2");
+    localStorage.removeItem("cv-consent");
+  } catch {}
+  window.dispatchEvent(new CustomEvent("cv:consent-change", { detail: record }));
+  return record;
+}
+
+export default function CookieConsent() {
+  const [visible, setVisible] = useState(false);
+  const [preferences, setPreferences] = useState(false);
+
+  useEffect(() => {
+    setVisible(!readConsent());
+    const open = () => { setVisible(true); setPreferences(true); };
+    window.addEventListener("cv:open-consent", open);
+    return () => window.removeEventListener("cv:open-consent", open);
+  }, []);
+
+  useEffect(() => {
+    document.documentElement.classList.toggle("cv-consent-modal-open", visible && preferences);
+    return () => document.documentElement.classList.remove("cv-consent-modal-open");
+  }, [visible, preferences]);
+
+  if (!visible) return null;
+
+  const saveAndClose = (source: string) => {
+    persist(source);
+    setPreferences(false);
+    setVisible(false);
+  };
+  const closePreferences = () => setPreferences(false);
+
+  if (preferences) return <div className="cv-consent-overlay" data-cv-consent-modal=""><div className="cv-consent-dialog" role="dialog" aria-modal="true" aria-labelledby="cv-consent-title">
+    <div className="cv-consent-dialog-head"><div><span className="cv-consent-kicker">CalabriaVera</span><h2 id="cv-consent-title">Preferenze privacy e cookie</h2></div><button type="button" className="cv-consent-close" data-cv-consent-close aria-label="Chiudi preferenze" onClick={closePreferences}>×</button></div>
+    <p>Vedi le tecnologie presenti su questa versione del sito e scegli quelle opzionali quando sono effettivamente in uso. I servizi necessari restano sempre attivi.</p>
+    <div className="cv-consent-categories">
+      <label className="cv-consent-category is-required"><span><strong>Necessari</strong><small>Autenticazione, sicurezza, consenso, continuità della sessione e funzioni richieste dall’utente.</small></span><input type="checkbox" data-cv-consent-toggle="necessary" checked disabled readOnly/><i aria-hidden="true"/></label>
+      <label className="cv-consent-category is-inactive"><span><strong>Preferenze · non in uso</strong><small>Memorizzazione di scelte facoltative dell’interfaccia e personalizzazione non indispensabile. Non in uso su questa versione del sito.</small></span><input type="checkbox" data-cv-consent-toggle="preferences" disabled/><i aria-hidden="true"/></label>
+      <label className="cv-consent-category is-inactive"><span><strong>Statistiche · non in uso</strong><small>Strumenti di misurazione non essenziali, se configurati. Non in uso su questa versione del sito.</small></span><input type="checkbox" data-cv-consent-toggle="analytics" disabled/><i aria-hidden="true"/></label>
+      <label className="cv-consent-category is-inactive"><span><strong>Marketing e profilazione · non in uso</strong><small>Tecnologie pubblicitarie, social o di profilazione non necessarie, se configurate. Non in uso su questa versione del sito.</small></span><input type="checkbox" data-cv-consent-toggle="marketing" disabled/><i aria-hidden="true"/></label>
+    </div>
+    <p className="cv-consent-links"><Link href="/cookie-policy">Cookie Policy</Link><Link href="/privacy-policy">Privacy Policy</Link></p>
+    <div className="cv-consent-actions cv-consent-actions--modal"><button type="button" className="button button-secondary" data-cv-consent-reject onClick={() => saveAndClose("preferences-reject")}>Rifiuta non necessari</button><button type="button" className="button button-primary" data-cv-consent-save onClick={() => saveAndClose("preferences-save")}>Salva preferenze</button></div>
+  </div></div>;
+
+  return <section className="cv-consent-banner" data-cv-consent-banner="" role="dialog" aria-modal="true" aria-labelledby="cv-cookie-title">
+    <button type="button" className="cv-consent-close" data-cv-consent-dismiss aria-label="Continua senza tecnologie non necessarie" onClick={() => saveAndClose("dismiss")}>×</button>
+    <div className="cv-consent-copy"><span className="cv-consent-kicker">Privacy</span><h2 id="cv-cookie-title">Privacy e cookie su CalabriaVera</h2><p>Al momento usiamo soltanto tecnologie necessarie al funzionamento e alle funzioni richieste. Statistiche e marketing non sono installati e non possono essere pre-autorizzati.</p><p className="cv-consent-links"><Link href="/cookie-policy">Cookie Policy</Link><Link href="/privacy-policy">Privacy Policy</Link></p></div>
+    <div className="cv-consent-actions"><button type="button" className="button button-secondary" data-cv-consent-customize onClick={() => setPreferences(true)}>Vedi preferenze</button><button type="button" className="button button-primary" data-cv-consent-continue onClick={() => saveAndClose("technical-only-continue")}>Continua</button></div>
+  </section>;
+}
+
+export function openCookiePreferences() {
+  window.dispatchEvent(new Event("cv:open-consent"));
+}
+''')
