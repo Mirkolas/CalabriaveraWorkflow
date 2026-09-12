@@ -21,7 +21,7 @@ jobs:
     env:
       PRIVATE_REPO: ${{ secrets.PRIVATE_REPO }}
       PRIVATE_REPO_PAT: ${{ secrets.PRIVATE_REPO_PAT || secrets.PERSONAL_ACCESS_TOKEN || secrets.PAT || secrets.GH_PAT || secrets.GITHUB_PAT }}
-      EXPECTED_REACT_HEAD: b3e3bc4e06f038b8cb6bb9065a3e94c95db551f9
+      EXPECTED_REACT_HEAD: 374698d35ecf9a80da7e1ffd4044dc977a86768c
     steps:
       - name: Verify private repository access
         shell: bash
