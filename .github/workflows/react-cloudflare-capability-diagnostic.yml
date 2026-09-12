@@ -1,0 +1,44 @@
+name: React migration - Cloudflare capability diagnostic
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/react-cloudflare-capability-diagnostic.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  diagnose:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    env:
+      TOKEN_A: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+      TOKEN_B: ${{ secrets.CF_API_TOKEN }}
+      ACCOUNT_SECRET: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+      ACCOUNT_VAR: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
+      ZONE_SECRET: ${{ secrets.CLOUDFLARE_ZONE_ID }}
+      ZONE_VAR: ${{ vars.CLOUDFLARE_ZONE_ID }}
+    steps:
+      - name: Report capability without exposing values
+        shell: bash
+        run: |
+          set -euo pipefail
+          present(){ if [ -n "$2" ]; then echo "$1=present"; else echo "$1=missing"; fi; }
+          present CLOUDFLARE_API_TOKEN "$TOKEN_A"
+          present CF_API_TOKEN "$TOKEN_B"
+          present CLOUDFLARE_ACCOUNT_ID_SECRET "$ACCOUNT_SECRET"
+          present CLOUDFLARE_ACCOUNT_ID_VAR "$ACCOUNT_VAR"
+          present CLOUDFLARE_ZONE_ID_SECRET "$ZONE_SECRET"
+          present CLOUDFLARE_ZONE_ID_VAR "$ZONE_VAR"
+          token="$TOKEN_A"; [ -n "$token" ] || token="$TOKEN_B"
+          account="$ACCOUNT_SECRET"; [ -n "$account" ] || account="$ACCOUNT_VAR"
+          if [ -n "$token" ]; then
+            code="$(curl -sS -o /tmp/cf-verify.json -w '%{http_code}' -H "Authorization: Bearer $token" -H 'Content-Type: application/json' https://api.cloudflare.com/client/v4/user/tokens/verify || true)"
+            if [ "$code" = 200 ] && grep -q '"success":true' /tmp/cf-verify.json; then echo CLOUDFLARE_TOKEN_VERIFY=green; else echo "CLOUDFLARE_TOKEN_VERIFY=failed_http_$code"; fi
+          else
+            echo CLOUDFLARE_TOKEN_VERIFY=not_available
+          fi
+          if [ -n "$token" ] && [ -n "$account" ]; then echo CLOUDFLARE_WRANGLER_AUTH=available; else echo CLOUDFLARE_WRANGLER_AUTH=unavailable; fi
