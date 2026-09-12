@@ -6,7 +6,9 @@ if len(sys.argv)!=3:
 src=Path(sys.argv[1]).resolve(); dst=Path(sys.argv[2]).resolve()
 roots=[
  'assets/js/admin.js','assets/js/admin-console.js','assets/js/admin-upgrade.js',
- 'assets/js/admin-runtime-fixes.js','assets/js/admin-maintenance-toggle.js','assets/js/admin-automation-status.js'
+ 'assets/js/admin-maintenance-toggle.js','assets/js/admin-automation-status.js',
+ 'assets/js/admin-critical-upgrades.js','assets/js/admin-conversation-delete-ui.js',
+ 'assets/js/admin-user-profile-ui.js'
 ]
 rx=re.compile(r'''(?:from\s*|import\s*\()\s*["']([^"']+)["']''')
 queue=[src/r for r in roots]; seen=set()
