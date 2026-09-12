@@ -19,7 +19,7 @@ jobs:
     steps:
       - uses: actions/checkout@v7
         with:
-          token: ${{ github.token }}
+          token: ${{ secrets.PERSONAL_ACCESS_TOKEN || secrets.PRIVATE_REPO_PAT || secrets.PAT || secrets.GH_PAT || secrets.GITHUB_PAT || github.token }}
       - name: Remove obsolete one-shot and duplicate workflows
         shell: bash
         run: |
@@ -31,22 +31,7 @@ jobs:
           rm -f .github/workflows/legacy-final-css-bundle-map-v1.yml
           rm -f .github/workflows/social-watchdog.yml
           rm -f .github/workflows/promo-story.yml
-
-          python - <<'PY'
-          from pathlib import Path
-          p = Path('.github/workflows/source-watch.yml')
-          s = p.read_text()
-          s = s.replace('apps-script-deploy.yml firebase-deploy.yml magazine-sync.yml promo-story.yml seo-sync.yml', 'apps-script-deploy.yml firebase-deploy.yml magazine-sync.yml seo-sync.yml')
-          s = s.replace("            promo: config('promo-story.yml'),\n", '')
-          s = s.replace('            apps: forced, deploy: forced, magazine: forced, promo: false, seo: forced,', '            apps: forced, deploy: forced, magazine: forced, seo: forced,')
-          s = s.replace('            if (triggered(files, workflows.promo) && message.includes(\'[promo-story-now]\')) result.promo = true;\n', '')
-          s = s.replace('          RUN_PROMO: ${{ steps.source.outputs.promo }}\n', '')
-          s = s.replace('          [ "$RUN_PROMO" = "true" ] && dispatch source-promo-story-push || true\n', '')
-          p.write_text(s)
-          PY
-
           rm -f .github/workflows/prune-unused-workflows.yml
-
       - name: Commit cleanup
         shell: bash
         run: |
