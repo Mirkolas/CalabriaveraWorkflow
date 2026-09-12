@@ -13,7 +13,7 @@ permissions:
   contents: read
 
 env:
-  EXPECTED_PRIVATE_SHA: 48c171595e71dfdcc6668c5d32bd92c8bac5d187
+  EXPECTED_PRIVATE_SHA: edf19df9024d099a6f35133b815284c7545f3cec
   ORACLE_SHA: 7be434e3418e95cff9825e4cc3f4b4ed75cd1076
 
 jobs:
