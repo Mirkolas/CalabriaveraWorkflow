@@ -49,6 +49,8 @@ jobs:
           (cd legacy && npm ci && npm run build)
           cd source
           python3 ../workflow/scripts/patch-react-exact-404.py
+          grep -Fq 'exact built 404 parity' frontend-react/public/assets/css/react-live-parity.css
+          grep -Fq 'noindex,follow' frontend-react/src/App.tsx
           cd frontend-react
           npm ci
           npm run build
@@ -76,7 +78,7 @@ jobs:
           for attempt in {1..30}; do curl -fsS http://127.0.0.1:4184/404.html >/dev/null 2>&1 && curl -fsS http://127.0.0.1:4185/ >/dev/null 2>&1 && exit 0; sleep 1; done
           exit 1
 
-      - name: Gate exact 404 content, SEO and computed layout
+      - name: Gate exact 404 content SEO and built layout
         env:
           PLAYWRIGHT_MODULE: /tmp/cv-404-v1/node_modules/playwright
         shell: bash
@@ -86,34 +88,40 @@ jobs:
           const {chromium}=createRequire(import.meta.url)(process.env.PLAYWRIGHT_MODULE);
           const browser=await chromium.launch({headless:true});
           const modes=[['desktop',{width:1365,height:900}],['mobile',{width:390,height:844}]], failures=[];
-          const near=(a,b,t=2)=>Math.abs(Number(a)-Number(b))<=t;
+          const near=(a,b,t=.2)=>Math.abs(Number(a)-Number(b))<=t;
           async function open(origin,path,viewport){
             const ctx=await browser.newContext({viewport,serviceWorkers:'block'});
             await ctx.addInitScript(()=>{const now=Date.now();localStorage.setItem('cv-cookie-consent-v3',JSON.stringify({version:3,scope:'technical-only',savedAt:new Date(now).toISOString(),expiresAt:new Date(now+30*86400000).toISOString(),necessary:true,preferences:false,analytics:false,marketing:false,source:'ci'}))});
             const p=await ctx.newPage(), errors=[];p.on('pageerror',e=>errors.push(String(e.message||e)));
             await p.goto(origin+path,{waitUntil:'domcontentloaded',timeout:30000});
-            await p.locator('main h1').waitFor({state:'visible',timeout:15000});await p.waitForTimeout(200);
+            await p.locator('main h1').waitFor({state:'visible',timeout:15000});await p.waitForTimeout(250);
             return {ctx,p,errors};
           }
           async function snap(p){return p.evaluate(()=>{
-            const section=document.querySelector('main section.section.container'),h=document.querySelector('main h1'),para=document.querySelector('main .prose>p'),buttons=[...document.querySelectorAll('main .form-actions a')],sr=section?.getBoundingClientRect(),hs=h?getComputedStyle(h):null;
+            const section=document.querySelector('main section.section.container'),h=document.querySelector('main h1'),actions=document.querySelector('main .form-actions'),header=document.querySelector('.site-header'),buttons=[...document.querySelectorAll('main .form-actions a')];
+            const rect=e=>{const r=e?.getBoundingClientRect();return r?{x:r.x,y:r.y,w:r.width,h:r.height}:null};
+            const style=e=>e?getComputedStyle(e):null,hs=style(h),as=style(actions);
             return {
-              bodyPage:document.body.dataset.page||'', eyebrow:document.querySelector('main .eyebrow')?.textContent?.trim()||'',h1:h?.textContent?.trim()||'',p:para?.textContent?.trim()||'',
-              buttons:buttons.map(x=>({text:x.textContent?.trim(),href:new URL(x.href,location.href).pathname,style:{font:getComputedStyle(x).fontFamily,size:getComputedStyle(x).fontSize,height:x.getBoundingClientRect().height,padding:getComputedStyle(x).padding}})),
+              bodyPage:document.body.dataset.page||'',eyebrow:document.querySelector('main .eyebrow')?.textContent?.trim()||'',h1:h?.textContent?.trim()||'',p:document.querySelector('main .prose>p')?.textContent?.trim()||'',
+              buttons:buttons.map(x=>{const s=getComputedStyle(x);return {text:x.textContent?.trim(),href:new URL(x.href,location.href).pathname,rect:rect(x),style:{font:s.fontFamily,size:s.fontSize,weight:s.fontWeight,line:s.lineHeight,letter:s.letterSpacing,padding:s.padding,display:s.display,align:s.alignItems}}}),
               title:document.title,description:document.querySelector('meta[name="description"]')?.getAttribute('content')||'',robots:document.querySelector('meta[name="robots"]')?.getAttribute('content')||'',canonical:document.querySelector('link[rel="canonical"]')?.getAttribute('href')||'',
-              section:sr?{x:sr.x,y:sr.y,w:sr.width,h:sr.height}:null,h1Style:hs?{font:hs.fontFamily,size:hs.fontSize,weight:hs.fontWeight,line:hs.lineHeight,color:hs.color,height:h.getBoundingClientRect().height}:null,
+              header:rect(header),section:rect(section),h1Rect:rect(h),actionsRect:rect(actions),
+              h1Style:hs?{font:hs.fontFamily,size:hs.fontSize,weight:hs.fontWeight,line:hs.lineHeight,letter:hs.letterSpacing,color:hs.color,margin:hs.margin,maxWidth:hs.maxWidth}:null,
+              actionsStyle:as?{display:as.display,gap:as.gap,margin:as.margin}:null,
               routeCss:[...document.querySelectorAll('link[data-cv-main-parity]')].map(x=>new URL(x.href,location.href).pathname)
             };
           })}
           for(const [mode,viewport] of modes){
             const L=await open('http://127.0.0.1:4184','/404.html',viewport),R=await open('http://127.0.0.1:4185','/questa-pagina-non-esiste',viewport),a=await snap(L.p),b=await snap(R.p),m=[];
-            for(const k of ['bodyPage','eyebrow','h1','p','title','description','robots']) if(a[k]!==b[k])m.push(`${k}:${a[k]}/${b[k]}`);
+            for(const k of ['bodyPage','eyebrow','h1','p','title','description','robots','canonical']) if(a[k]!==b[k])m.push(`${k}:${a[k]}/${b[k]}`);
             if(JSON.stringify(a.buttons.map(x=>({text:x.text,href:x.href})))!==JSON.stringify(b.buttons.map(x=>({text:x.text,href:x.href}))))m.push('buttons-content');
-            if(!String(b.canonical).endsWith('/404'))m.push(`canonical:${b.canonical}`);
             if(!b.routeCss.includes('/assets/css/redesign-functional.css')||!b.routeCss.includes('/assets/css/react-live-parity.css')||b.routeCss.at(-1)!=='/assets/css/privacy-consent.css')m.push(`route-css:${JSON.stringify(b.routeCss)}`);
-            if(!a.section||!b.section||!near(a.section.x,b.section.x,3)||!near(a.section.w,b.section.w,3))m.push(`section:${JSON.stringify(a.section)}/${JSON.stringify(b.section)}`);
-            if(!a.h1Style||!b.h1Style||a.h1Style.font!==b.h1Style.font||a.h1Style.size!==b.h1Style.size||a.h1Style.weight!==b.h1Style.weight||a.h1Style.line!==b.h1Style.line||a.h1Style.color!==b.h1Style.color||!near(a.h1Style.height,b.h1Style.height,.2))m.push(`h1-style:${JSON.stringify(a.h1Style)}/${JSON.stringify(b.h1Style)}`);
-            if(a.buttons.length===b.buttons.length){for(let i=0;i<a.buttons.length;i++){const x=a.buttons[i].style,y=b.buttons[i].style;if(x.font!==y.font||x.size!==y.size||x.padding!==y.padding||!near(x.height,y.height,.2))m.push(`button-style-${i}:${JSON.stringify(x)}/${JSON.stringify(y)}`)}}
+            for(const key of ['header','section','h1Rect','actionsRect']){
+              const x=a[key],y=b[key];if(!x||!y) m.push(`${key}:missing`); else for(const dim of ['x','y','w','h']) if(!near(x[dim],y[dim],key==='actionsRect'&&dim==='w'?45:.2))m.push(`${key}.${dim}:${x[dim]}/${y[dim]}`);
+            }
+            if(JSON.stringify(a.h1Style)!==JSON.stringify(b.h1Style))m.push(`h1-style:${JSON.stringify(a.h1Style)}/${JSON.stringify(b.h1Style)}`);
+            if(JSON.stringify(a.actionsStyle)!==JSON.stringify(b.actionsStyle))m.push(`actions-style:${JSON.stringify(a.actionsStyle)}/${JSON.stringify(b.actionsStyle)}`);
+            if(a.buttons.length===b.buttons.length){for(let i=0;i<a.buttons.length;i++){const x=a.buttons[i],y=b.buttons[i];if(JSON.stringify(x.style)!==JSON.stringify(y.style)||!near(x.rect?.h,y.rect?.h,.2))m.push(`button-${i}:${JSON.stringify(x)}/${JSON.stringify(y)}`)}}
             if(R.errors.length)m.push(`react-errors:${R.errors.join(';')}`);
             console.log(`${mode}: ${m.length?m.join(' | '):'OK'}`);if(m.length)failures.push({mode,m,a,b});
             await L.p.close();await R.p.close();await L.ctx.close();await R.ctx.close();
@@ -130,7 +138,7 @@ jobs:
           set -euo pipefail
           git config user.name 'calabriavera-parity-bot'
           git config user.email 'actions@users.noreply.github.com'
-          git add frontend-react/src/App.tsx frontend-react/src/components/Layout.tsx frontend-react/scripts/copy-legacy-assets.mjs
+          git add frontend-react/src/App.tsx frontend-react/src/components/Layout.tsx frontend-react/scripts/copy-legacy-assets.mjs frontend-react/public/assets/css/react-live-parity.css
           git diff --cached --quiet && { echo 'No changes to commit'; exit 0; }
           git commit -m 'fix: match 404 route to exact pre-React backup'
           git push origin HEAD:react-migration
