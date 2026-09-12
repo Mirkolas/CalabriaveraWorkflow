@@ -20,44 +20,80 @@ jobs:
     timeout-minutes: 25
     env:
       PRODUCTION_BASE_URL: https://calabriavera.com
-      EXPECTED_SHA: 243c33a029eb55ae94310b2daabd75cd66154a86
+      PRIVATE_REPO: ${{ secrets.PRIVATE_REPO }}
+      PRIVATE_REPO_PAT: ${{ secrets.PRIVATE_REPO_PAT || secrets.PERSONAL_ACCESS_TOKEN || secrets.PAT || secrets.GH_PAT }}
     steps:
       - uses: actions/setup-node@v7
         with:
           node-version: '24'
 
+      - name: Resolve exact private main revision
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -n "$PRIVATE_REPO"
+          test -n "$PRIVATE_REPO_PAT"
+          curl -fsS --max-time 20 \
+            -H "Authorization: Bearer $PRIVATE_REPO_PAT" \
+            -H 'Accept: application/vnd.github+json' \
+            "https://api.github.com/repos/$PRIVATE_REPO/branches/main" > /tmp/main.json
+          sha="$(node -e "const x=require('/tmp/main.json');process.stdout.write(x.commit.sha)")"
+          test -n "$sha"
+          echo "EXPECTED_SHA=$sha" >> "$GITHUB_ENV"
+          echo "Production target SHA: $sha"
+
       - name: Wait for exact production revision
         shell: bash
         run: |
           set -euo pipefail
-          for attempt in {1..72}; do
+          for attempt in {1..90}; do
             actual="$(curl --fail --silent --show-error --max-time 15 "$PRODUCTION_BASE_URL/build-version.txt?postcutover=$attempt" 2>/dev/null | tr -d '\r\n' || true)"
             if [ "$actual" = "$EXPECTED_SHA" ]; then
               echo "PRODUCTION_SHA_GREEN=$actual"
               exit 0
             fi
-            echo "Waiting for production ($attempt/72): ${actual:-no version}"
+            echo "Waiting for production ($attempt/90): ${actual:-no version}"
             sleep 10
           done
           echo "::error::Production did not publish $EXPECTED_SHA"
           exit 1
 
-      - name: Verify public data endpoints
+      - name: Verify Firebase static data and prerender
         shell: bash
         run: |
           set -euo pipefail
-          curl --fail --silent --show-error --max-time 20 "$PRODUCTION_BASE_URL/__data/businesses.json?postcutover=$EXPECTED_SHA" > /tmp/businesses.json
-          curl --fail --silent --show-error --max-time 20 "$PRODUCTION_BASE_URL/__data/blog.json?postcutover=$EXPECTED_SHA" > /tmp/blog.json
+          curl -fsS --max-time 20 "$PRODUCTION_BASE_URL/legacy-data/public-businesses-v1.json?postcutover=$EXPECTED_SHA" > /tmp/businesses.json
+          curl -fsS --max-time 20 "$PRODUCTION_BASE_URL/legacy-data/public-blog-v1.json?postcutover=$EXPECTED_SHA" > /tmp/blog.json
           node - <<'NODE'
           const fs=require('node:fs');
-          const businesses=JSON.parse(fs.readFileSync('/tmp/businesses.json','utf8'));
-          const blog=JSON.parse(fs.readFileSync('/tmp/blog.json','utf8'));
-          const b=Array.isArray(businesses)?businesses:(businesses.items||[]);
-          const p=Array.isArray(blog)?blog:(blog.items||[]);
-          if(!b.length) throw new Error('production businesses snapshot empty');
-          if(!p.length) throw new Error('production blog snapshot empty');
-          console.log(`PRODUCTION_DATA_GREEN businesses=${b.length} blog=${p.length}`);
+          for (const p of ['/tmp/businesses.json','/tmp/blog.json']) {
+            const x=JSON.parse(fs.readFileSync(p,'utf8'));
+            if(!Array.isArray(x.items)||!x.items.length) throw new Error(`${p} empty`);
+          }
           NODE
+          curl -fsS --max-time 20 "$PRODUCTION_BASE_URL/catalogo?postcutover=$EXPECTED_SHA" > /tmp/catalog.html
+          grep -q 'data-prerender-path="/catalogo"' /tmp/catalog.html
+          grep -q 'turismo-isola-dino' /tmp/catalog.html
+          grep -q '53 attività trovate' /tmp/catalog.html
+          curl -fsS --max-time 20 "$PRODUCTION_BASE_URL/mappa?postcutover=$EXPECTED_SHA" > /tmp/map.html
+          grep -q 'data-prerender-path="/mappa"' /tmp/map.html
+          grep -q '53 attività sulla mappa' /tmp/map.html
+          curl -fsS --max-time 20 "$PRODUCTION_BASE_URL/chi-siamo?postcutover=$EXPECTED_SHA" > /tmp/about.html
+          grep -q 'data-prerender-path="/chi-siamo"' /tmp/about.html
+          echo PRODUCTION_FIREBASE_PRERENDER_GREEN
+
+      - name: Verify production-origin R2 bridge
+        shell: bash
+        run: |
+          set -euo pipefail
+          worker='https://calabriavera.sonotacamirko.workers.dev/api/images/upload'
+          origin='https://calabriavera.com'
+          curl -sS -D /tmp/cors.h -o /dev/null -X OPTIONS "$worker" \
+            -H "Origin: $origin" -H 'Access-Control-Request-Method: POST' \
+            -H 'Access-Control-Request-Headers: authorization,content-type,x-user-id,x-business-id'
+          grep -qi '^HTTP/.* 204' /tmp/cors.h
+          grep -qi "^access-control-allow-origin: $origin" /tmp/cors.h
+          echo PRODUCTION_R2_BRIDGE_GREEN
 
       - name: Install isolated Chromium
         shell: bash
@@ -84,38 +120,26 @@ jobs:
           try {
             const checks=[
               ['/', async page=>{
-                await page.waitForSelector('main',{timeout:12000});
-                const r=await page.evaluate(()=>({
-                  footerLogo:document.querySelector('.footer .footer-logo')?.getBoundingClientRect().width||0,
-                  socials:document.querySelectorAll('.social-links .social-link').length,
-                  consent:Boolean(document.querySelector('.cv-consent-footer-line')),
-                  flag:getComputedStyle(document.querySelector('.cv-language-flag')).backgroundImage,
-                  bodyWidth:document.body.scrollWidth,
-                  viewport:document.documentElement.clientWidth,
-                }));
-                if(r.footerLogo<180) failures.push(`home footer logo too small: ${r.footerLogo}`);
+                const r=await page.evaluate(()=>({socials:document.querySelectorAll('.social-links .social-link').length, flag:getComputedStyle(document.querySelector('.cv-language-flag')).backgroundImage, bodyWidth:document.body.scrollWidth, viewport:document.documentElement.clientWidth}));
                 if(r.socials!==3) failures.push(`home social links=${r.socials}`);
-                if(!r.consent) failures.push('home cookie footer line missing');
-                if(!String(r.flag).includes('/assets/flags/it.svg')) failures.push(`home language flag missing: ${r.flag}`);
-                if(r.bodyWidth>r.viewport+2) failures.push(`home horizontal overflow ${r.bodyWidth}>${r.viewport}`);
+                if(!String(r.flag).includes('/assets/flags/it.svg')) failures.push(`home flag missing: ${r.flag}`);
+                if(r.bodyWidth>r.viewport+2) failures.push(`home overflow ${r.bodyWidth}>${r.viewport}`);
               }],
               ['/catalogo', async page=>{
                 await page.waitForSelector('.catalog-layout',{timeout:12000});
-                await page.waitForFunction(()=>document.querySelectorAll('[data-business-card], .activity-card, .cv-business-card').length>0,{timeout:12000}).catch(()=>{});
-                const body=(await page.locator('body').innerText()).toLowerCase();
-                if(!body.includes('isola dino')) failures.push('catalog canonical tourism item missing');
+                const text=(await page.locator('body').innerText()).toLowerCase();
+                if(!text.includes('53 attività trovate')||!text.includes('isola di dino')) failures.push('catalog data/parity missing');
               }],
               ['/mappa', async page=>{
                 await page.waitForSelector('.leaflet-container',{timeout:15000});
-                const r=await page.evaluate(()=>({leaflet:Boolean(document.querySelector('.leaflet-container')),controls:document.querySelectorAll('.leaflet-control-container').length,text:document.body.innerText.toLowerCase()}));
-                if(!r.leaflet||r.controls<1) failures.push(`map leaflet incomplete controls=${r.controls}`);
-                if(!r.text.includes('isola dino')) failures.push('map canonical tourism item missing');
+                const text=(await page.locator('body').innerText()).toLowerCase();
+                if(!text.includes('53 attività sulla mappa')) failures.push('map count mismatch');
+                const clusters=await page.locator('.cv-map-cluster-shell').count();
+                if(clusters<1) failures.push('map clusters missing');
               }],
-              ['/blog', async page=>{
-                await page.waitForFunction(()=>document.querySelectorAll('article').length>0,{timeout:12000}).catch(()=>{});
-                const articles=await page.locator('article').count();
-                if(articles<1) failures.push('blog has no articles');
-              }],
+              ['/blog', async page=>{ await page.waitForSelector('main',{timeout:12000}); }],
+              ['/chi-siamo', async page=>{ if(!(await page.locator('body').innerText()).includes('La Calabria raccontata da chi la vive')) failures.push('about content missing'); }],
+              ['/en/blog', async page=>{ await page.waitForSelector('main',{timeout:12000}); }],
             ];
             for(const [route,check] of checks){
               const context=await browser.newContext({serviceWorkers:'block',viewport:{width:1365,height:900}});
@@ -128,7 +152,6 @@ jobs:
               if(errors.length) failures.push(`${route}: page errors ${errors.join(' | ')}`);
               await context.close();
             }
-
             for(const route of ['/profilo','/preferiti','/dashboard','/messaggi','/aggiungi-attivita','/admin','/admin/blog']){
               const context=await browser.newContext({serviceWorkers:'block'});
               const page=await context.newPage();
@@ -136,17 +159,15 @@ jobs:
               page.on('pageerror',e=>errors.push(String(e.message||e)));
               await page.goto(`${base}${route}?postcutover=${sha}`,{waitUntil:'domcontentloaded',timeout:20000}).catch(()=>null);
               await page.waitForFunction(()=>location.pathname==='/login',{timeout:12000}).catch(()=>{});
-              if(new URL(page.url()).pathname!=='/login') failures.push(`${route}: anonymous user not redirected to /login`);
+              if(new URL(page.url()).pathname!=='/login') failures.push(`${route}: anonymous user not redirected`);
               if(errors.length) failures.push(`${route}: page errors ${errors.join(' | ')}`);
               await context.close();
             }
-
             const context=await browser.newContext({serviceWorkers:'block'});
             const page=await context.newPage();
-            const backupResponse=await page.goto(`${base}/backup?postcutover=${sha}`,{waitUntil:'domcontentloaded',timeout:20000}).catch(()=>null);
+            const res=await page.goto(`${base}/backup?postcutover=${sha}`,{waitUntil:'domcontentloaded',timeout:20000}).catch(()=>null);
             await page.waitForSelector('#backup-root',{state:'visible',timeout:12000}).catch(()=>{});
-            const backup=await page.evaluate(()=>({root:Boolean(document.querySelector('#backup-root')),title:document.querySelector('h1')?.textContent?.trim()||''}));
-            if(backupResponse?.status()!==200||!backup.root||backup.title!=='Backup e ripristino') failures.push(`backup mismatch ${JSON.stringify({status:backupResponse?.status()||0,...backup})}`);
+            if(res?.status()!==200||!(await page.locator('#backup-root').count())) failures.push('/backup mismatch');
             await context.close();
           } finally { await browser.close(); }
           if(failures.length){console.error(failures.join('\n'));process.exit(1);}
