@@ -69,7 +69,53 @@ new_parity = '''  // Reproduce the authoritative production build, not only the 
 if old_parity not in c:
     raise SystemExit('route parity contract changed')
 c = c.replace(old_parity, new_parity, 1)
+
+# In the authoritative legacy production bundle responsive.css is concatenated
+# after normal rules, so its leading @import portal-refresh.css is invalid and
+# ignored by the browser. Separate React <link> tags would make that import
+# valid, incorrectly re-enabling the old portal theme. Strip only that import
+# from the copied React asset to reproduce the built legacy cascade.
+old_css_copy = '''for (const relative of cssFiles) {
+  const source = resolve(repoRoot, relative);
+  if (!existsSync(source)) {
+    if (relative === "assets/css/react-live-parity.css") continue;
+    throw new Error(`CSS main non trovato: ${source}`);
+  }
+  const target = resolve(reactRoot, "public", relative);
+  mkdirSync(dirname(target), { recursive: true });
+  copyFileSync(source, target);
+}
+const routeModule ='''
+new_css_copy = '''for (const relative of cssFiles) {
+  const source = resolve(repoRoot, relative);
+  if (!existsSync(source)) {
+    if (relative === "assets/css/react-live-parity.css") continue;
+    throw new Error(`CSS main non trovato: ${source}`);
+  }
+  const target = resolve(reactRoot, "public", relative);
+  mkdirSync(dirname(target), { recursive: true });
+  if (relative === "assets/css/responsive.css") {
+    const builtEquivalent = readFileSync(source, "utf8").replace(/^@import\\s+url\\(["']?\\/assets\\/css\\/portal-refresh\\.css["']?\\);\\s*/i, "");
+    writeFileSync(target, builtEquivalent, "utf8");
+  } else {
+    copyFileSync(source, target);
+  }
+}
+const routeModule ='''
+if old_css_copy not in c:
+    raise SystemExit('CSS copy contract changed')
+c = c.replace(old_css_copy, new_css_copy, 1)
 copy.write_text(c)
+
+# Tailwind preflight resets heading font-weight to inherit. The legacy build has
+# no such reset, so native heading bold remains unless later legacy CSS overrides
+# it. Put this repair in the initial React bundle, before every legacy route CSS.
+styles = Path('frontend-react/src/styles.css')
+st = styles.read_text()
+weight_marker = 'cv-legacy-heading-weight-reset'
+if weight_marker not in st:
+    st = st.rstrip() + '''\n\n/* cv-legacy-heading-weight-reset: undo Tailwind preflight before legacy CSS. */\n@layer base { h1, h2, h3 { font-weight: bold; } }\n'''
+styles.write_text(st)
 
 # Unknown routes share /404 CSS and the legacy wrapper IDs must exist because
 # header-unified.css and ui-final-overrides.css scope their final shell rules to them.
