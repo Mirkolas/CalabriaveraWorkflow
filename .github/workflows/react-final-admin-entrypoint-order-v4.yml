@@ -1,0 +1,40 @@
+name: Inspect exact final admin entrypoint order v4
+
+on:
+  push:
+    branches: [main]
+    paths: ['.github/workflows/react-final-admin-entrypoint-order-v4.yml']
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  inspect:
+    runs-on: ubuntu-latest
+    timeout-minutes: 12
+    env:
+      PRIVATE_REPO_PAT: ${{ secrets.PRIVATE_REPO_PAT || secrets.PERSONAL_ACCESS_TOKEN || secrets.PAT || secrets.GH_PAT || secrets.GITHUB_PAT }}
+      LEGACY_SHA: 7be434e3418e95cff9825e4cc3f4b4ed75cd1076
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          repository: ${{ secrets.PRIVATE_REPO }}
+          token: ${{ env.PRIVATE_REPO_PAT }}
+          ref: backup-main-pre-react-2026-09-11
+          path: legacy
+          persist-credentials: false
+      - uses: actions/setup-node@v7
+        with: {node-version: '24'}
+      - name: Build exact backup and print final admin load order
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git -C legacy rev-parse HEAD)" = "$LEGACY_SHA"
+          (cd legacy && npm ci && npm run build)
+          for page in attivita messaggi utenti index recensioni blog; do
+            echo "=== $page scripts ==="
+            grep -oE '<script[^>]+src="[^"]+"[^>]*>' "legacy/dist/pages/admin/$page.html" || true
+            echo "=== $page css ==="
+            grep -oE '<link[^>]+rel="stylesheet"[^>]+href="[^"]+"[^>]*>' "legacy/dist/pages/admin/$page.html" || true
+          done
