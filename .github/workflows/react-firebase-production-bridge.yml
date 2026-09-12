@@ -41,6 +41,18 @@ jobs:
       - uses: actions/setup-node@v7
         with:
           node-version: '24'
+      - name: Adapt bridge patcher to current R2 implementation
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          from pathlib import Path
+          p = Path('automation/scripts/patch-react-firebase-production.py')
+          text = p.read_text(encoding='utf-8')
+          text = text.replace("if 'UPLOAD_CORS_ORIGINS' not in text:", "if 'UPLOAD_CORS_ORIGINS' not in text and 'R2_UPLOAD_ORIGINS' not in text:")
+          text = text.replace("elif new.strip() not in text:\n    raise SystemExit('worker upload dispatch anchor missing')", "elif new.strip() not in text and 'uploadPreflight(request)' not in text:\n    raise SystemExit('worker upload dispatch anchor missing')")
+          p.write_text(text, encoding='utf-8')
+          PY
       - name: Apply Firebase production bridge
         run: python automation/scripts/patch-react-firebase-production.py
       - name: Build React production
@@ -66,8 +78,6 @@ jobs:
         run: npx wrangler deploy --dry-run
       - name: Validate Firebase Hosting locally
         working-directory: source/frontend-react
-        env:
-          EXPECTED_SHA: ${{ github.sha }}
         shell: bash
         run: |
           set -euo pipefail
@@ -80,7 +90,7 @@ jobs:
         run: |
           set -euo pipefail
           grep -q 'R2_UPLOAD_WORKER' frontend-react/src/lib/business-editor.ts
-          grep -q 'UPLOAD_CORS_ORIGINS' frontend-react/worker.ts
+          grep -Eq 'UPLOAD_CORS_ORIGINS|R2_UPLOAD_ORIGINS' frontend-react/worker.ts
           grep -q 'public-blog-v1.json' frontend-react/scripts/copy-legacy-assets.mjs
           grep -q 'firebase.react.json' .github/workflows/firebase-deploy.yml
           grep -q 'workflow_dispatch' .github/workflows/firebase-deploy.yml
