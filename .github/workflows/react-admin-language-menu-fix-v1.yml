@@ -1,0 +1,198 @@
+name: React admin language and menu fix v1
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/react-admin-language-menu-fix-v1.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  patch-build-gate-push:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      PRIVATE_REPO_PAT: ${{ secrets.PRIVATE_REPO_PAT || secrets.PERSONAL_ACCESS_TOKEN || secrets.PAT || secrets.GH_PAT || secrets.GITHUB_PAT }}
+      LEGACY_SHA: 7be434e3418e95cff9825e4cc3f4b4ed75cd1076
+      EXPECTED_BASE: f16b18b93d91b4e1ac278351c6ef7507f3f7a04e
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          path: workflow
+          persist-credentials: false
+      - uses: actions/checkout@v7
+        with:
+          repository: ${{ secrets.PRIVATE_REPO }}
+          token: ${{ env.PRIVATE_REPO_PAT }}
+          ref: backup-main-pre-react-2026-09-11
+          path: legacy
+          persist-credentials: false
+      - uses: actions/checkout@v7
+        with:
+          repository: ${{ secrets.PRIVATE_REPO }}
+          token: ${{ env.PRIVATE_REPO_PAT }}
+          ref: react-migration
+          path: source
+          persist-credentials: true
+          fetch-depth: 8
+      - uses: actions/setup-node@v7
+        with:
+          node-version: '24'
+          cache: npm
+          cache-dependency-path: source/frontend-react/package-lock.json
+
+      - name: Assert exact source contracts
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git -C legacy rev-parse HEAD)" = "$LEGACY_SHA"
+          test "$(git -C source rev-parse HEAD)" = "$EXPECTED_BASE"
+          grep -Fq 'export function languageUrl(input,next=lang)' legacy/assets/js/i18n.js
+          grep -Fq 'export function setLanguage(next)' legacy/assets/js/i18n.js
+          grep -Fq 'root.querySelectorAll("[data-language-value]")' legacy/assets/js/components.js
+          grep -Fq 'if(event.key==="Escape")' legacy/assets/js/components.js
+          grep -Fq 'document.addEventListener("click",outside)' legacy/assets/js/components.js
+          grep -Fq 'const menu = [' legacy/assets/js/admin.js
+          grep -Fq 'class="admin-layout"' legacy/assets/js/admin.js
+          grep -Fq '.admin-layout>aside{position:sticky' legacy/assets/css/responsive.css
+          grep -Fq '@media(max-width:1180px){.admin-layout{grid-template-columns:1fr' legacy/assets/css/responsive.css
+          grep -Fq '.cv-language-list{' legacy/assets/css/language-modern.css
+
+      - name: Apply admin language and menu fix
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd source
+          python3 ../workflow/scripts/patch-react-admin-language-menu.py
+          f=frontend-react/src/pages/AdminPage.tsx
+          l=frontend-react/src/components/Layout.tsx
+          grep -Fq 'stripLanguagePath(location.pathname)' "$f"
+          grep -Fq 'href={adminHref(href)}' "$f"
+          grep -Fq 'adminHref("/admin/blog")' "$f"
+          test "$(grep -Fo 'withLanguage("/admin", language)' "$l" | wc -l)" -ge 2
+          grep -Fq 'document.addEventListener("click", onDocumentClick)' "$l"
+          grep -Fq 'document.addEventListener("keydown", onKeyDown)' "$l"
+          grep -Fq 'setMenuOpen(false);' "$l"
+          ! grep -Fq 'const parts=location.pathname.split("/").filter(Boolean);' "$f"
+          git diff --check
+
+      - name: Build React
+        working-directory: source/frontend-react
+        shell: bash
+        run: |
+          set -euo pipefail
+          npm ci
+          npm run build
+          node --input-type=module <<'NODE'
+          import fs from 'node:fs';
+          const generated=JSON.parse(fs.readFileSync('public/main-route-css.json','utf8'));
+          for(const route of ['/admin','/admin/attivita','/admin/blog','/admin/impostazioni']){
+            const css=generated.routeCss[route];
+            if(!Array.isArray(css)) throw new Error(`Missing generated admin route ${route}`);
+            for(const expected of ['/assets/css/responsive.css','/assets/css/language-modern.css','/assets/css/react-live-parity.css']){
+              if(!css.some(x=>String(x).split(/[?#]/)[0]===expected)) throw new Error(`${route} missing ${expected}`);
+            }
+          }
+          console.log('ADMIN_ROUTE_CSS_OK');
+          NODE
+
+      - name: Install Chromium and serve React
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p /tmp/cv-admin-menu
+          npm install --prefix /tmp/cv-admin-menu --no-package-lock --no-save playwright@1.62.1 serve@14.2.4
+          /tmp/cv-admin-menu/node_modules/.bin/playwright install --with-deps chromium >/dev/null
+          nohup /tmp/cv-admin-menu/node_modules/.bin/serve -s source/frontend-react/dist -l 4185 >/tmp/cv-admin-menu-react.log 2>&1 & echo $! >/tmp/cv-admin-menu-react.pid
+          for attempt in {1..30}; do curl -fsS http://127.0.0.1:4185/ >/dev/null 2>&1 && exit 0; sleep 1; done
+          cat /tmp/cv-admin-menu-react.log || true
+          exit 1
+
+      - name: Gate language picker and menu behavior
+        env:
+          PLAYWRIGHT_MODULE: /tmp/cv-admin-menu/node_modules/playwright
+        shell: bash
+        run: |
+          set -euo pipefail
+          node --input-type=module <<'NODE'
+          import {createRequire} from 'node:module';
+          const {chromium}=createRequire(import.meta.url)(process.env.PLAYWRIGHT_MODULE);
+          const browser=await chromium.launch({headless:true});
+          const failures=[];
+          async function context(viewport){
+            const ctx=await browser.newContext({viewport,serviceWorkers:'block'});
+            await ctx.addInitScript(()=>{const now=Date.now();localStorage.setItem('cv-cookie-consent-v3',JSON.stringify({version:3,scope:'technical-only',savedAt:new Date(now).toISOString(),expiresAt:new Date(now+30*86400000).toISOString(),necessary:true,preferences:false,analytics:false,marketing:false,source:'ci'}))});
+            return ctx;
+          }
+          {
+            const ctx=await context({width:1365,height:900}),p=await ctx.newPage();
+            const errors=[];p.on('pageerror',e=>errors.push(String(e.message||e)));
+            await p.goto('http://127.0.0.1:4185/',{waitUntil:'domcontentloaded'});
+            const lang=p.locator('details.header-language');
+            await lang.locator('summary').click();
+            if(!(await lang.evaluate(el=>el.hasAttribute('open')))) failures.push('desktop-language-did-not-open');
+            if(await p.locator('.cv-language-option').count()!==5) failures.push('desktop-language-options-not-5');
+            await p.locator('main').click({position:{x:5,y:5}});
+            if(await lang.evaluate(el=>el.hasAttribute('open'))) failures.push('desktop-language-outside-click-did-not-close');
+            await lang.locator('summary').click();
+            await p.keyboard.press('Escape');
+            if(await lang.evaluate(el=>el.hasAttribute('open'))) failures.push('desktop-language-escape-did-not-close');
+            if(errors.length) failures.push(`desktop-errors:${errors.join(';')}`);
+            await ctx.close();
+          }
+          {
+            const ctx=await context({width:390,height:844}),p=await ctx.newPage();
+            const errors=[];p.on('pageerror',e=>errors.push(String(e.message||e)));
+            await p.goto('http://127.0.0.1:4185/',{waitUntil:'domcontentloaded'});
+            await p.locator('#menu-toggle').click();
+            if(await p.locator('#mobile-nav').count()!==1) failures.push('mobile-menu-did-not-open');
+            await p.keyboard.press('Escape');
+            if(await p.locator('#mobile-nav').count()!==0) failures.push('mobile-menu-escape-did-not-close');
+            const lang=p.locator('details.header-language');
+            await lang.locator('summary').click();
+            if(!(await lang.evaluate(el=>el.hasAttribute('open')))) failures.push('mobile-language-did-not-open');
+            const box=await p.locator('.cv-language-list').boundingBox();
+            if(!box || box.x<0 || box.x+box.width>391 || box.y<0) failures.push(`mobile-language-list-outside:${JSON.stringify(box)}`);
+            await p.keyboard.press('Escape');
+            if(await lang.evaluate(el=>el.hasAttribute('open'))) failures.push('mobile-language-escape-did-not-close');
+            if(errors.length) failures.push(`mobile-errors:${errors.join(';')}`);
+            await ctx.close();
+          }
+          await browser.close();
+          if(failures.length){console.error(failures.join('\n'));process.exit(1)}
+          console.log('ADMIN_LANGUAGE_MENU_BROWSER_GREEN');
+          NODE
+
+      - name: Gate localized admin path contract
+        shell: bash
+        run: |
+          set -euo pipefail
+          node --input-type=module <<'NODE'
+          const langs=['it','en','fr','de','es'];
+          const sections=['','attivita','recensioni','blog','utenti','categorie','comuni','messaggi','impostazioni','seo'];
+          const strip=(path)=>{const parts=path.split('/').filter(Boolean);if(['it','en','fr','de','es'].includes(parts[0]))parts.shift();return '/'+parts.join('/')};
+          const section=(path)=>{const parts=strip(path).split('/').filter(Boolean);if(parts[0]!=='admin')return 'index';return parts[1]||'index'};
+          for(const lang of langs){for(const suffix of sections){const prefix=lang==='it'?'':`/${lang}`;const path=`${prefix}/admin${suffix?`/${suffix}`:''}`;const expected=suffix||'index';if(section(path)!==expected)throw new Error(`${path}: ${section(path)} != ${expected}`)}}
+          console.log('LOCALIZED_ADMIN_SECTION_CONTRACT_GREEN');
+          NODE
+
+      - name: Commit only after all gates pass
+        working-directory: source
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$EXPECTED_BASE"
+          git config user.name 'calabriavera-parity-bot'
+          git config user.email 'actions@users.noreply.github.com'
+          git add frontend-react/src/pages/AdminPage.tsx frontend-react/src/components/Layout.tsx
+          git diff --cached --quiet && { echo 'No changes to commit'; exit 0; }
+          git commit -m 'fix: preserve admin menu and language state'
+          git push origin HEAD:react-migration
+          echo "PATCH_SHA=$(git rev-parse HEAD)"
+
+      - name: Stop server
+        if: always()
+        run: kill "$(cat /tmp/cv-admin-menu-react.pid 2>/dev/null)" 2>/dev/null || true
