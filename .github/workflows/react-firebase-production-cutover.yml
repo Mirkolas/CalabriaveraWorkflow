@@ -1,0 +1,254 @@
+name: React migration - Firebase production cutover
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/react-firebase-production-cutover.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  id-token: write
+
+concurrency:
+  group: firebase-production
+  cancel-in-progress: false
+
+jobs:
+  cutover:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    env:
+      PRIVATE_REPO: ${{ secrets.PRIVATE_REPO }}
+      PRIVATE_REPO_PAT: ${{ secrets.PRIVATE_REPO_PAT || secrets.PERSONAL_ACCESS_TOKEN || secrets.PAT || secrets.GH_PAT || secrets.GITHUB_PAT }}
+      EXPECTED_SHA: 71586fd05ea07c7973d73b34e3b47ce082980dbb
+      PROD_URL: https://calabriavera.com
+      WORKER_URL: https://calabriavera.sonotacamirko.workers.dev
+      FIREBASE_PROJECT_ID: calabriavera-e08d4
+      ROLLBACK_REF: backup-main-before-react-firebase-hosting-2026-09-12-0634z
+    steps:
+      - name: Checkout exact validated production source
+        uses: actions/checkout@v7
+        with:
+          repository: ${{ secrets.PRIVATE_REPO }}
+          token: ${{ env.PRIVATE_REPO_PAT }}
+          ref: main
+          path: source
+          persist-credentials: false
+          fetch-depth: 1
+
+      - name: Assert main is still the validated candidate
+        shell: bash
+        run: |
+          set -euo pipefail
+          actual="$(git -C source rev-parse HEAD)"
+          echo "main=$actual"
+          test "$actual" = "$EXPECTED_SHA" || { echo "::error::main moved to $actual; refusing stale production deploy"; exit 1; }
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version: '24'
+
+      - name: Build exact React production artifact
+        working-directory: source/frontend-react
+        shell: bash
+        run: |
+          set -euo pipefail
+          npm ci
+          npm run build
+          test "$(cat dist/build-version.txt)" = "$EXPECTED_SHA"
+          test -s dist/app-shell.html
+          test -s dist/catalogo/index.html
+          test -s dist/blog/index.html
+          grep -q 'Le Ninfee' dist/catalogo/index.html
+          grep -q 'index,follow,max-image-preview:large' dist/index.html
+
+      - name: Validate React Firebase config and private noindex rules
+        working-directory: source
+        shell: bash
+        run: |
+          set -euo pipefail
+          node - <<'NODE'
+          const cfg=require('./firebase.react.json').hosting;
+          if(cfg.public!=='frontend-react/dist') throw new Error('wrong hosting public dir');
+          if(!cfg.rewrites.some(x=>x.source==='**'&&x.destination==='/app-shell.html')) throw new Error('missing app-shell fallback');
+          const serialized=JSON.stringify(cfg.headers);
+          for(const route of ['/dashboard','/admin','/profilo','/messaggi']) if(!serialized.includes(route)) throw new Error(`missing private noindex ${route}`);
+          NODE
+
+      - name: Install isolated Chromium before production change
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p /tmp/cv-production-smoke
+          npm install --prefix /tmp/cv-production-smoke --no-package-lock --no-save playwright@1.62.1
+          /tmp/cv-production-smoke/node_modules/.bin/playwright install --with-deps chromium
+
+      - name: Authenticate to Firebase with WIF
+        uses: google-github-actions/auth@v3
+        with:
+          workload_identity_provider: ${{ vars.FIREBASE_WIF_PROVIDER }}
+          service_account: ${{ vars.FIREBASE_DEPLOY_SERVICE_ACCOUNT }}
+
+      - name: Deploy React to Firebase Hosting only
+        id: deploy
+        working-directory: source
+        shell: bash
+        run: |
+          set -euo pipefail
+          npx --yes firebase-tools@15.22.1 deploy \
+            --project "$FIREBASE_PROJECT_ID" \
+            --only hosting \
+            --config firebase.react.json \
+            --non-interactive
+          echo "REACT_HOSTING_DEPLOY_GREEN=$EXPECTED_SHA"
+
+      - name: Wait for exact production build revision
+        id: revision
+        continue-on-error: true
+        shell: bash
+        run: |
+          set -euo pipefail
+          for attempt in {1..60}; do
+            got="$(curl --fail --silent --show-error --max-time 15 "$PROD_URL/build-version.txt?cutover=$attempt" 2>/dev/null | tr -d '\r\n' || true)"
+            if [ "$got" = "$EXPECTED_SHA" ]; then
+              echo "PRODUCTION_SHA_GREEN=$got"
+              exit 0
+            fi
+            echo "production revision attempt $attempt: ${got:-legacy-or-unavailable}"
+            sleep 5
+          done
+          echo "::error::production did not expose $EXPECTED_SHA"
+          exit 1
+
+      - name: Run critical production browser smoke
+        id: smoke
+        if: steps.revision.outcome == 'success'
+        continue-on-error: true
+        shell: bash
+        env:
+          PLAYWRIGHT_MODULE: /tmp/cv-production-smoke/node_modules/playwright
+        run: |
+          set -euo pipefail
+          node --input-type=module <<'NODE'
+          import { createRequire } from 'node:module';
+          const require=createRequire(import.meta.url);
+          const { chromium, request: apiRequest }=require(process.env.PLAYWRIGHT_MODULE);
+          const base=process.env.PROD_URL.replace(/\/$/,'');
+          const failures=[];
+          const browser=await chromium.launch({headless:true});
+          const ignore=/favicon|ERR_BLOCKED_BY_CLIENT|tile|net::ERR_ABORTED|(?:status of )?429|RESOURCE_EXHAUSTED|googleapis.*429/i;
+          async function open(route,{mobile=false,wait='main'}={}) {
+            const context=await browser.newContext({viewport:mobile?{width:390,height:844}:{width:1365,height:900},serviceWorkers:'block'});
+            const page=await context.newPage();
+            const errors=[];
+            page.on('pageerror',e=>errors.push(`page:${e.message||e}`));
+            page.on('console',m=>{if(m.type()==='error'&&!ignore.test(m.text())) errors.push(`console:${m.text()}`)});
+            const response=await page.goto(base+route+(route.includes('?')?'&':'?')+'prodgate=1',{waitUntil:'domcontentloaded',timeout:25000}).catch(()=>null);
+            if(wait) await page.waitForSelector(wait,{timeout:14000}).catch(()=>{});
+            await page.waitForTimeout(route.startsWith('/mappa')?2500:800);
+            const data=await page.evaluate(()=>({
+              path:location.pathname,
+              h1:document.querySelector('main h1')?.textContent?.trim()||'',
+              body:document.body.innerText,
+              overflow:Math.max(0,document.documentElement.scrollWidth-document.documentElement.clientWidth),
+              cards:document.querySelectorAll('#results>.activity-item').length,
+              resultCount:document.querySelector('#result-count')?.textContent?.trim()||'',
+              mapCount:document.querySelector('#map-count')?.textContent?.trim()||'',
+              leaflet:Boolean(document.querySelector('.leaflet-container')),
+              clusters:document.querySelectorAll('.cv-map-cluster-shell').length,
+              pins:document.querySelectorAll('.cv-map-pin-shell').length,
+              blogCards:document.querySelectorAll('.blog-card').length,
+              cityOptions:document.querySelector('#city')?.querySelectorAll('option').length||0,
+            }));
+            await context.close();
+            return {status:response?.status()||0,errors,...data};
+          }
+          const count=t=>Number(String(t).match(/(\d+)\s+attivit/i)?.[1]||-1);
+          try {
+            for(const route of ['/','/login','/registrazione','/privacy-policy','/cookie-policy','/chi-siamo','/contatti','/en/','/fr/','/de/','/es/']){
+              const row=await open(route);
+              if(row.status!==200||!row.h1||row.errors.length||row.overflow>4) failures.push(`${route}: ${JSON.stringify(row)}`);
+            }
+            const catalog=await open('/catalogo',{wait:'#results'});
+            if(catalog.status!==200||count(catalog.resultCount)!==53||catalog.cards!==18||catalog.cityOptions!==117||catalog.errors.length) failures.push(`catalog: ${JSON.stringify(catalog)}`);
+            const mobile=await open('/catalogo',{mobile:true,wait:'#results'});
+            if(count(mobile.resultCount)!==53||mobile.overflow>4||mobile.errors.length) failures.push(`catalog mobile: ${JSON.stringify(mobile)}`);
+            const map=await open('/mappa',{wait:'.leaflet-container'});
+            if(map.status!==200||count(map.mapCount)!==53||!map.leaflet||map.clusters<1||map.pins<1||map.cityOptions!==117||map.errors.length) failures.push(`map: ${JSON.stringify(map)}`);
+            const blog=await open('/blog',{wait:'.blog-card'});
+            if(blog.status!==200||blog.blogCards<1||blog.errors.length) failures.push(`blog: ${JSON.stringify(blog)}`);
+            const tourism=await open('/attivita?turismo=centro-storico-di-tropea',{wait:'main h1'});
+            if(tourism.status!==200||!/Tropea/i.test(tourism.body)||tourism.errors.length) failures.push(`tourism: ${JSON.stringify(tourism)}`);
+            for(const route of ['/profilo','/preferiti','/dashboard','/messaggi','/aggiungi-attivita','/admin','/admin/blog']){
+              const context=await browser.newContext({serviceWorkers:'block'}); const page=await context.newPage();
+              await page.goto(base+route+'?prodgate=1',{waitUntil:'domcontentloaded',timeout:25000}).catch(()=>null);
+              await page.waitForFunction(()=>location.pathname==='/login',{timeout:12000}).catch(()=>{});
+              if(new URL(page.url()).pathname!=='/login') failures.push(`${route}: anonymous gate -> ${page.url()}`);
+              await context.close();
+            }
+          } finally { await browser.close(); }
+          const api=await apiRequest.newContext();
+          try {
+            const businesses=await api.get(base+'/assets/data/public-businesses-v1.json?prodgate=1');
+            const blog=await api.get(base+'/assets/data/public-blog-v1.json?prodgate=1');
+            const b=await businesses.json().catch(()=>({items:[]})); const p=await blog.json().catch(()=>({items:[]}));
+            if(businesses.status()!==200||!Array.isArray(b.items)||b.items.length<1) failures.push(`business snapshot status/count ${businesses.status()}/${b.items?.length}`);
+            if(blog.status()!==200||!Array.isArray(p.items)||p.items.length<200) failures.push(`blog snapshot status/count ${blog.status()}/${p.items?.length}`);
+          } finally { await api.dispose(); }
+          if(failures.length){console.error(failures.join('\n'));process.exit(1);}
+          console.log('PRODUCTION_BROWSER_SMOKE_GREEN');
+          NODE
+
+      - name: Verify production headers and Worker R2 security
+        id: security
+        if: steps.revision.outcome == 'success' && steps.smoke.outcome == 'success'
+        continue-on-error: true
+        shell: bash
+        run: |
+          set -euo pipefail
+          curl -fsSI "$PROD_URL/dashboard?headers=1" | tr -d '\r' | grep -qi '^x-robots-tag: noindex,nofollow'
+          curl -fsSI "$PROD_URL/admin?headers=1" | tr -d '\r' | grep -qi '^x-robots-tag: noindex,nofollow'
+          curl -fsS "$PROD_URL/?headers=1" | grep -q 'index,follow,max-image-preview:large'
+          allowed="$(mktemp)"
+          curl -sS -D "$allowed" -o /dev/null -X OPTIONS "$WORKER_URL/api/images/upload" \
+            -H 'Origin: https://calabriavera.com' -H 'Access-Control-Request-Method: POST'
+          grep -Eqi '^HTTP/[^ ]+ 204' "$allowed"
+          grep -Eqi '^access-control-allow-origin: https://calabriavera\.com' "$allowed"
+          echo PRODUCTION_SECURITY_GREEN
+
+      - name: Roll back Firebase Hosting to legacy backup on failed critical smoke
+        if: always() && steps.deploy.outcome == 'success' && (steps.revision.outcome != 'success' || steps.smoke.outcome != 'success' || steps.security.outcome != 'success')
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo "::warning::React production smoke failed; restoring legacy Hosting from $ROLLBACK_REF"
+          git clone --depth 1 --branch "$ROLLBACK_REF" "https://x-access-token:${PRIVATE_REPO_PAT}@github.com/${PRIVATE_REPO}.git" rollback
+          cd rollback
+          npm ci
+          npm run validate
+          npm run build
+          npm run setup:backend-tools
+          SITE_URL=https://calabriavera.com FIREBASE_PROJECT_ID="$FIREBASE_PROJECT_ID" RESOURCE_DIR="$PWD/dist" npm --prefix tools run generate-sitemap
+          node scripts/stabilize-shell.mjs
+          node scripts/unify-css.mjs
+          node scripts/finalize-domain.mjs
+          node scripts/performance-runtime.mjs
+          node scripts/secure-maintenance-bootstrap.mjs
+          node scripts/finalize-i18n.mjs
+          node scripts/first-paint.mjs
+          node scripts/performance-budget.mjs
+          npx --yes firebase-tools@15.22.1 deploy --project "$FIREBASE_PROJECT_ID" --only hosting --non-interactive
+          echo LEGACY_HOSTING_ROLLBACK_GREEN
+
+      - name: Require successful React production cutover
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "${{ steps.deploy.outcome }}" = success
+          test "${{ steps.revision.outcome }}" = success
+          test "${{ steps.smoke.outcome }}" = success
+          test "${{ steps.security.outcome }}" = success
+          echo "REACT_FIREBASE_PRODUCTION_GREEN=$EXPECTED_SHA"
