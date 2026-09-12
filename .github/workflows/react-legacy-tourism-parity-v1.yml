@@ -1,0 +1,187 @@
+name: React legacy parity - tourism v1
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/react-legacy-tourism-parity-v1.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: react-legacy-tourism-parity-v1
+  cancel-in-progress: true
+
+jobs:
+  patch-and-gate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    env:
+      PRIVATE_REPO: ${{ secrets.PRIVATE_REPO }}
+      PRIVATE_REPO_PAT: ${{ secrets.PRIVATE_REPO_PAT || secrets.PERSONAL_ACCESS_TOKEN || secrets.PAT || secrets.GH_PAT || secrets.GITHUB_PAT }}
+      LEGACY_SHA: 7be434e3418e95cff9825e4cc3f4b4ed75cd1076
+    steps:
+      - name: Verify access
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -n "$PRIVATE_REPO"
+          test -n "$PRIVATE_REPO_PAT"
+
+      - name: Checkout workflow tools
+        uses: actions/checkout@v7
+        with:
+          path: workflow
+          persist-credentials: false
+
+      - name: Checkout exact backup
+        uses: actions/checkout@v7
+        with:
+          repository: ${{ secrets.PRIVATE_REPO }}
+          token: ${{ secrets.PRIVATE_REPO_PAT || secrets.PERSONAL_ACCESS_TOKEN || secrets.PAT || secrets.GH_PAT || secrets.GITHUB_PAT }}
+          ref: backup-main-pre-react-2026-09-11
+          path: legacy
+          persist-credentials: false
+          fetch-depth: 1
+
+      - name: Checkout React branch
+        uses: actions/checkout@v7
+        with:
+          repository: ${{ secrets.PRIVATE_REPO }}
+          token: ${{ secrets.PRIVATE_REPO_PAT || secrets.PERSONAL_ACCESS_TOKEN || secrets.PAT || secrets.GH_PAT || secrets.GITHUB_PAT }}
+          ref: react-migration
+          path: source
+          persist-credentials: true
+          fetch-depth: 5
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version: '24'
+
+      - name: Verify exact tourism contract
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git -C legacy rev-parse HEAD)" = "$LEGACY_SHA"
+          grep -q 'cv-tourism-hero__body' legacy/assets/js/tourism-detail.js
+          grep -q 'id="tourism-reviews"' legacy/assets/js/tourism-detail.js
+          grep -q 'id="tourism-review-form"' legacy/assets/js/tourism-detail.js
+          grep -q 'id="tourism-favorite"' legacy/assets/js/tourism-detail.js
+          grep -q 'Salva nei preferiti' legacy/assets/js/tourism-detail.js
+          grep -q '/mappa?attivita=' legacy/assets/js/tourism-detail.js
+          grep -q 'listReviews(item.id)' legacy/assets/js/tourism-detail.js
+          grep -q 'toggleFavorite(item.id)' legacy/assets/js/tourism-detail.js
+          grep -q 'addReview({businessId:item.id' legacy/assets/js/tourism-detail.js
+
+      - name: Apply tourism parity patch
+        working-directory: source
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 ../workflow/scripts/patch-react-tourism-parity.py
+
+      - name: Assert source contract
+        working-directory: source
+        shell: bash
+        run: |
+          set -euo pipefail
+          grep -q 'cv-tourism-hero__body' frontend-react/src/pages/TourismPage.tsx
+          grep -q 'id="tourism-reviews"' frontend-react/src/pages/TourismPage.tsx
+          grep -q 'id="tourism-review-form"' frontend-react/src/pages/TourismPage.tsx
+          grep -q 'id="tourism-favorite"' frontend-react/src/pages/TourismPage.tsx
+          grep -q 'Salva nei preferiti' frontend-react/src/pages/TourismPage.tsx
+          grep -q '/mappa?attivita=' frontend-react/src/pages/TourismPage.tsx
+          grep -q 'status: "pending"' frontend-react/src/lib/tourism-interactions.ts
+          grep -q 'f.where("status", "==", "approved")' frontend-react/src/lib/tourism-interactions.ts
+          grep -q 'favorites", `${user.uid}_${businessId}`' frontend-react/src/lib/tourism-interactions.ts
+
+      - name: Build React
+        working-directory: source/frontend-react
+        shell: bash
+        run: |
+          set -euo pipefail
+          npm ci
+          npm run build
+
+      - name: Install browser gate
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p /tmp/cv-tourism-gate
+          npm install --prefix /tmp/cv-tourism-gate --no-package-lock --no-save playwright@1.62.1 serve@14.2.4
+          /tmp/cv-tourism-gate/node_modules/.bin/playwright install --with-deps chromium
+
+      - name: Start built app
+        shell: bash
+        run: |
+          set -euo pipefail
+          nohup /tmp/cv-tourism-gate/node_modules/.bin/serve -s source/frontend-react/dist -l 4178 >/tmp/cv-tourism-gate.log 2>&1 &
+          echo $! >/tmp/cv-tourism-gate.pid
+          for attempt in {1..30}; do
+            curl -fsS --max-time 3 'http://127.0.0.1:4178/attivita?turismo=centro-storico-di-tropea' >/dev/null && exit 0
+            sleep 1
+          done
+          cat /tmp/cv-tourism-gate.log || true
+          exit 1
+
+      - name: Browser tourism parity gate
+        env:
+          PLAYWRIGHT_MODULE: /tmp/cv-tourism-gate/node_modules/playwright
+        shell: bash
+        run: |
+          set -euo pipefail
+          node --input-type=module <<'NODE'
+          import { createRequire } from 'node:module';
+          const require=createRequire(import.meta.url);
+          const { chromium }=require(process.env.PLAYWRIGHT_MODULE);
+          const browser=await chromium.launch({headless:true});
+          try {
+            const context=await browser.newContext({serviceWorkers:'block',viewport:{width:1365,height:900}});
+            const page=await context.newPage();
+            const errors=[];
+            page.on('pageerror',e=>errors.push(String(e.message||e)));
+            await page.goto('http://127.0.0.1:4178/attivita?turismo=centro-storico-di-tropea',{waitUntil:'domcontentloaded',timeout:30000});
+            await page.waitForSelector('.cv-tourism-hero',{timeout:10000});
+            await page.waitForTimeout(1500);
+            const title=await page.locator('h1').first().innerText();
+            if(title.trim()!=='Centro Storico di Tropea') throw new Error(`TOURISM_TITLE_${title}`);
+            for(const selector of ['.cv-tourism-hero__body','.cv-tourism-hero__eyebrow','.cv-tourism-meta','.cv-tourism-grid','.cv-tourism-services','.cv-tourism-map iframe','#tourism-reviews','#tourism-review-form','#tourism-favorite']) {
+              if(await page.locator(selector).count()<1) throw new Error(`TOURISM_MISSING_${selector}`);
+            }
+            if(await page.locator('.cv-star-picker [data-star-value]').count()!==5) throw new Error('TOURISM_STAR_PICKER_COUNT');
+            await page.locator('.cv-star-picker [data-star-value="3"]').click();
+            const rating=await page.locator('#tourism-review-form input[name="rating"]').inputValue();
+            if(rating!=='3') throw new Error(`TOURISM_STAR_PICKER_${rating}`);
+            const mapHref=await page.locator('aside a[href*="/mappa?attivita="]').getAttribute('href');
+            if(mapHref!=='/mappa?attivita=turismo-centro-storico-tropea') throw new Error(`TOURISM_MAP_HREF_${mapHref}`);
+            const catalogHref=await page.locator('aside a[href*="/catalogo?categoria=Turismo"]').getAttribute('href');
+            if(!catalogHref) throw new Error('TOURISM_CATALOG_HREF');
+            const docTitle=await page.title();
+            if(!docTitle.includes('Centro Storico di Tropea') || !docTitle.includes('Turismo CalabriaVera')) throw new Error(`TOURISM_META_TITLE_${docTitle}`);
+            const heroBg=await page.locator('.cv-tourism-hero').evaluate(el=>getComputedStyle(el).backgroundImage);
+            if(!heroBg || heroBg==='none') throw new Error('TOURISM_HERO_IMAGE');
+            if(errors.length) throw new Error(`PAGE_ERRORS_${errors.join('|')}`);
+            console.log('LEGACY_TOURISM_GREEN');
+            await context.close();
+          } finally { await browser.close(); }
+          NODE
+
+      - name: Commit to react-migration
+        working-directory: source
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name 'calabriavera-parity-bot'
+          git config user.email 'actions@users.noreply.github.com'
+          git add frontend-react/src/pages/TourismPage.tsx frontend-react/src/lib/tourism-interactions.ts
+          git diff --cached --quiet && { echo 'No changes to commit'; exit 0; }
+          git commit -m 'fix: align React tourism detail with exact pre-React backup'
+          git push origin HEAD:react-migration
+          echo "PATCH_SHA=$(git rev-parse HEAD)"
+
+      - name: Stop server
+        if: always()
+        shell: bash
+        run: kill "$(cat /tmp/cv-tourism-gate.pid 2>/dev/null)" 2>/dev/null || true
