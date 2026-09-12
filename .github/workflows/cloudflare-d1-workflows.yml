@@ -84,9 +84,21 @@ jobs:
         with:
           repository: ${{ secrets.PRIVATE_REPO }}
           token: ${{ secrets.PRIVATE_REPO_PAT || secrets.PERSONAL_ACCESS_TOKEN || secrets.PAT || secrets.GH_PAT || secrets.GITHUB_PAT }}
-          ref: migration/cloudflare-d1-phase1
+          ref: main
           path: source
           persist-credentials: false
+
+      - name: Verifica modalità workflow-only
+        if: github.event.inputs.operation == 'bootstrap' || github.event.inputs.operation == 'sync-public-data'
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -f source/frontend-react/d1/migrations/0001_public_content.sql
+          test -f source/frontend-react/scripts/build-d1-seed.mjs
+          if grep -Eq '"d1_databases"|\[\[d1_databases\]\]' source/frontend-react/wrangler.jsonc; then
+            echo "::error::D1 non deve essere collegato al Worker del sito in modalità workflow-only."
+            exit 1
+          fi
 
       - name: Applica schema D1
         if: github.event.inputs.operation == 'bootstrap'
