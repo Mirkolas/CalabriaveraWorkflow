@@ -83,27 +83,23 @@ if old3 not in s:
 s = s.replace(old3, new3, 1)
 
 # Public pages must carry canonical + hreflang in the HTML response itself, before client hydration.
-old4 = '''  html = html.replace(/<meta\\s+name=["\\']robots["\\']\\s+content=["\\'][^"\\']*["\\']\\s*\\/?\\s*>/i, `<meta name="robots" content="${robots}" />`);
-  const cleanRoute = page.path.replace(/^\\/(?:en|fr|de|es)(?=\\/|$)/, "") || "/";
-'''
-new4 = '''  html = html.replace(/<meta\\s+name=["\\']robots["\\']\\s+content=["\\'][^"\\']*["\\']\\s*\\/?\\s*>/i, `<meta name="robots" content="${robots}" />`);
-  if (!robots.startsWith("noindex")) {
+marker = '  const cleanRoute = page.path.replace(/^\\/(?:en|fr|de|es)(?=\\/|$)/, "") || "/";\n'
+seo = '''  if (!robots.startsWith("noindex")) {
     const canonicalPath = page.canonicalPath || page.path || "/";
-    const canonicalClean = canonicalPath.replace(/^\\/(?:en|fr|de|es)(?=\\/|$)/, "") || "/";
+    const canonicalClean = canonicalPath.replace(/^\/(?:en|fr|de|es)(?=\/|$)/, "") || "/";
     const canonicalHref = `https://calabriavera.com${canonicalPath === "/" ? "" : canonicalPath}`;
     const alternateLinks = languages.map(({ lang, prefix }) => {
       const localized = `${prefix}${canonicalClean === "/" ? "/" : canonicalClean}` || "/";
       return `<link rel="alternate" hreflang="${lang}" href="https://calabriavera.com${localized === "/" ? "" : localized}" />`;
     }).join("") + `<link rel="alternate" hreflang="x-default" href="https://calabriavera.com${canonicalClean === "/" ? "" : canonicalClean}" />`;
-    html = html.replace(/<link\\s+rel=["']canonical["'][^>]*>/gi, "");
-    html = html.replace(/<link\\s+rel=["']alternate["'][^>]*hreflang=["'][^"']+["'][^>]*>/gi, "");
+    html = html.replace(/<link\s+rel=["']canonical["'][^>]*>/gi, "");
+    html = html.replace(/<link\s+rel=["']alternate["'][^>]*hreflang=["'][^"']+["'][^>]*>/gi, "");
     html = html.replace("</head>", `<link rel="canonical" href="${canonicalHref}" />${alternateLinks}</head>`);
   }
-  const cleanRoute = page.path.replace(/^\\/(?:en|fr|de|es)(?=\\/|$)/, "") || "/";
 '''
-if old4 not in s:
-    raise SystemExit('prerender robots insertion contract changed')
-s = s.replace(old4, new4, 1)
+if marker not in s:
+    raise SystemExit('prerender cleanRoute contract changed')
+s = s.replace(marker, seo + marker, 1)
 p.write_text(s)
 
 print('Activity indexing patch applied: live approved merge, Firestore detail fallback, 1000-row resolver, uncapped prerender, server canonical/hreflang')
