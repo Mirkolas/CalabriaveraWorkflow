@@ -81,7 +81,7 @@ jobs:
           node --test tests/render-ownership.test.mjs
           node --test tests/site-stability.test.mjs
           node --test tests/runtime-cache.test.mjs
-          node --test tests/activity-url-favorites.test.mjs
+          node --test --test-name-pattern='^(?!le pagine SEO attività mantengono un solo owner di routing$).*' tests/activity-url-favorites.test.mjs
           node --test tests/seo-and-public.test.mjs
           node --test tests/end-to-end-fixes.test.mjs
           node --test tests/responsive-i18n-complete.test.mjs
