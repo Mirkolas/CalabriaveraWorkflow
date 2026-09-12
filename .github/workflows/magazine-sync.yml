@@ -2,11 +2,7 @@ name: Blog automatico - RSS e OpenData
 
 on:
   schedule:
-    - cron: '17 */2 * * *'
-    - cron: '44 */2 * * *'
-    - cron: '11 1-23/2 * * *'
-    - cron: '38 1-23/2 * * *'
-    - cron: '5 */2 * * *'
+    - cron: '17 */6 * * *'
   workflow_dispatch:
     inputs:
       mode:
@@ -39,7 +35,7 @@ jobs:
     uses: ./.github/workflows/scheduled-retry-gate.yml
     with:
       workflow_file: magazine-sync.yml
-      cadence_minutes: 240
+      cadence_minutes: 360
       anchor_offset_minutes: 17
 
   import:
@@ -121,7 +117,7 @@ jobs:
         working-directory: source
         env:
           NODE_OPTIONS: --import=./tools/source-fetch-compat.mjs
-          AUTOMATION_INTERVAL_MINUTES: '240'
+          AUTOMATION_INTERVAL_MINUTES: '360'
           AUTOMATION_LOCK_MINUTES: '35'
           AUTOMATION_FORCE: ${{ (github.event_name == 'workflow_dispatch' && inputs.mode == 'blog') || (github.event_name == 'repository_dispatch' && github.event.client_payload.magazine_force == true) }}
         run: |
@@ -129,8 +125,6 @@ jobs:
             set -euo pipefail
             export MAGAZINE_CYCLE_STARTED_AT_MS=$(date +%s%3N)
             node tools/enforce-source-rights.mjs
-            # Il registro sorgenti e gia stato allineato nello step precedente: gli
-            # importer possono evitare di riscrivere la stessa configurazione.
             export SOURCE_REGISTRY_ENFORCED=true
             node tools/cleanup-ingv-magnitude.mjs
             set +e
@@ -138,19 +132,12 @@ jobs:
             node tools/sync-tourism-opendata.mjs; tourism_code=$?
             node tools/sync-regional-opendata.mjs; regional_code=$?
             set -e
-
-            # Una sola scansione di blogPosts per accodare tutti gli elementi importati
-            # nel ciclo, invece di ripetere la stessa query dopo ogni sorgente.
             node tools/queue-new-magazine-items.mjs
-
-            # Le scansioni storiche sono manutenzione: eseguirle una volta al giorno
-            # evita di rileggere migliaia di documenti ad ogni ciclo.
             if [ "$(date -u +%H)" = "01" ]; then
               node tools/reconcile-magazine.mjs
               node tools/enforce-positive-magazine.mjs
               node tools/backfill-blog-covers.mjs
             fi
-
             node tools/publish-magazine-batch.mjs
             if [ "$rss_code" -ne 0 ] && [ "$tourism_code" -ne 0 ] && [ "$regional_code" -ne 0 ]; then exit 1; fi
           '
@@ -173,7 +160,7 @@ jobs:
           SOCIAL_FORCE_INSTAGRAM_REPUBLISH: ${{ github.event_name == 'repository_dispatch' && github.event.client_payload.social_republish_instagram == true }}
           SOCIAL_FORCE_POST_ID: ${{ github.event_name == 'repository_dispatch' && github.event.client_payload.social_republish_ricadi == true && 'ext-b531af8d21e352c377ddff4c712d' || '' }}
           SOCIAL_DRY_RUN: ${{ (github.event_name == 'workflow_dispatch' && inputs.mode == 'social-dry-run') || (github.event_name == 'repository_dispatch' && github.event.client_payload.social_dry_run == true) }}
-          AUTOMATION_INTERVAL_MINUTES: '120'
+          AUTOMATION_INTERVAL_MINUTES: '360'
           AUTOMATION_LOCK_MINUTES: '35'
           AUTOMATION_ADVANCE_ON_FAILURE: 'true'
           AUTOMATION_FORCE: ${{ (github.event_name == 'workflow_dispatch' && inputs.mode == 'social-publish') || (github.event_name == 'repository_dispatch' && github.event.client_payload.social_publish == true) }}
