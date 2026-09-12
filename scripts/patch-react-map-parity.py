@@ -39,9 +39,7 @@ s = s[:start] + '''function markerColor(item: Business) {
 }
 ''' + s[end:]
 
-rep('  const [service, setService] = useState(initial.get("servizio") || "");',
-    '  const [service, setService] = useState("");',
-    'service initial')
+rep('  const [service, setService] = useState(initial.get("servizio") || "");\n', '', 'remove service state')
 
 rep('const map = runtimeL.map(elementRef.current, { preferCanvas: true, zoomControl: false, attributionControl: true, fadeAnimation: false, zoomAnimation: true, markerZoomAnimation: false }).setView(CALABRIA_CENTER, 8);',
     'const map = runtimeL.map(elementRef.current, { preferCanvas: true, zoomControl: false, attributionControl: false, fadeAnimation: false }).setView(CALABRIA_CENTER, 8);',
@@ -57,6 +55,7 @@ rep('? clusterFactory({ chunkedLoading: true, chunkInterval: 120, chunkDelay: 30
 '''? clusterFactory({ chunkedLoading: true, chunkInterval: 120, chunkDelay: 24, showCoverageOnHover: false, maxClusterRadius: 52, disableClusteringAtZoom: 13, iconCreateFunction: (cluster: { getChildCount(): number }) => { const count = cluster.getChildCount(); const size = count > 99 ? 48 : count > 20 ? 45 : 42; return runtimeL.divIcon({ className: "cv-map-cluster-shell", html: `<span class="cv-map-cluster">${count}</span>`, iconSize: [size, size] }); } })''',
     'cluster options')
 
+rep('  const serviceNormalized = normalizeText(service);\n', '', 'remove service normalization')
 old_filter = '''  const filtered = useMemo(() => (items || []).filter((item) => {
     if (!validCoordinates(item) || !categoryMatches(item, category)) return false;
     if (province && item.provincia !== province) return false;
@@ -73,13 +72,12 @@ new_filter = '''  const filtered = useMemo(() => {
       if (province && item.provincia !== province) return false;
       if (city && !normalizeText(item.comune).includes(normalizeText(city))) return false;
       if (verified && item.verified !== true) return false;
-      if (serviceNormalized && !(item.services || []).some((value) => normalizeText(value).includes(serviceNormalized))) return false;
       if (nearby && userPoint && distanceKm(userPoint, item) > radius) return false;
       return true;
     });
     if (nearby && userPoint) rows.sort((a, b) => distanceKm(userPoint, a) - distanceKm(userPoint, b));
     return rows;
-  }, [items, category, province, city, verified, serviceNormalized, nearby, userPoint, radius]);'''
+  }, [items, category, province, city, verified, nearby, userPoint, radius]);'''
 rep(old_filter, new_filter, 'filter semantics')
 
 old_sync = '''  useEffect(() => {
@@ -164,6 +162,12 @@ rep(old_marker, new_marker, 'marker and popup parity')
 rep('    if (bounds.length === 1) map.setView(bounds[0], 13);\n    else map.fitBounds(bounds, { padding: [36, 36], maxZoom: 13 });',
     '    map.fitBounds(bounds, { padding: [28, 28], maxZoom: 12 });',
     'fit results')
+rep('  useEffect(() => {\n    if (!mapReady || !filtered.length || !(category || province || city || service || verified || nearby)) return;\n    fitFiltered();\n  }, [mapReady, category, province, city, service, verified, nearby, radius]);',
+'''  useEffect(() => {
+    if (!mapReady || !filtered.length || !(category || province || city || verified || nearby)) return;
+    fitFiltered();
+  }, [mapReady, category, province, city, verified, nearby, radius]);''',
+    'filter fit effect')
 rep('        map.setView([point.lat, point.lng], 10);',
     '        map.setView([point.lat, point.lng], 11);',
     'nearby zoom')
