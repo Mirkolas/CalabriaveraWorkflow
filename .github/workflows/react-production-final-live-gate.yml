@@ -1,0 +1,141 @@
+name: React migration - final production live gate
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/react-production-final-live-gate.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  live:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      EXPECTED_SHA: 165f10c0203e928df1c0cb5ac75445249b7cade4
+      BASE: https://calabriavera.com
+    steps:
+      - uses: actions/setup-node@v7
+        with:
+          node-version: '24'
+
+      - name: Verify apex, www, datasets and prerender
+        shell: bash
+        run: |
+          set -euo pipefail
+          apex="$(curl -fsS --max-time 20 "$BASE/build-version.txt?final-live=1" | tr -d '\r\n')"
+          test "$apex" = "$EXPECTED_SHA" || { echo "::error::apex SHA=$apex"; exit 1; }
+          www="$(curl -LfsS --max-time 20 'https://www.calabriavera.com/build-version.txt?final-live=1' | tr -d '\r\n')"
+          test "$www" = "$EXPECTED_SHA" || { echo "::error::www SHA=$www"; exit 1; }
+          curl -fsS --max-time 20 "$BASE/legacy-data/public-businesses-v1.json?final-live=1" > /tmp/businesses.json
+          curl -fsS --max-time 20 "$BASE/legacy-data/public-blog-v1.json?final-live=1" > /tmp/blog.json
+          node - <<'NODE'
+          const fs=require('node:fs');
+          const b=JSON.parse(fs.readFileSync('/tmp/businesses.json','utf8'));
+          const m=JSON.parse(fs.readFileSync('/tmp/blog.json','utf8'));
+          if(!Array.isArray(b.items)||b.items.length<1) throw new Error('business snapshot empty');
+          if(!Array.isArray(m.items)||m.items.length<1) throw new Error('blog snapshot empty');
+          console.log(`snapshots businesses=${b.items.length} blog=${m.items.length}`);
+          NODE
+          curl -fsS --max-time 20 "$BASE/catalogo?final-live=$EXPECTED_SHA" > /tmp/catalog.html
+          grep -q 'data-prerender-path="/catalogo"' /tmp/catalog.html
+          grep -q '53 attività trovate' /tmp/catalog.html
+          grep -q 'turismo-isola-dino' /tmp/catalog.html
+          curl -fsS --max-time 20 "$BASE/mappa?final-live=$EXPECTED_SHA" > /tmp/map.html
+          grep -q 'data-prerender-path="/mappa"' /tmp/map.html
+          grep -q '53 attività sulla mappa' /tmp/map.html
+          curl -fsS --max-time 20 "$BASE/chi-siamo?final-live=$EXPECTED_SHA" > /tmp/about.html
+          grep -q 'data-prerender-path="/chi-siamo"' /tmp/about.html
+          grep -q 'La Calabria raccontata da chi la vive' /tmp/about.html
+          echo FINAL_RAW_PRODUCTION_GREEN
+
+      - name: Verify production-origin R2 CORS bridge
+        shell: bash
+        run: |
+          set -euo pipefail
+          worker='https://calabriavera.sonotacamirko.workers.dev/api/images/upload'
+          origin='https://calabriavera.com'
+          curl -sS -D /tmp/cors.h -o /dev/null -X OPTIONS "$worker" \
+            -H "Origin: $origin" \
+            -H 'Access-Control-Request-Method: POST' \
+            -H 'Access-Control-Request-Headers: authorization,content-type,x-user-id,x-business-id'
+          grep -qi '^HTTP/.* 204' /tmp/cors.h
+          grep -qi "^access-control-allow-origin: $origin" /tmp/cors.h
+          echo FINAL_R2_CORS_GREEN
+
+      - name: Install Chromium
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p /tmp/cv-final-live
+          npm install --prefix /tmp/cv-final-live --no-package-lock --no-save playwright@1.62.1
+          /tmp/cv-final-live/node_modules/.bin/playwright install --with-deps chromium
+
+      - name: Browser gate on real production
+        shell: bash
+        env:
+          PLAYWRIGHT_MODULE: /tmp/cv-final-live/node_modules/playwright
+        run: |
+          set -euo pipefail
+          node --input-type=module <<'NODE'
+          import { createRequire } from 'node:module';
+          const require=createRequire(import.meta.url);
+          const { chromium }=require(process.env.PLAYWRIGHT_MODULE);
+          const base=process.env.BASE;
+          const sha=process.env.EXPECTED_SHA;
+          const browser=await chromium.launch({headless:true});
+          const failures=[];
+          try {
+            const publicRoutes=['/','/catalogo','/mappa','/blog','/chi-siamo','/privacy-policy','/en/','/en/catalogo','/en/blog'];
+            for(const route of publicRoutes){
+              const context=await browser.newContext({serviceWorkers:'block',viewport:{width:1365,height:900}});
+              const page=await context.newPage();
+              const errors=[];
+              page.on('pageerror',e=>errors.push(String(e.message||e)));
+              const response=await page.goto(`${base}${route}${route.includes('?')?'&':'?'}final-live=${sha}`,{waitUntil:'domcontentloaded',timeout:30000}).catch(()=>null);
+              if(!response||response.status()>=400) failures.push(`${route}: HTTP ${response?.status()||0}`);
+              await page.waitForSelector('main',{timeout:12000}).catch(()=>{});
+              if(errors.length) failures.push(`${route}: ${errors.join(' | ')}`);
+              if(route==='/'){
+                const socials=await page.locator('.social-links .social-link').count();
+                if(socials!==3) failures.push(`home social links=${socials}`);
+                const overflow=await page.evaluate(()=>document.body.scrollWidth>document.documentElement.clientWidth+2);
+                if(overflow) failures.push('home horizontal overflow');
+              }
+              if(route==='/catalogo'){
+                const text=(await page.locator('body').innerText()).toLowerCase();
+                if(!text.includes('53 attività trovate')||!text.includes('isola di dino')) failures.push('catalog runtime mismatch');
+                if(await page.locator('.activity-item').count()!==18) failures.push('catalog initial card count mismatch');
+              }
+              if(route==='/mappa'){
+                await page.waitForSelector('.leaflet-container',{timeout:15000}).catch(()=>{});
+                const text=(await page.locator('body').innerText()).toLowerCase();
+                if(!text.includes('53 attività sulla mappa')) failures.push('map count mismatch');
+                if(await page.locator('.cv-map-cluster-shell').count()<1) failures.push('map clusters missing');
+              }
+              await context.close();
+            }
+            for(const route of ['/profilo','/preferiti','/dashboard','/messaggi','/aggiungi-attivita','/admin','/admin/blog']){
+              const context=await browser.newContext({serviceWorkers:'block'});
+              const page=await context.newPage();
+              const errors=[];
+              page.on('pageerror',e=>errors.push(String(e.message||e)));
+              await page.goto(`${base}${route}?final-live=${sha}`,{waitUntil:'domcontentloaded',timeout:25000}).catch(()=>null);
+              await page.waitForFunction(()=>location.pathname==='/login',{timeout:12000}).catch(()=>{});
+              if(new URL(page.url()).pathname!=='/login') failures.push(`${route}: anonymous redirect missing`);
+              if(errors.length) failures.push(`${route}: ${errors.join(' | ')}`);
+              await context.close();
+            }
+            const context=await browser.newContext({serviceWorkers:'block'});
+            const page=await context.newPage();
+            const backup=await page.goto(`${base}/backup?final-live=${sha}`,{waitUntil:'domcontentloaded',timeout:25000}).catch(()=>null);
+            await page.waitForSelector('#backup-root',{timeout:12000}).catch(()=>{});
+            if(!backup||backup.status()!==200||await page.locator('#backup-root').count()!==1) failures.push('/backup mismatch');
+            await context.close();
+          } finally { await browser.close(); }
+          if(failures.length){ console.error(failures.join('\n')); process.exit(1); }
+          console.log(`FINAL_PRODUCTION_BROWSER_GREEN=${sha}`);
+          NODE
