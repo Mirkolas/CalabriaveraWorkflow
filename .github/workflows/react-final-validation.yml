@@ -41,7 +41,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          test "$(git -C source rev-parse HEAD)" = "c828a8a22ac045a3c307df71063c852e4a950eaa"
+          test "$(git -C source rev-parse HEAD)" = "a10c3653d11c6007fbe55767ecd5adf66f3fd787"
       - uses: actions/setup-node@v7
         with:
           node-version: '24'
@@ -75,6 +75,8 @@ jobs:
           test -s source/frontend-react/dist/index.html
           test -s source/frontend-react/dist/catalogo/index.html
           test -s source/frontend-react/dist/blog/index.html
+          test ! -e source/frontend-react/src/generated/tourism-data-core.js
+          test ! -e source/frontend-react/src/generated/tourism-data-core.d.ts
           grep -q 'react-live-parity.css' source/frontend-react/dist/catalogo/index.html
           grep -q 'catalog-activity-cover.css' source/frontend-react/dist/catalogo/index.html
           grep -q 'cv-react-magazine' source/frontend-react/dist/blog/index.html
@@ -88,9 +90,12 @@ jobs:
           generated=Path('source/frontend-react/src/generated/tourism-data-core.ts').read_text(encoding='utf-8')
           ids=re.findall(r'"id"\s*:\s*"([^"]+)"',generated)
           assert len(ids)==52 and len(set(ids))==52, len(ids)
-          assert 'turismo-isola-dino' in ids
+          for wanted in ['turismo-isola-dino','turismo-catanzaro-centro','turismo-paola-san-francesco']:
+              assert wanted in ids, wanted
           bundle='\n'.join(p.read_text(encoding='utf-8',errors='ignore') for p in Path('source/frontend-react/dist/assets').glob('*.js'))
           assert '20260912-catalog-map-v2' in bundle
+          assert 'turismo-isola-dino' in bundle
+          assert 'turismo-catanzaro-centro' in bundle
           print('FINAL_GENERATED_ASSETS_GREEN')
           PY
           git -C source diff --check
