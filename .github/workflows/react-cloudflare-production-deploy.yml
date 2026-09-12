@@ -1,0 +1,100 @@
+name: React Cloudflare production deploy
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/react-cloudflare-production-deploy.yml'
+
+permissions:
+  contents: read
+
+env:
+  CERTIFIED_SHA: 69b947782cbc7921cdbb3a489125c26632cee574
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      PRIVATE_REPO_PAT: ${{ secrets.PRIVATE_REPO_PAT || secrets.PERSONAL_ACCESS_TOKEN || secrets.PAT || secrets.GH_PAT || secrets.GITHUB_PAT }}
+      CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+      CLOUDFLARE_ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
+    steps:
+      - name: Preflight credentials
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -n "$PRIVATE_REPO_PAT" || { echo '::error::PAT repository privato mancante'; exit 1; }
+          test -n "$CLOUDFLARE_API_TOKEN" || { echo '::error::CLOUDFLARE_API_TOKEN mancante'; exit 1; }
+          test -n "$CLOUDFLARE_ACCOUNT_ID" || { echo '::error::CLOUDFLARE_ACCOUNT_ID mancante'; exit 1; }
+
+      - name: Checkout exact private main
+        uses: actions/checkout@v7
+        with:
+          repository: Mirkolas/calabriavera
+          token: ${{ env.PRIVATE_REPO_PAT }}
+          ref: main
+          path: source
+          persist-credentials: false
+          fetch-depth: 1
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version: '22'
+
+      - name: Require the certified main SHA
+        shell: bash
+        run: |
+          set -euo pipefail
+          actual="$(git -C source rev-parse HEAD)"
+          echo "Private main: $actual"
+          test "$actual" = "$CERTIFIED_SHA" || { echo "::error::main changed after certification; refusing production deploy"; exit 1; }
+
+      - name: Re-run full regression suite
+        working-directory: source
+        shell: bash
+        run: |
+          set -euo pipefail
+          npm ci --no-audit --no-fund
+          npm test
+
+      - name: Build certified React production bundle
+        working-directory: source/frontend-react
+        env:
+          CV_PRERENDER_OFFLINE: '1'
+        shell: bash
+        run: |
+          set -euo pipefail
+          npm ci --no-audit --no-fund
+          npm run build
+          test "$(tr -d '\r\n' < public/build-version.txt)" = "$CERTIFIED_SHA"
+          test "$(tr -d '\r\n' < dist/build-version.txt)" = "$CERTIFIED_SHA"
+
+      - name: Deploy Worker and React assets to Cloudflare
+        working-directory: source/frontend-react
+        shell: bash
+        run: |
+          set -euo pipefail
+          npx wrangler deploy
+
+      - name: Verify production serves certified React build
+        shell: bash
+        run: |
+          set -euo pipefail
+          expected="$CERTIFIED_SHA"
+          version="$(curl --fail --silent --show-error --location \
+            --connect-timeout 8 --max-time 30 --retry 5 --retry-all-errors \
+            -H 'Cache-Control: no-cache' \
+            "https://calabriavera.com/build-version.txt?cert=$GITHUB_RUN_ID" | tr -d '\r\n')"
+          echo "Production build version: $version"
+          test "$version" = "$expected" || { echo "::error::calabriavera.com non sta servendo lo SHA certificato"; exit 1; }
+          for path in / /catalogo /mappa /blog /chi-siamo; do
+            code="$(curl --silent --output /dev/null --write-out '%{http_code}' \
+              --connect-timeout 8 --max-time 30 --retry 3 --retry-all-errors \
+              -H 'Cache-Control: no-cache' "https://calabriavera.com${path}?cert=$GITHUB_RUN_ID")"
+            echo "$path -> $code"
+            test "$code" = '200'
+          done
+          echo 'Produzione Cloudflare verificata sullo SHA certificato.'
