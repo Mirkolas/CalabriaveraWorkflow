@@ -1,0 +1,103 @@
+name: Cloudflare R2 - Static Images
+
+on:
+  workflow_dispatch:
+  repository_dispatch:
+    types: [source-deploy]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: cloudflare-r2-static-images
+  cancel-in-progress: false
+
+env:
+  R2_BUCKET: calabriavera-images
+  CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+  CLOUDFLARE_ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
+  PRIVATE_REPO: ${{ secrets.PRIVATE_REPO }}
+  PRIVATE_REPO_PAT: ${{ secrets.PRIVATE_REPO_PAT || secrets.PERSONAL_ACCESS_TOKEN || secrets.PAT || secrets.GH_PAT || secrets.GITHUB_PAT }}
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Verifica configurazione
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -n "$CLOUDFLARE_API_TOKEN" || { echo "::error::CLOUDFLARE_API_TOKEN mancante"; exit 1; }
+          test -n "$CLOUDFLARE_ACCOUNT_ID" || { echo "::error::CLOUDFLARE_ACCOUNT_ID mancante"; exit 1; }
+          test -n "$PRIVATE_REPO" || { echo "::error::PRIVATE_REPO mancante"; exit 1; }
+          test -n "$PRIVATE_REPO_PAT" || { echo "::error::PAT repository privato mancante"; exit 1; }
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version: '22'
+
+      - name: Scarica sorgente privato
+        uses: actions/checkout@v7
+        with:
+          repository: ${{ secrets.PRIVATE_REPO }}
+          token: ${{ env.PRIVATE_REPO_PAT }}
+          ref: main
+          path: source
+          persist-credentials: false
+
+      - name: Sincronizza immagini statiche in R2
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          upload() {
+            local relative="$1"
+            local content_type="$2"
+            local source_path="source/$relative"
+            local object_path="$R2_BUCKET/static/$relative"
+            test -s "$source_path" || { echo "::error::Immagine statica mancante: $relative"; exit 1; }
+            echo "R2 <- $relative"
+            npx --yes wrangler@4 r2 object put "$object_path" \
+              --file "$source_path" \
+              --content-type "$content_type" \
+              --cache-control 'public, max-age=86400' \
+              --remote \
+              --force
+          }
+
+          upload assets/Logo.webp image/webp
+          upload assets/Logo.png image/png
+          upload assets/favicon.ico image/x-icon
+          upload assets/favicon-16x16.png image/png
+          upload assets/favicon-32x32.png image/png
+          upload assets/apple-touch-icon.png image/png
+          upload assets/android-chrome-192x192.png image/png
+          upload assets/android-chrome-512x512.png image/png
+          upload assets/images/favicon-96.png image/png
+          upload assets/images/icon-192.png image/png
+          upload assets/images/icon-512.png image/png
+          upload assets/images/og-calabriavera.png image/png
+          upload assets/images/home/tropea-960.webp image/webp
+          upload assets/images/home/tropea-1600.webp image/webp
+          upload assets/images/home/sila-720.webp image/webp
+          upload assets/images/home/sila-1280.webp image/webp
+          upload assets/images/home/scilla-720.webp image/webp
+          upload assets/images/home/capo-colonna-720.webp image/webp
+          upload assets/flags/it.svg image/svg+xml
+          upload assets/flags/en.svg image/svg+xml
+          upload assets/flags/fr.svg image/svg+xml
+          upload assets/flags/de.svg image/svg+xml
+          upload assets/flags/es.svg image/svg+xml
+
+      - name: Verifica CDN R2
+        shell: bash
+        run: |
+          set -euo pipefail
+          for url in \
+            https://img.calabriavera.com/static/assets/Logo.webp \
+            https://img.calabriavera.com/static/assets/images/home/tropea-960.webp \
+            https://img.calabriavera.com/static/assets/images/og-calabriavera.png; do
+            curl --fail --silent --show-error --head --retry 5 --retry-delay 2 "$url" >/dev/null
+            echo "OK $url"
+          done
