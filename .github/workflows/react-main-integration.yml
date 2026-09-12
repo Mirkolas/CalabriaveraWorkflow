@@ -34,7 +34,7 @@ jobs:
         with:
           node-version: '22'
 
-      - name: Merge certified React into current main
+      - name: Merge certified React and preserve current R2 image architecture
         working-directory: source
         shell: bash
         run: |
@@ -44,8 +44,59 @@ jobs:
           git config user.name 'CalabriaVera Public Runner'
           git config user.email 'actions@users.noreply.github.com'
           git checkout -b react-main-integration-final "$EXPECTED_MAIN_SHA"
+
+          set +e
           git merge --no-ff "$CERTIFIED_REACT_SHA" -m 'merge: integrate certified React migration [skip ci]'
+          rc=$?
+          set -e
+
+          if [ "$rc" -ne 0 ]; then
+            mapfile -t conflicts < <(git diff --name-only --diff-filter=U | sort)
+            printf 'Conflicts: %s\n' "${conflicts[*]}"
+            test "${#conflicts[@]}" -eq 2
+            test "${conflicts[0]}" = 'frontend-react/src/components/Layout.tsx'
+            test "${conflicts[1]}" = 'frontend-react/src/pages/OriginalHomePage.tsx'
+
+            git checkout --theirs -- frontend-react/src/components/Layout.tsx frontend-react/src/pages/OriginalHomePage.tsx
+
+            python - <<'PY'
+          from pathlib import Path
+
+          layout = Path('frontend-react/src/components/Layout.tsx')
+          text = layout.read_text()
+          old = 'const LOGO = "/assets/Logo.webp";'
+          if old not in text:
+              raise SystemExit('React LOGO target missing')
+          layout.write_text(text.replace(old, 'const LOGO = "https://img.calabriavera.com/static/assets/Logo.png";', 1))
+
+          home = Path('frontend-react/src/pages/OriginalHomePage.tsx')
+          text = home.read_text()
+          if 'const STATIC_IMAGE_CDN = "https://img.calabriavera.com/static";' not in text:
+              anchor = 'import { MAIN_COMMON_CITIES } from "../generated/main-static-options";\n\n'
+              if anchor not in text:
+                  raise SystemExit('Home CDN insertion point missing')
+              text = text.replace(anchor, anchor + 'const STATIC_IMAGE_CDN = "https://img.calabriavera.com/static";\n', 1)
+          for asset in [
+              'assets/images/home/tropea-960.webp',
+              'assets/images/home/sila-720.webp',
+              'assets/images/home/scilla-720.webp',
+              'assets/images/home/capo-colonna-720.webp',
+          ]:
+              text = text.replace(f'image: "/{asset}"', f'image: `${{STATIC_IMAGE_CDN}}/{asset}`')
+          hero = 'src="/assets/Logo.png"'
+          if hero not in text:
+              raise SystemExit('Home logo target missing')
+          text = text.replace(hero, 'src={`${STATIC_IMAGE_CDN}/assets/Logo.png`}', 1)
+          home.write_text(text)
+          PY
+
+            git add frontend-react/src/components/Layout.tsx frontend-react/src/pages/OriginalHomePage.tsx
+            git diff --check
+            git commit -m 'merge: integrate certified React migration with R2 assets [skip ci]'
+          fi
+
           echo "INTEGRATION_SHA=$(git rev-parse HEAD)" >> "$GITHUB_ENV"
+          git log -1 --oneline
 
       - name: Validate complete repository after merge
         working-directory: source
