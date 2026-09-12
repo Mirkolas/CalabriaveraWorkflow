@@ -40,14 +40,13 @@ jobs:
           python3 - <<'PY'
           from pathlib import Path
           import re
-          p=Path('source/frontend-react/src/generated/tourism-data-core.ts')
-          text=p.read_text(encoding='utf-8')
+          text=Path('source/frontend-react/src/generated/tourism-data-core.ts').read_text(encoding='utf-8')
           ids=re.findall(r'"id"\s*:\s*"([^"]+)"', text)
-          print('COMMITTED_GENERATED_COUNT', len(ids))
-          print('COMMITTED_HAS_ISOLA_DINO', 'turismo-isola-dino' in ids)
-          assert len(ids)==52
+          print('COMMITTED_GENERATED_COUNT',len(ids))
+          print('COMMITTED_HAS_ISOLA_DINO','turismo-isola-dino' in ids)
+          assert len(ids)==52 and len(set(ids))==52
           PY
-      - name: Build locally and inspect emitted dataset module
+      - name: Build locally and inspect emitted client dataset module
         working-directory: source/frontend-react
         shell: bash
         run: |
@@ -57,15 +56,15 @@ jobs:
           node --input-type=module <<'NODE'
           import fs from 'node:fs';
           import path from 'node:path';
-          const dir='dist-ssr/assets';
+          const dir='dist/assets';
           const file=fs.readdirSync(dir).find(x=>x.startsWith('tourism-data-core-')&&x.endsWith('.js'));
-          if(!file) throw new Error('SSR tourism chunk missing');
-          const mod=await import(path.resolve(dir,file));
-          const arr=mod.TOURISM_BUSINESSES || Object.values(mod).find(v=>Array.isArray(v));
-          console.log('LOCAL_SSR_CHUNK', file);
-          console.log('LOCAL_RUNTIME_COUNT', arr?.length);
-          console.log('LOCAL_RUNTIME_HAS_ISOLA_DINO', !!arr?.some(x=>x?.id==='turismo-isola-dino'));
-          if(arr?.length!==52) process.exit(2);
+          if(!file) throw new Error('client tourism chunk missing');
+          const source=fs.readFileSync(path.join(dir,file),'utf8');
+          console.log('LOCAL_CLIENT_CHUNK',file);
+          console.log('LOCAL_CLIENT_BYTES',source.length);
+          console.log('LOCAL_CLIENT_HAS_ISOLA_DINO',source.includes('turismo-isola-dino'));
+          console.log('LOCAL_CLIENT_HAS_CATANZARO',source.includes('turismo-catanzaro-centro'));
+          if(!source.includes('turismo-isola-dino')) process.exit(2);
           NODE
       - name: Inspect exact staging HTML and loaded JavaScript graph
         shell: bash
@@ -80,29 +79,25 @@ jobs:
           base='https://calabriavera.sonotacamirko.workers.dev'
           html=Path('/tmp/catalog.html').read_text(encoding='utf-8',errors='ignore')
           urls=set(re.findall(r'(?:src|href)=["\']([^"\']+\.js(?:\?[^"\']*)?)["\']',html))
-          print('HTML_JS', sorted(urls))
-          queue=list(urls); seen=set()
-          out=Path('/tmp/staging-assets')
+          print('HTML_JS',sorted(urls))
+          queue=list(urls); seen=set(); out=Path('/tmp/staging-assets')
           while queue:
-              u=queue.pop(0)
-              full=urllib.parse.urljoin(base+'/',u)
+              u=queue.pop(0); full=urllib.parse.urljoin(base+'/',u)
               if full in seen: continue
               seen.add(full)
-              try:
-                  data=urllib.request.urlopen(full,timeout=20).read().decode('utf-8','ignore')
-              except Exception as e:
-                  print('FETCH_ERROR',full,e); continue
+              try: data=urllib.request.urlopen(full,timeout=20).read().decode('utf-8','ignore')
+              except Exception as e: print('FETCH_ERROR',full,e); continue
               name=urllib.parse.urlparse(full).path.rsplit('/',1)[-1]
               (out/name).write_text(data,encoding='utf-8')
               for dep in re.findall(r'["\'](\.?/?[^"\']+\.js)["\']',data):
-                  if dep.startswith('.') or dep.startswith('/assets/'):
-                      queue.append(urllib.parse.urljoin(full,dep))
+                  if dep.startswith('.') or dep.startswith('/assets/'): queue.append(urllib.parse.urljoin(full,dep))
           merged='\n'.join(p.read_text(encoding='utf-8',errors='ignore') for p in out.glob('*.js'))
           print('STAGING_JS_FILES',len(list(out.glob('*.js'))))
           print('STAGING_HAS_REVISION','20260912-catalog-map-v2' in merged)
           print('STAGING_HAS_ISOLA_DINO','turismo-isola-dino' in merged)
-          print('STAGING_HAS_OLD_TROPEA','turismo-centro-storico-tropea' in merged)
+          print('STAGING_HAS_CATANZARO','turismo-catanzaro-centro' in merged)
           for p in sorted(out.glob('*tourism*')):
-              print('STAGING_TOURISM_ASSET',p.name,p.stat().st_size,'isola=', 'turismo-isola-dino' in p.read_text(encoding='utf-8',errors='ignore'))
+              s=p.read_text(encoding='utf-8',errors='ignore')
+              print('STAGING_TOURISM_ASSET',p.name,p.stat().st_size,'isola=', 'turismo-isola-dino' in s)
           assert '20260912-catalog-map-v2' in merged
           PY
