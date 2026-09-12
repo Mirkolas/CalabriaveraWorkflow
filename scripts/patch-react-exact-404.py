@@ -1,0 +1,28 @@
+from pathlib import Path
+
+p = Path('frontend-react/src/App.tsx')
+s = p.read_text()
+
+old_import = 'import { navigate, useLocationSnapshot } from "./lib/navigation";'
+new_import = 'import { navigate, useLocationSnapshot } from "./lib/navigation";\nimport { setPageSeo } from "./lib/seo";'
+if old_import not in s:
+    raise SystemExit('navigation import contract changed')
+if 'import { setPageSeo } from "./lib/seo";' not in s:
+    s = s.replace(old_import, new_import, 1)
+
+start = s.index('function NotFoundPage() {')
+end = s.index('\nfunction RouteView()', start)
+legacy = '''function NotFoundPage() {
+  useEffect(() => {
+    setPageSeo({
+      title: "Pagina non trovata | CalabriaVera",
+      description: "CalabriaVera: il portale locale delle attività e dei servizi della Calabria.",
+      path: "/404",
+      robots: "noindex,follow",
+    });
+  }, []);
+  return <section className="section container"><p className="eyebrow">CalabriaVera</p><h1>Pagina non trovata</h1><div className="prose"><p>La pagina richiesta non è disponibile o è stata spostata.</p><div className="form-actions"><Link className="button button-primary" href="/">Torna alla home</Link><Link className="button button-secondary" href="/catalogo">Apri il catalogo</Link></div></div></section>;
+}
+'''
+s = s[:start] + legacy + s[end:]
+p.write_text(s)
