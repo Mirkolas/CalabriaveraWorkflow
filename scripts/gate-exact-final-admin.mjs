@@ -64,7 +64,7 @@ async function open(browser,origin,path,name){
   const c=await browser.newContext({viewport:{width:1365,height:900},serviceWorkers:'block'});await installMocks(c);const p=await c.newPage();const errors=[];p.on('pageerror',e=>errors.push(String(e.message||e)));await p.goto(origin+path,{waitUntil:'domcontentloaded',timeout:30000});await p.locator('#admin-root').waitFor({state:'attached',timeout:15000});await settle(p,name);return{c,p,errors};
 }
 const routes=[
- ['index','/admin'],['attivita','/admin/attivita'],['recensioni','/admin/recensioni'],['segnalazioni','/admin/segnalazioni'],['utenti','/admin/utenti'],['comunicazioni','/admin/comunicazioni'],['messaggi','/admin/messaggi'],['blog','/admin/blog'],['categorie','/admin/categorie'],['impostazioni','/admin/impostazioni'],['seo','/admin/seo'],['sistema','/admin/sistema']
+ ['index','/admin'],['attivita','/admin/attivita'],['recensioni','/admin/recensioni'],['segnalazioni','/admin/segnalazioni'],['utenti','/admin/utenti'],['comunicazioni','/admin/comunicazioni'],['messaggi','/admin/messaggi'],['blog','/admin/blog'],['categorie','/admin/categorie'],['comuni','/admin/comuni'],['impostazioni','/admin/impostazioni'],['seo','/admin/seo'],['sistema','/admin/sistema']
 ];
 const browser=await chromium.launch({headless:true});const failures=[];
 for(const [name,path] of routes){
