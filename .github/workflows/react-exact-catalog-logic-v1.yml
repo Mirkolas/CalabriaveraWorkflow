@@ -48,7 +48,8 @@ jobs:
           grep -Fq 'if (filters.sort === "rating")' legacy/assets/js/catalog.js
           grep -Fq 'if (filters.sort === "oldest")' legacy/assets/js/catalog.js
           if grep -Fq 'filters.sort === "name"' legacy/assets/js/catalog.js; then echo 'Unexpected legacy name sort'; exit 1; fi
-          grep -Fq 'localized(item, "name")' legacy/assets/js/catalog.js
+          grep -Fq 'localized(item, "name", currentLang())' legacy/assets/js/catalog.js
+          grep -Fq '...(item.keywords || [])' legacy/assets/js/catalog.js
 
       - name: Apply exact catalog logic and build
         shell: bash
