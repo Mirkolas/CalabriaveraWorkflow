@@ -3,7 +3,9 @@ name: React exact built 404 parity v1
 on:
   push:
     branches: [main]
-    paths: ['.github/workflows/react-exact-404-parity-v1.yml']
+    paths:
+      - '.github/workflows/react-exact-404-parity-v1.yml'
+      - 'scripts/patch-react-exact-404.py'
   workflow_dispatch:
 
 permissions:
@@ -16,7 +18,7 @@ jobs:
     env:
       PRIVATE_REPO_PAT: ${{ secrets.PRIVATE_REPO_PAT || secrets.PERSONAL_ACCESS_TOKEN || secrets.PAT || secrets.GH_PAT || secrets.GITHUB_PAT }}
       LEGACY_SHA: 7be434e3418e95cff9825e4cc3f4b4ed75cd1076
-      EXPECTED_BASE: f16b18b93d91b4e1ac278351c6ef7507f3f7a04e
+      EXPECTED_BASE: 5f145eee5a37c4d765a758f01b83e61e62c3ef0c
     steps:
       - uses: actions/checkout@v7
         with: {path: workflow, persist-credentials: false}
@@ -50,6 +52,7 @@ jobs:
           cd source
           python3 ../workflow/scripts/patch-react-exact-404.py
           grep -Fq 'exact built 404 parity' frontend-react/public/assets/css/react-live-parity.css
+          grep -Fq 'body[data-page="notFound"] .site-header' frontend-react/public/assets/css/react-live-parity.css
           grep -Fq 'noindex,follow' frontend-react/src/App.tsx
           cd frontend-react
           npm ci
