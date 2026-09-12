@@ -69,12 +69,14 @@ css = css_path.read_text()
 marker = '/* exact built 404 parity */'
 block = r'''
 /* exact built 404 parity */
-body[data-page="notFound"] .site-header .header-inner{min-height:72px}
-body[data-page="notFound"] #main-content>section.section.container{width:min(1200px,calc(100% - 18px));max-width:1440px;margin-inline:auto;padding:57.33px 0}
+body[data-page="notFound"] .site-header{height:64px!important;min-height:64px!important}
+body[data-page="notFound"] .site-header .header-inner{height:64px!important;min-height:64px!important;padding:6.4px 0!important}
+body[data-page="notFound"] #main-content>section.section.container{width:min(1200px,calc(100% - 18px))!important;max-width:1440px!important;margin:8px auto 0!important;padding:57.33px 0!important}
 body[data-page="notFound"] #main-content h1{font-family:Georgia,"Times New Roman",serif;font-size:75.075px;font-weight:700;line-height:73.5735px;letter-spacing:-2.1021px;color:#172033;max-width:920px;margin:2.4px 0 12.8px}
+body[data-page="notFound"] #main-content .prose{max-width:817.28px!important}
 body[data-page="notFound"] #main-content .form-actions{gap:8px}
-body[data-page="notFound"] #main-content .form-actions .button{font-family:Inter,ui-sans-serif,system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;font-size:16.48px;line-height:27.192px;padding:10.24px 14.72px;letter-spacing:normal;max-width:100%}
-@media(max-width:700px){body[data-page="notFound"] #main-content>section.section.container{width:calc(100% - 18px);max-width:1200px;padding:28px 0}body[data-page="notFound"] #main-content h1{font-size:31.2px;line-height:32.76px;letter-spacing:-.8736px}}
+body[data-page="notFound"] #main-content .form-actions .button{font-family:Inter,ui-sans-serif,system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif!important;font-size:16.48px!important;font-weight:760!important;line-height:27.192px!important;padding:10.24px 14.72px!important;letter-spacing:normal!important;max-width:100%}
+@media(max-width:700px){body[data-page="notFound"] .site-header{height:60px!important;min-height:60px!important}body[data-page="notFound"] .site-header .header-inner{height:60px!important;min-height:60px!important;padding:5.6px 0!important}body[data-page="notFound"] #main-content>section.section.container{width:calc(100% - 18px)!important;max-width:1200px!important;margin-top:12px!important;padding:28px 0!important}body[data-page="notFound"] #main-content h1{font-size:31.2px;line-height:32.76px;letter-spacing:-.8736px}body[data-page="notFound"] #main-content .prose{max-width:none!important}}
 '''.strip()
 if marker in css:
     css = css[:css.index(marker)].rstrip() + '\n' + block + '\n'
