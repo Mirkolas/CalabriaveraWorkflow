@@ -1,0 +1,185 @@
+name: Production repair v2 - React Firestore R2 SEO
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/production-repair-2026-09-12-v2.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: production-repair-2026-09-12-v2
+  cancel-in-progress: false
+
+env:
+  PRIVATE_REPO: ${{ secrets.PRIVATE_REPO }}
+  PRIVATE_REPO_PAT: ${{ secrets.PRIVATE_REPO_PAT || secrets.PERSONAL_ACCESS_TOKEN || secrets.PAT || secrets.GH_PAT || secrets.GITHUB_PAT }}
+  CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+  CLOUDFLARE_ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
+  R2_BUCKET: calabriavera-images
+
+jobs:
+  repair-test-deploy:
+    runs-on: ubuntu-latest
+    timeout-minutes: 35
+    steps:
+      - name: Verifica configurazione
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -n "$PRIVATE_REPO" || { echo '::error::PRIVATE_REPO mancante'; exit 1; }
+          test -n "$PRIVATE_REPO_PAT" || { echo '::error::PAT repository privato mancante'; exit 1; }
+          test -n "$CLOUDFLARE_API_TOKEN" || { echo '::error::CLOUDFLARE_API_TOKEN mancante'; exit 1; }
+          test -n "$CLOUDFLARE_ACCOUNT_ID" || { echo '::error::CLOUDFLARE_ACCOUNT_ID mancante'; exit 1; }
+
+      - name: Scarica runner pubblico
+        uses: actions/checkout@v7
+        with:
+          path: workflow-repo
+          persist-credentials: false
+
+      - name: Scarica main privato
+        uses: actions/checkout@v7
+        with:
+          repository: ${{ secrets.PRIVATE_REPO }}
+          token: ${{ env.PRIVATE_REPO_PAT }}
+          ref: main
+          path: source
+          persist-credentials: true
+          fetch-depth: 1
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version: '22'
+
+      - name: Normalizza preload gia corretto per patch idempotente
+        shell: bash
+        run: |
+          set -euo pipefail
+          sed -i 's#https://img.calabriavera.com/static/assets/Logo.webp#/assets/Logo.webp#' source/frontend-react/index.html
+
+      - name: Applica correzioni produzione
+        run: node workflow-repo/scripts/repair-production-2026-09-12.mjs source
+
+      - name: Verifica diff limitato
+        shell: bash
+        run: |
+          set -euo pipefail
+          git -C source diff --check -- \
+            frontend-react/src/components/Layout.tsx \
+            frontend-react/index.html \
+            frontend-react/src/lib/businesses.ts \
+            frontend-react/src/pages/MessagesPage.tsx \
+            frontend-react/src/pages/MagazinePage.tsx \
+            frontend-react/src/lib/magazine.ts \
+            frontend-react/worker.ts
+          git -C source status --short
+
+      - name: Suite completa privata
+        working-directory: source
+        run: |
+          set -euo pipefail
+          npm ci --no-audit --no-fund
+          npm test
+
+      - name: Build React offline prima del commit
+        working-directory: source/frontend-react
+        env:
+          CV_PRERENDER_OFFLINE: '1'
+        run: |
+          set -euo pipefail
+          npm ci --no-audit --no-fund
+          npm run build
+
+      - name: Commit privato senza Actions private
+        id: commit
+        working-directory: source
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name 'CalabriaVera Public Workflow'
+          git config user.email 'actions@users.noreply.github.com'
+          git add \
+            frontend-react/src/components/Layout.tsx \
+            frontend-react/index.html \
+            frontend-react/src/lib/businesses.ts \
+            frontend-react/src/pages/MessagesPage.tsx \
+            frontend-react/src/pages/MagazinePage.tsx \
+            frontend-react/src/lib/magazine.ts \
+            frontend-react/worker.ts
+          if git diff --cached --quiet; then
+            echo 'Nessuna modifica da committare.'
+          else
+            git commit -m 'fix: production SEO R2 business UI and Firestore reads [skip ci]'
+            git push origin HEAD:main
+          fi
+          sha="$(git rev-parse HEAD)"
+          echo "sha=$sha" >> "$GITHUB_OUTPUT"
+          echo "Private main: $sha"
+
+      - name: Pubblica asset statici mancanti su R2
+        shell: bash
+        run: |
+          set -euo pipefail
+          put() {
+            local rel="$1" type="$2"
+            test -s "source/$rel"
+            npx --yes wrangler@4 r2 object put "$R2_BUCKET/static/$rel" \
+              --file "source/$rel" --content-type "$type" \
+              --cache-control 'public, max-age=86400' --remote --force
+          }
+          put assets/Logo.webp image/webp
+          put assets/images/blog-default-events.png image/png
+          put assets/images/blog-default-news.png image/png
+
+      - name: Build finale sul nuovo SHA
+        working-directory: source/frontend-react
+        env:
+          CV_PRERENDER_OFFLINE: '1'
+        shell: bash
+        run: |
+          set -euo pipefail
+          npm run build
+          test "$(tr -d '\r\n' < dist/build-version.txt)" = "${{ steps.commit.outputs.sha }}"
+
+      - name: Deploy Worker e React su Cloudflare
+        working-directory: source/frontend-react
+        run: npx wrangler deploy
+
+      - name: Verifica R2, SEO, redirect e produzione
+        env:
+          SHA: ${{ steps.commit.outputs.sha }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          retry_curl() { curl --fail --silent --show-error --location --connect-timeout 8 --max-time 30 --retry 6 --retry-delay 3 --retry-all-errors "$@"; }
+          for url in \
+            https://img.calabriavera.com/static/assets/Logo.webp \
+            https://img.calabriavera.com/static/assets/images/blog-default-events.png \
+            https://img.calabriavera.com/static/assets/images/blog-default-news.png; do
+            retry_curl --head "$url" >/dev/null
+            echo "OK R2 $url"
+          done
+
+          version="$(retry_curl -H 'Cache-Control: no-cache' "https://calabriavera.com/build-version.txt?repair=$GITHUB_RUN_ID" | tr -d '\r\n')"
+          test "$version" = "$SHA"
+
+          clean='/attivita/reggio-calabria/marina-di-gioiosa-ionica/b-e-b/le-ninfee-b-e-b'
+          dated='/attivita/reggio-calabria/marina-di-gioiosa-ionica/b-e-b/le-ninfee-b-e-b2026-09-05'
+          html="$(retry_curl -H 'Cache-Control: no-cache' "https://calabriavera.com${clean}?repair=$GITHUB_RUN_ID")"
+          printf '%s' "$html" | grep -Eqi '<meta[^>]+name=["'"']robots["'"'][^>]+content=["'"']index,follow'
+          if printf '%s' "$html" | grep -Eqi '<meta[^>]+name=["'"']robots["'"'][^>]+noindex'; then echo '::error::.com contiene ancora noindex'; exit 1; fi
+          printf '%s' "$html" | grep -Fq '<link rel="canonical" href="https://calabriavera.com/attivita/reggio-calabria/marina-di-gioiosa-ionica/b-e-b/le-ninfee-b-e-b"'
+
+          headers="$(curl --silent --show-error --head --connect-timeout 8 --max-time 30 "https://calabriavera.com${dated}")"
+          printf '%s' "$headers" | grep -Eqi '^HTTP/[^ ]+ 301'
+          printf '%s' "$headers" | grep -Fiq "location: https://calabriavera.com${clean}"
+
+          staging="$(retry_curl -H 'Cache-Control: no-cache' "https://calabriavera.sonotacamirko.workers.dev${clean}?repair=$GITHUB_RUN_ID")"
+          printf '%s' "$staging" | grep -Eqi '<meta[^>]+name=["'"']robots["'"'][^>]+content=["'"']noindex,nofollow'
+
+          retry_curl --head 'https://calabriavera.com/assets/images/businesses/5e0b9fe8f00df39c29857919-1440.webp' >/dev/null
+          echo 'Produzione verificata: logo R2, fallback Magazine, robots/canonical, redirect slug e immagine business legacy.'
