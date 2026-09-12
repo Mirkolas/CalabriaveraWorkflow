@@ -66,7 +66,7 @@ jobs:
           text = p.read_text(encoding='utf-8')
           text = text.replace("if 'UPLOAD_CORS_ORIGINS' not in text:", "if 'UPLOAD_CORS_ORIGINS' not in text and 'R2_UPLOAD_ORIGINS' not in text:")
           text = text.replace("elif new.strip() not in text:\n    raise SystemExit('worker upload dispatch anchor missing')", "elif new.strip() not in text and 'uploadPreflight(request)' not in text:\n    raise SystemExit('worker upload dispatch anchor missing')")
-          text = text.replace('attività sulla mappa', 'map-panel')
+          text = text.replace('attività sulla mappa', 'data-prerender-path')
           p.write_text(text, encoding='utf-8')
           PY
       - name: Apply Firebase production bridge
@@ -87,21 +87,26 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+          check_file(){ test -s "$1" || { echo "::error::missing $1"; exit 1; }; }
+          check_text(){ grep -Fq "$1" "$2" || { echo "::error::$3 missing in $2"; exit 1; }; }
           npm ci
           npm run build
-          test -s dist/build-version.txt
-          test -s dist/catalogo/index.html
-          test -s dist/mappa/index.html
-          test -s dist/blog/index.html
-          test -s dist/legacy-data/public-businesses-v1.json
-          test -s dist/legacy-data/public-blog-v1.json
-          grep -q '53 attività trovate' dist/catalogo/index.html
-          grep -q 'turismo-isola-dino' dist/catalogo/index.html
-          grep -q 'map-panel' dist/mappa/index.html
-          grep -q 'index,follow,max-image-preview:large' dist/catalogo/index.html
-          grep -q 'noindex,nofollow' dist/app-shell.html
-          test "$(node -e "const p=require('./dist/legacy-data/public-businesses-v1.json');process.stdout.write(String((p.items||[]).length))")" -ge 1
-          test "$(node -e "const p=require('./dist/legacy-data/public-blog-v1.json');process.stdout.write(String((p.items||[]).length))")" -ge 200
+          check_file dist/build-version.txt
+          check_file dist/catalogo/index.html
+          check_file dist/mappa/index.html
+          check_file dist/blog/index.html
+          check_file dist/legacy-data/public-businesses-v1.json
+          check_file dist/legacy-data/public-blog-v1.json
+          check_text '53 attività trovate' dist/catalogo/index.html 'catalog total 53'
+          check_text 'turismo-isola-dino' dist/catalogo/index.html 'canonical tourism payload'
+          check_text 'data-prerender-path="/mappa"' dist/mappa/index.html 'map prerender marker'
+          check_text 'index,follow,max-image-preview:large' dist/catalogo/index.html 'public robots index'
+          check_text 'noindex,nofollow' dist/app-shell.html 'fallback robots noindex'
+          BUSINESS_COUNT="$(node -e "const p=require('./dist/legacy-data/public-businesses-v1.json');process.stdout.write(String((p.items||[]).length))")"
+          BLOG_COUNT="$(node -e "const p=require('./dist/legacy-data/public-blog-v1.json');process.stdout.write(String((p.items||[]).length))")"
+          test "$BUSINESS_COUNT" -ge 1 || { echo "::error::business snapshot empty"; exit 1; }
+          test "$BLOG_COUNT" -ge 200 || { echo "::error::blog snapshot too small: $BLOG_COUNT"; exit 1; }
+          echo "REACT_STATIC_BUILD_GREEN businesses=$BUSINESS_COUNT blog=$BLOG_COUNT"
       - name: Validate Worker still builds
         working-directory: source/frontend-react
         run: npx wrangler deploy --dry-run
