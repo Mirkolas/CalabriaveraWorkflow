@@ -35,7 +35,7 @@ jobs:
           ref: ${{ env.CANDIDATE_SHA }}
           path: source
           persist-credentials: false
-          fetch-depth: 1
+          fetch-depth: 0
 
       - name: Checkout exact pre-React oracle
         uses: actions/checkout@v7
