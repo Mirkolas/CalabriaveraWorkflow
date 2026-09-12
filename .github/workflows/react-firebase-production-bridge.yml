@@ -1,0 +1,102 @@
+name: React migration - Firebase production bridge
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/react-firebase-production-bridge.yml'
+      - 'scripts/patch-react-firebase-production.py'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  patch-and-validate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      PRIVATE_REPO: ${{ secrets.PRIVATE_REPO }}
+      PRIVATE_REPO_PAT: ${{ secrets.PRIVATE_REPO_PAT || secrets.PERSONAL_ACCESS_TOKEN || secrets.PAT || secrets.GH_PAT }}
+    steps:
+      - name: Checkout automation
+        uses: actions/checkout@v7
+        with:
+          path: automation
+      - name: Validate private repository access
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -n "$PRIVATE_REPO"
+          test -n "$PRIVATE_REPO_PAT"
+      - name: Checkout React migration
+        uses: actions/checkout@v7
+        with:
+          repository: ${{ secrets.PRIVATE_REPO }}
+          token: ${{ secrets.PRIVATE_REPO_PAT || secrets.PERSONAL_ACCESS_TOKEN || secrets.PAT || secrets.GH_PAT }}
+          ref: react-migration
+          path: source
+          persist-credentials: true
+          fetch-depth: 0
+      - uses: actions/setup-node@v7
+        with:
+          node-version: '24'
+      - name: Apply Firebase production bridge
+        run: python automation/scripts/patch-react-firebase-production.py
+      - name: Build React production
+        working-directory: source/frontend-react
+        shell: bash
+        run: |
+          set -euo pipefail
+          npm ci
+          npm run build
+          test -s dist/build-version.txt
+          test -s dist/catalogo/index.html
+          test -s dist/mappa/index.html
+          test -s dist/blog/index.html
+          test -s dist/legacy-data/public-businesses-v1.json
+          test -s dist/legacy-data/public-blog-v1.json
+          grep -q '53 attività trovate' dist/catalogo/index.html
+          grep -q 'turismo-isola-dino' dist/catalogo/index.html
+          grep -q 'index,follow,max-image-preview:large' dist/catalogo/index.html
+          test "$(node -e "const p=require('./dist/legacy-data/public-businesses-v1.json');process.stdout.write(String((p.items||[]).length))")" -ge 1
+          test "$(node -e "const p=require('./dist/legacy-data/public-blog-v1.json');process.stdout.write(String((p.items||[]).length))")" -ge 200
+      - name: Validate Worker still builds
+        working-directory: source/frontend-react
+        run: npx wrangler deploy --dry-run
+      - name: Validate Firebase Hosting locally
+        working-directory: source/frontend-react
+        env:
+          EXPECTED_SHA: ${{ github.sha }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          EXPECTED_SHA="$(cat dist/build-version.txt)"
+          export EXPECTED_SHA
+          npx --yes firebase-tools@15.22.1 emulators:exec --only hosting --project demo-calabriavera --config firebase.react.json "node scripts/smoke-firebase-static.mjs"
+      - name: Validate production bridge invariants
+        working-directory: source
+        shell: bash
+        run: |
+          set -euo pipefail
+          grep -q 'R2_UPLOAD_WORKER' frontend-react/src/lib/business-editor.ts
+          grep -q 'UPLOAD_CORS_ORIGINS' frontend-react/worker.ts
+          grep -q 'public-blog-v1.json' frontend-react/scripts/copy-legacy-assets.mjs
+          grep -q 'firebase.react.json' .github/workflows/firebase-deploy.yml
+          grep -q 'workflow_dispatch' .github/workflows/firebase-deploy.yml
+          git diff --check
+      - name: Commit and push bridge
+        working-directory: source
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name 'CalabriaVera Automation'
+          git config user.email 'actions@users.noreply.github.com'
+          git add frontend-react .github/workflows/firebase-deploy.yml
+          if git diff --cached --quiet; then
+            echo 'No changes to push.'
+            exit 0
+          fi
+          git commit -m 'deploy: prepare React Firebase production hosting'
+          git push origin HEAD:react-migration
+          echo "REACT_FIREBASE_BRIDGE_SHA=$(git rev-parse HEAD)"
