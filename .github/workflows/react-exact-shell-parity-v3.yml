@@ -1,0 +1,159 @@
+name: React exact backup parity - shell v3
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/react-exact-shell-parity-v3.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: react-exact-shell-parity-v3
+  cancel-in-progress: true
+
+jobs:
+  patch-and-gate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      PRIVATE_REPO: ${{ secrets.PRIVATE_REPO }}
+      PRIVATE_REPO_PAT: ${{ secrets.PRIVATE_REPO_PAT || secrets.PERSONAL_ACCESS_TOKEN || secrets.PAT || secrets.GH_PAT || secrets.GITHUB_PAT }}
+      LEGACY_SHA: 7be434e3418e95cff9825e4cc3f4b4ed75cd1076
+    steps:
+      - name: Verify access
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -n "$PRIVATE_REPO"; test -n "$PRIVATE_REPO_PAT"
+
+      - name: Checkout workflow tools
+        uses: actions/checkout@v7
+        with:
+          path: workflow
+          persist-credentials: false
+
+      - name: Checkout exact backup
+        uses: actions/checkout@v7
+        with:
+          repository: ${{ secrets.PRIVATE_REPO }}
+          token: ${{ env.PRIVATE_REPO_PAT }}
+          ref: backup-main-pre-react-2026-09-11
+          path: legacy
+          persist-credentials: false
+          fetch-depth: 1
+
+      - name: Checkout React branch
+        uses: actions/checkout@v7
+        with:
+          repository: ${{ secrets.PRIVATE_REPO }}
+          token: ${{ env.PRIVATE_REPO_PAT }}
+          ref: react-migration
+          path: source
+          persist-credentials: true
+          fetch-depth: 5
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version: '24'
+
+      - name: Apply exact shell patch and build
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git -C legacy rev-parse HEAD)" = "$LEGACY_SHA"
+          cd source
+          python3 ../workflow/scripts/patch-react-exact-shell-v3.py
+          cd frontend-react
+          npm ci
+          npm run build
+
+      - name: Install browser tooling
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p /tmp/cv-shell-v3
+          npm install --prefix /tmp/cv-shell-v3 --no-package-lock --no-save playwright@1.62.1 serve@14.2.4
+          /tmp/cv-shell-v3/node_modules/.bin/playwright install --with-deps chromium
+
+      - name: Start exact backup and React
+        shell: bash
+        run: |
+          set -euo pipefail
+          nohup /tmp/cv-shell-v3/node_modules/.bin/serve legacy -l 4184 >/tmp/cv-shell-v3-legacy.log 2>&1 & echo $! >/tmp/cv-shell-v3-legacy.pid
+          nohup /tmp/cv-shell-v3/node_modules/.bin/serve -s source/frontend-react/dist -l 4185 >/tmp/cv-shell-v3-react.log 2>&1 & echo $! >/tmp/cv-shell-v3-react.pid
+          for attempt in {1..30}; do
+            if curl -fsS http://127.0.0.1:4184/index.html >/dev/null && curl -fsS http://127.0.0.1:4185/ >/dev/null; then exit 0; fi
+            sleep 1
+          done
+          exit 1
+
+      - name: Compare exact shell backup to React
+        env:
+          PLAYWRIGHT_MODULE: /tmp/cv-shell-v3/node_modules/playwright
+        shell: bash
+        run: |
+          set -euo pipefail
+          node --input-type=module <<'NODE'
+          import { createRequire } from 'node:module';
+          const require=createRequire(import.meta.url),{chromium}=require(process.env.PLAYWRIGHT_MODULE);
+          const browser=await chromium.launch({headless:true});
+          const routes=[['home','/index.html','/'],['catalogo','/catalogo.html','/catalogo'],['mappa','/mappa.html','/mappa'],['blog','/blog.html','/blog'],['login','/login.html','/login'],['registrazione','/registrazione.html','/registrazione'],['privacy','/privacy-policy.html','/privacy-policy'],['cookie','/cookie-policy.html','/cookie-policy'],['termini','/termini.html','/termini'],['note-legali','/note-legali.html','/note-legali'],['chi-siamo','/chi-siamo.html','/chi-siamo'],['contatti','/contatti.html','/contatti']];
+          const modes=[['desktop',{width:1365,height:900}],['mobile',{width:390,height:844}]];
+          const consent={version:3,scope:'technical-only',savedAt:new Date().toISOString(),expiresAt:new Date(Date.now()+30*864e5).toISOString(),necessary:true,preferences:false,analytics:false,marketing:false,source:'gate'};
+          const bad=[];
+          const norm=x=>String(x||'').replace(/\s+/g,'');
+          try{
+            for(const [mode,viewport] of modes){
+              const context=await browser.newContext({viewport,serviceWorkers:'block'});
+              await context.addInitScript(v=>{try{localStorage.setItem('cv-cookie-consent-v3',JSON.stringify(v))}catch{}},consent);
+              for(const [name,legacyPath,reactPath] of routes){
+                const sides={};
+                for(const [side,origin,p] of [['legacy','http://127.0.0.1:4184',legacyPath],['react','http://127.0.0.1:4185',reactPath]]){
+                  const page=await context.newPage(),errors=[]; page.on('pageerror',e=>errors.push(String(e.message||e)));
+                  await page.goto(origin+p,{waitUntil:'domcontentloaded',timeout:30000}); await page.waitForTimeout(1200);
+                  const header=await page.locator('header.site-header').evaluate(el=>{const s=getComputedStyle(el),r=el.getBoundingClientRect(),logo=el.querySelector('.brand-logo')?.getBoundingClientRect(),inner=el.querySelector('.header-inner')?.getBoundingClientRect();return{bg:s.backgroundColor,height:r.height,position:s.position,logoW:logo?.width||0,logoH:logo?.height||0,innerH:inner?.height||0}}).catch(()=>null);
+                  const footerChildren=await page.locator('footer.footer .footer-grid').evaluate(el=>el.children.length).catch(()=>0);
+                  const menu=await page.locator('#menu-toggle').evaluate(el=>getComputedStyle(el).display).catch(()=>null);
+                  sides[side]={header,footerChildren,menu,errors}; await page.close();
+                }
+                const a=sides.legacy.header,b=sides.react.header,m=[];
+                if(!a||!b)m.push('header-missing'); else {
+                  if(norm(a.bg)!==norm(b.bg))m.push(`bg:${a.bg}!=${b.bg}`);
+                  if(Math.abs(a.height-b.height)>1)m.push(`height:${a.height}!=${b.height}`);
+                  if(a.position!==b.position)m.push(`position:${a.position}!=${b.position}`);
+                  if(Math.abs(a.logoW-b.logoW)>1||Math.abs(a.logoH-b.logoH)>1)m.push(`logo:${a.logoW}x${a.logoH}!=${b.logoW}x${b.logoH}`);
+                  if(Math.abs(a.innerH-b.innerH)>1)m.push(`inner:${a.innerH}!=${b.innerH}`);
+                }
+                if(sides.legacy.footerChildren!==sides.react.footerChildren)m.push(`footer:${sides.legacy.footerChildren}!=${sides.react.footerChildren}`);
+                if((sides.legacy.menu||'')!==(sides.react.menu||''))m.push(`menu:${sides.legacy.menu}!=${sides.react.menu}`);
+                if(sides.react.errors.length)m.push(`react-errors:${sides.react.errors.join(';')}`);
+                console.log(`${mode}/${name}: ${m.length?m.join(' | '):'OK'}`); if(m.length)bad.push({mode,name,m});
+              }
+              await context.close();
+            }
+          }finally{await browser.close()}
+          if(bad.length){console.error(JSON.stringify(bad,null,2));process.exit(1)}
+          console.log('EXACT_SHELL_GREEN');
+          NODE
+
+      - name: Commit exact shell to react-migration
+        working-directory: source
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name 'calabriavera-parity-bot'; git config user.email 'actions@users.noreply.github.com'
+          git add frontend-react/scripts/copy-legacy-assets.mjs frontend-react/src/components/Layout.tsx frontend-react/src/generated/main-route-css.ts frontend-react/public/main-route-css.json
+          git diff --cached --quiet && { echo 'No changes to commit'; exit 0; }
+          git commit -m 'fix: match shell and footer to exact pre-React backup'
+          git push origin HEAD:react-migration
+          echo "PATCH_SHA=$(git rev-parse HEAD)"
+
+      - name: Stop servers
+        if: always()
+        shell: bash
+        run: |
+          kill "$(cat /tmp/cv-shell-v3-legacy.pid 2>/dev/null)" 2>/dev/null || true
+          kill "$(cat /tmp/cv-shell-v3-react.pid 2>/dev/null)" 2>/dev/null || true
