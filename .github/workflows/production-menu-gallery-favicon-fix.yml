@@ -1,4 +1,4 @@
-name: Production repair - menu gallery favicon
+name: Production verify - menu gallery favicon
 
 on:
   push:
@@ -9,194 +9,109 @@ on:
 
 permissions:
   contents: read
-  id-token: write
-
-concurrency:
-  group: production-menu-gallery-favicon-fix
-  cancel-in-progress: false
-
-env:
-  PRIVATE_REPO: ${{ secrets.PRIVATE_REPO }}
-  PRIVATE_REPO_PAT: ${{ secrets.PRIVATE_REPO_PAT || secrets.PERSONAL_ACCESS_TOKEN || secrets.PAT || secrets.GH_PAT || secrets.GITHUB_PAT }}
 
 jobs:
-  repair:
+  verify:
     runs-on: ubuntu-latest
-    timeout-minutes: 35
+    timeout-minutes: 15
     steps:
-      - name: Verifica configurazione
-        shell: bash
-        run: |
-          set -euo pipefail
-          test -n "$PRIVATE_REPO"
-          test -n "$PRIVATE_REPO_PAT"
-
-      - name: Checkout runner pubblico
-        uses: actions/checkout@v7
-        with:
-          path: workflow-repo
-          persist-credentials: false
-
-      - name: Checkout main privato
-        uses: actions/checkout@v7
-        with:
-          repository: ${{ secrets.PRIVATE_REPO }}
-          token: ${{ env.PRIVATE_REPO_PAT }}
-          ref: main
-          path: source
-          persist-credentials: true
-          fetch-depth: 1
-
       - uses: actions/setup-node@v7
         with:
           node-version: '22'
 
-      - name: Applica menu originale, fallback galleria e favicon R2
+      - name: Verifica build live
         shell: bash
         run: |
           set -euo pipefail
-          node workflow-repo/scripts/fix-menu-gallery-favicon-2026-09-12.mjs source
-          perl -0pi -e 's#href="/assets/Logo\.png\?v=20260912b"#href="https://img.calabriavera.com/static/assets/Logo.png?v=20260912c"#g' source/frontend-react/index.html
-          grep -Fq 'https://img.calabriavera.com/static/assets/Logo.png?v=20260912c' source/frontend-react/index.html
+          version="$(curl --fail --silent --show-error --location --connect-timeout 8 --max-time 30 --retry 4 -H 'Cache-Control: no-cache' "https://calabriavera.com/build-version.txt?verify=$GITHUB_RUN_ID" | tr -d '\r\n')"
+          test "$version" = 'c42f5b230a4226cf9750b4bab1157cdbc7b991c2'
+          echo "Build live: $version"
 
-      - name: Verifica diff
-        shell: bash
+      - name: Installa browser
         run: |
           set -euo pipefail
-          git -C source diff --check -- \
-            frontend-react/src/components/Layout.tsx \
-            frontend-react/src/components/LegacyCatalogCard.tsx \
-            frontend-react/src/components/BusinessCard.tsx \
-            frontend-react/src/styles.css \
-            frontend-react/index.html
-          git -C source status --short
+          mkdir -p /tmp/cv-live
+          npm install --prefix /tmp/cv-live --no-package-lock --no-save playwright@1.62.1
+          /tmp/cv-live/node_modules/.bin/playwright install --with-deps chromium
 
-      - name: Suite completa repository privato
-        working-directory: source
-        run: |
-          set -euo pipefail
-          npm ci --no-audit --no-fund
-          npm test
-
-      - name: Build React
-        working-directory: source/frontend-react
+      - name: Audit browser reale desktop compatto e mobile
         env:
-          CV_PRERENDER_OFFLINE: '1'
-        run: |
-          set -euo pipefail
-          npm ci --no-audit --no-fund
-          npm run build
-
-      - name: Commit privato senza Actions private
-        id: commit
-        working-directory: source
+          PLAYWRIGHT_PATH: /tmp/cv-live/node_modules/playwright
         shell: bash
         run: |
           set -euo pipefail
-          git config user.name 'CalabriaVera Public Workflow'
-          git config user.email 'actions@users.noreply.github.com'
-          git add \
-            frontend-react/src/components/Layout.tsx \
-            frontend-react/src/components/LegacyCatalogCard.tsx \
-            frontend-react/src/components/BusinessCard.tsx \
-            frontend-react/src/styles.css \
-            frontend-react/index.html
-          if ! git diff --cached --quiet; then
-            git commit -m 'fix: restore original menu gallery cover and favicon [skip ci]'
-            git push origin HEAD:main
-          fi
-          sha="$(git rev-parse HEAD)"
-          echo "sha=$sha" >> "$GITHUB_OUTPUT"
-          echo "Private main: $sha"
-
-      - name: Build finale sul nuovo SHA
-        working-directory: source/frontend-react
-        env:
-          CV_PRERENDER_OFFLINE: '1'
-        shell: bash
-        run: |
-          set -euo pipefail
-          npm run build
-          test "$(tr -d '\r\n' < dist/build-version.txt)" = "${{ steps.commit.outputs.sha }}"
-
-      - name: Autenticazione Firebase
-        uses: google-github-actions/auth@v3
-        with:
-          workload_identity_provider: ${{ vars.FIREBASE_WIF_PROVIDER }}
-          service_account: ${{ vars.FIREBASE_DEPLOY_SERVICE_ACCOUNT }}
-
-      - name: Deploy React su calabriavera.com
-        working-directory: source/frontend-react
-        run: |
-          set -euo pipefail
-          npx --yes firebase-tools@15.22.1 deploy \
-            --project calabriavera-e08d4 \
-            --config firebase.react.json \
-            --only hosting
-
-      - name: Verifica HTTP produzione
-        env:
-          SHA: ${{ steps.commit.outputs.sha }}
-        shell: bash
-        run: |
-          set -euo pipefail
-          get() { curl --fail --silent --show-error --location --connect-timeout 8 --max-time 30 --retry 6 --retry-delay 3 --retry-all-errors "$@"; }
-          version="$(get -H 'Cache-Control: no-cache' "https://calabriavera.com/build-version.txt?repair=$GITHUB_RUN_ID" | tr -d '\r\n')"
-          test "$version" = "$SHA"
-          html="$(get -H 'Cache-Control: no-cache' "https://calabriavera.com/?repair=$GITHUB_RUN_ID")"
-          printf '%s' "$html" | grep -Fq 'Logo.png?v=20260912c'
-          get --head 'https://img.calabriavera.com/static/assets/Logo.png?v=20260912c' >/dev/null
-          echo "OK .com build $version e favicon R2 nuovo"
-
-      - name: Installa Chromium per verifica reale
-        run: |
-          set -euo pipefail
-          mkdir -p /tmp/cv-prod-check
-          npm install --prefix /tmp/cv-prod-check --no-package-lock --no-save playwright@1.62.1
-          /tmp/cv-prod-check/node_modules/.bin/playwright install --with-deps chromium
-
-      - name: Verifica browser menu e Le Ninfee
-        env:
-          PLAYWRIGHT_PATH: /tmp/cv-prod-check/node_modules/playwright
-        shell: bash
-        run: |
-          set -euo pipefail
-          cat > /tmp/cv-prod-check/check.cjs <<'NODE'
+          cat > /tmp/cv-live/check.cjs <<'NODE'
           const { chromium } = require(process.env.PLAYWRIGHT_PATH);
+          const assert = (ok,msg)=>{ if(!ok) throw new Error(msg); };
+          async function open(page,url){
+            await page.goto(url,{waitUntil:'domcontentloaded',timeout:45000});
+            await page.locator('#site-header').waitFor({state:'visible',timeout:15000});
+            await page.waitForTimeout(2500);
+          }
           (async()=>{
             const browser=await chromium.launch({headless:true});
             const page=await browser.newPage({viewport:{width:1024,height:900}});
-            await page.goto('https://calabriavera.com/catalogo?repair='+Date.now(),{waitUntil:'networkidle',timeout:60000});
+            const errors=[];
+            page.on('pageerror',e=>errors.push('pageerror '+e.message));
+            page.on('console',m=>{if(m.type()==='error') errors.push('console '+m.text())});
+            await open(page,'https://calabriavera.com/catalogo?verify='+Date.now());
             const menu=page.locator('#menu-toggle');
-            if(!(await menu.isVisible())) throw new Error('Menu compatto non visibile a 1024px');
+            assert(await menu.isVisible(),'Menu compatto non visibile a 1024px');
             await menu.click();
             const mobile=page.locator('#mobile-nav');
-            if(!(await mobile.isVisible())) throw new Error('Menu mobile non si apre');
+            await mobile.waitFor({state:'visible',timeout:5000});
             const box=await mobile.boundingBox();
-            if(!box || box.height>520 || box.width>1024) throw new Error('Menu mobile fuori geometria originale: '+JSON.stringify(box));
+            assert(box && box.height<520 && box.width<=1024,'Menu compatto fuori geometria: '+JSON.stringify(box));
+            const links=await mobile.locator(':scope > a').count();
+            assert(links>=5,'Menu principale incompleto: '+links);
+            await page.screenshot({path:'/tmp/cv-live/menu-1024.png',fullPage:false});
             await menu.click();
+
+            const language=page.locator('[data-language-menu] summary').first();
+            await language.click();
+            const languageList=page.locator('[data-language-menu] .cv-language-list').first();
+            await languageList.waitFor({state:'visible',timeout:5000});
+            assert(await languageList.locator('[data-language-value]').count()===5,'Selettore lingue incompleto');
+            await page.screenshot({path:'/tmp/cv-live/language-1024.png',fullPage:false});
+            await language.click();
+
             const card=page.locator('article.activity-item').filter({hasText:'Le Ninfee B&B'}).first();
             await card.waitFor({state:'visible',timeout:20000});
             const img=card.locator('img').first();
-            await img.waitFor({state:'visible',timeout:20000});
+            await img.waitFor({state:'attached',timeout:20000});
             const handle=await img.elementHandle();
-            await page.waitForFunction(el=>el.complete&&el.naturalWidth>20,handle,{timeout:20000});
+            await page.waitForFunction(el=>el && el.complete && el.naturalWidth>20,handle,{timeout:20000});
             const src=await img.getAttribute('src');
-            console.log('Le Ninfee image:',src);
-            await page.screenshot({path:'/tmp/cv-prod-check/catalogo.png',fullPage:true});
-            await page.goto('https://calabriavera.com/?repair='+Date.now(),{waitUntil:'networkidle',timeout:60000});
+            const natural=await img.evaluate(el=>({w:el.naturalWidth,h:el.naturalHeight}));
+            console.log('Le Ninfee:',src,natural);
+            assert(natural.w>20 && natural.h>20,'Foto Le Ninfee non caricata');
+            await page.screenshot({path:'/tmp/cv-live/catalogo-1024.png',fullPage:true});
+
+            await open(page,'https://calabriavera.com/?verify='+Date.now());
             const favicon=await page.locator('link[rel="icon"]').first().getAttribute('href');
-            if(!String(favicon).includes('Logo.png?v=20260912c')) throw new Error('Favicon non aggiornato: '+favicon);
+            assert(String(favicon).includes('img.calabriavera.com/static/assets/Logo.png?v=20260912c'),'Favicon inatteso: '+favicon);
+
+            const phone=await browser.newPage({viewport:{width:390,height:844}});
+            await open(phone,'https://calabriavera.com/?verify='+Date.now());
+            const phoneMenu=phone.locator('#menu-toggle');
+            assert(await phoneMenu.isVisible(),'Menu mobile non visibile a 390px');
+            await phoneMenu.click();
+            const phoneNav=phone.locator('#mobile-nav');
+            await phoneNav.waitFor({state:'visible',timeout:5000});
+            const phoneBox=await phoneNav.boundingBox();
+            assert(phoneBox && phoneBox.width<=390,'Menu mobile overflow: '+JSON.stringify(phoneBox));
+            await phone.screenshot({path:'/tmp/cv-live/menu-390.png',fullPage:false});
+            console.log('Browser errors:',errors);
             await browser.close();
           })().catch(e=>{console.error(e);process.exit(1)});
           NODE
-          node /tmp/cv-prod-check/check.cjs
+          node /tmp/cv-live/check.cjs
 
-      - name: Carica screenshot finale
+      - name: Screenshot audit
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: production-menu-gallery-favicon-check
-          path: /tmp/cv-prod-check/catalogo.png
+          name: production-live-menu-gallery-favicon
+          path: /tmp/cv-live/*.png
           retention-days: 3
           if-no-files-found: warn
