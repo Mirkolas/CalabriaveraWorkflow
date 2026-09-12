@@ -21,7 +21,7 @@ jobs:
     env:
       PRIVATE_REPO: ${{ secrets.PRIVATE_REPO }}
       PRIVATE_REPO_PAT: ${{ secrets.PRIVATE_REPO_PAT || secrets.PERSONAL_ACCESS_TOKEN || secrets.PAT || secrets.GH_PAT || secrets.GITHUB_PAT }}
-      EXPECTED_SHA: 186962e16eb491252f6d934e57f068c6278ecd2b
+      EXPECTED_SHA: 71586fd05ea07c7973d73b34e3b47ce082980dbb
       STAGING_URL: https://calabriavera.sonotacamirko.workers.dev
       LOCAL_URL: http://127.0.0.1:5000
     steps:
