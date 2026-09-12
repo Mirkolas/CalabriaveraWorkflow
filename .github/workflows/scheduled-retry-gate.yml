@@ -72,6 +72,21 @@ jobs:
             exit 0
           fi
 
+          # Protezione centralizzata della quota Firestore gratuita.
+          # I cron multipli restano come retry GitHub, ma il lavoro reale non può essere
+          # eseguito più spesso di queste soglie sui workflow che leggono Firestore.
+          quota_floor=0
+          case "$WORKFLOW_FILE" in
+            magazine-sync.yml) quota_floor=480 ;;      # max 3 cicli completi/giorno
+            seo-sync.yml) quota_floor=720 ;;           # max 2 scansioni SEO/giorno
+            firebase-deploy.yml) quota_floor=720 ;;    # manutenzione admin max 2 volte/giorno
+            daily-backup.yml) quota_floor=10080 ;;     # backup Firestore completo max 1/settimana
+          esac
+          if [ "$quota_floor" -gt 0 ] && [ "$cadence" -lt "$quota_floor" ]; then
+            echo "Protezione quota Firestore: cadenza $WORKFLOW_FILE aumentata da ${cadence} a ${quota_floor} minuti."
+            cadence="$quota_floor"
+          fi
+
           now_epoch="$(date -u +%s)"
           now_minutes=$((now_epoch / 60))
           campaign=$(((now_minutes - anchor) / cadence))
