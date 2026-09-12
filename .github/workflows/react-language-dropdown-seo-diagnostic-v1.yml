@@ -1,0 +1,127 @@
+name: React language dropdown and SEO diagnostic v1
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/react-language-dropdown-seo-diagnostic-v1.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  diagnose:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      PRIVATE_REPO_PAT: ${{ secrets.PRIVATE_REPO_PAT || secrets.PERSONAL_ACCESS_TOKEN || secrets.PAT || secrets.GH_PAT || secrets.GITHUB_PAT }}
+      LEGACY_SHA: 7be434e3418e95cff9825e4cc3f4b4ed75cd1076
+      EXPECTED_BASE: 5f145eee5a37c4d765a758f01b83e61e62c3ef0c
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          repository: ${{ secrets.PRIVATE_REPO }}
+          token: ${{ env.PRIVATE_REPO_PAT }}
+          ref: backup-main-pre-react-2026-09-11
+          path: legacy
+          persist-credentials: false
+      - uses: actions/checkout@v7
+        with:
+          repository: ${{ secrets.PRIVATE_REPO }}
+          token: ${{ env.PRIVATE_REPO_PAT }}
+          ref: react-migration
+          path: source
+          persist-credentials: false
+          fetch-depth: 2
+      - uses: actions/setup-node@v7
+        with:
+          node-version: '24'
+          cache: npm
+          cache-dependency-path: source/frontend-react/package-lock.json
+
+      - name: Build exact legacy and React
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git -C legacy rev-parse HEAD)" = "$LEGACY_SHA"
+          test "$(git -C source rev-parse HEAD)" = "$EXPECTED_BASE"
+          (cd legacy && npm ci && npm run build)
+          (cd source/frontend-react && npm ci && npm run build)
+          echo '--- robots legacy activity shell ---'
+          grep -o '<meta name="robots"[^>]*>' legacy/dist/attivita.html || true
+          echo '--- robots React initial document ---'
+          grep -o '<meta name="robots"[^>]*>' source/frontend-react/dist/index.html || true
+
+      - name: Install browser and serve
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p /tmp/cv-langdiag
+          npm install --prefix /tmp/cv-langdiag --no-package-lock --no-save playwright@1.62.1 serve@14.2.4
+          /tmp/cv-langdiag/node_modules/.bin/playwright install --with-deps chromium >/dev/null
+          nohup /tmp/cv-langdiag/node_modules/.bin/serve legacy/dist -l 4184 >/tmp/cv-langdiag-legacy.log 2>&1 & echo $! >/tmp/cv-langdiag-legacy.pid
+          nohup /tmp/cv-langdiag/node_modules/.bin/serve -s source/frontend-react/dist -l 4185 >/tmp/cv-langdiag-react.log 2>&1 & echo $! >/tmp/cv-langdiag-react.pid
+          for i in {1..30}; do curl -fsS http://127.0.0.1:4184/index.html >/dev/null 2>&1 && curl -fsS http://127.0.0.1:4185/ >/dev/null 2>&1 && exit 0; sleep 1; done
+          exit 1
+
+      - name: Inspect language dropdown visibility
+        env:
+          PLAYWRIGHT_MODULE: /tmp/cv-langdiag/node_modules/playwright
+        shell: bash
+        run: |
+          set -euo pipefail
+          node --input-type=module <<'NODE'
+          import {createRequire} from 'node:module';
+          const {chromium}=createRequire(import.meta.url)(process.env.PLAYWRIGHT_MODULE);
+          const browser=await chromium.launch({headless:true});
+          const modes=[['desktop',{width:1365,height:900}],['mobile',{width:390,height:844}]];
+          async function inspect(label,origin,path,viewport){
+            const ctx=await browser.newContext({viewport,serviceWorkers:'block'});
+            await ctx.addInitScript(()=>{const n=Date.now();localStorage.setItem('cv-cookie-consent-v3',JSON.stringify({version:3,scope:'technical-only',savedAt:new Date(n).toISOString(),expiresAt:new Date(n+30*86400000).toISOString(),necessary:true,preferences:false,analytics:false,marketing:false,source:'ci'}))});
+            const p=await ctx.newPage();
+            await p.goto(origin+path,{waitUntil:'domcontentloaded',timeout:30000});
+            await p.locator('details.header-language').waitFor({state:'visible',timeout:15000});
+            await p.locator('details.header-language > summary').click();
+            await p.waitForTimeout(150);
+            const data=await p.evaluate(()=>{
+              const details=document.querySelector('details.header-language');
+              const list=document.querySelector('.cv-language-list');
+              const summary=details?.querySelector('summary');
+              const rect=e=>{const r=e?.getBoundingClientRect();return r?{x:r.x,y:r.y,w:r.width,h:r.height,right:r.right,bottom:r.bottom}:null};
+              const style=e=>{if(!e)return null;const s=getComputedStyle(e);return {display:s.display,position:s.position,z:s.zIndex,overflow:s.overflow,overflowX:s.overflowX,overflowY:s.overflowY,transform:s.transform,clipPath:s.clipPath,visibility:s.visibility,opacity:s.opacity}};
+              const chain=[];let n=list;while(n&&chain.length<12){chain.push({tag:n.tagName,id:n.id||'',class:n.className||'',rect:rect(n),style:style(n)});n=n.parentElement}
+              const r=list?.getBoundingClientRect();
+              const sample=r?[[r.left+Math.min(10,r.width/2),r.top+Math.min(10,r.height/2)],[r.left+r.width/2,r.top+r.height/2]].map(([x,y])=>{const e=document.elementFromPoint(x,y);return{x,y,tag:e?.tagName||'',id:e?.id||'',class:e?.className||'',inside:!!(e&&list?.contains(e))}}):[];
+              return {open:!!details?.hasAttribute('open'),summary:rect(summary),list:rect(list),listStyle:style(list),header:rect(document.querySelector('.site-header')),headerStyle:style(document.querySelector('.site-header')),siteHeader:rect(document.querySelector('#site-header')),sample,chain};
+            });
+            console.log(`\n=== ${label} ===`);console.log(JSON.stringify(data,null,2));
+            await ctx.close();
+          }
+          for(const [mode,v] of modes){
+            await inspect(`legacy/${mode}`,'http://127.0.0.1:4184','/index.html',v);
+            await inspect(`react/${mode}`,'http://127.0.0.1:4185','/',v);
+          }
+          await browser.close();
+          NODE
+
+      - name: Inspect deep activity initial robots
+        shell: bash
+        run: |
+          set -euo pipefail
+          deep='/attivita/reggio-calabria/marina-di-gioiosa-ionica/b-e-b/le-ninfee-b-e-b2026-09-05'
+          echo '--- legacy deep route through static server fallback behavior ---'
+          curl -sS -D /tmp/legacy-h "http://127.0.0.1:4184${deep}" -o /tmp/legacy-deep.html || true
+          head -n 8 /tmp/legacy-h || true
+          grep -o '<meta name="robots"[^>]*>' /tmp/legacy-deep.html || true
+          echo '--- React deep route ---'
+          curl -sS -D /tmp/react-h "http://127.0.0.1:4185${deep}" -o /tmp/react-deep.html
+          head -n 8 /tmp/react-h
+          grep -o '<meta name="robots"[^>]*>' /tmp/react-deep.html || true
+
+      - name: Stop servers
+        if: always()
+        shell: bash
+        run: |
+          kill "$(cat /tmp/cv-langdiag-legacy.pid 2>/dev/null)" 2>/dev/null || true
+          kill "$(cat /tmp/cv-langdiag-react.pid 2>/dev/null)" 2>/dev/null || true
