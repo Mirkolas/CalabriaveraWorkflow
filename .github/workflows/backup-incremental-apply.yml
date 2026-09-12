@@ -1,0 +1,128 @@
+name: Temporary - Apply incremental backup
+
+on:
+  push:
+    paths:
+      - '.github/workflows/backup-incremental-apply.yml'
+      - 'scripts/patch-incremental-backup-v1.py'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: private-react-migration-writer
+  cancel-in-progress: false
+
+jobs:
+  patch-test-push:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      PRIVATE_REPO: ${{ secrets.PRIVATE_REPO }}
+      PRIVATE_REPO_PAT: ${{ secrets.PRIVATE_REPO_PAT || secrets.PERSONAL_ACCESS_TOKEN || secrets.PAT || secrets.GH_PAT || secrets.GITHUB_PAT }}
+      EXPECTED_BASE: 09a2677b99508d41750325855048cfa66e9c5867
+    steps:
+      - name: Checkout workflow repo
+        uses: actions/checkout@v7
+        with:
+          path: automation
+          persist-credentials: false
+
+      - name: Checkout private React branch
+        uses: actions/checkout@v7
+        with:
+          repository: ${{ secrets.PRIVATE_REPO }}
+          token: ${{ env.PRIVATE_REPO_PAT }}
+          ref: react-migration
+          path: source
+          fetch-depth: 0
+          persist-credentials: true
+
+      - name: Verify exact private base
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git -C source rev-parse HEAD)" = "$EXPECTED_BASE"
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: |
+            source/package-lock.json
+            source/tools/package-lock.json
+            source/frontend-react/package-lock.json
+
+      - name: Apply incremental backup patch
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 automation/scripts/patch-incremental-backup-v1.py
+          git -C source diff --check
+
+      - name: Install local test dependencies
+        working-directory: source
+        run: |
+          npm ci
+          npm --prefix tools ci --no-audit --no-fund
+          npm --prefix frontend-react ci
+
+      - name: Gate backup merge and restore offline
+        working-directory: source
+        run: npm run test:backup
+
+      - name: Gate syntax and React TypeScript
+        working-directory: source
+        shell: bash
+        run: |
+          set -euo pipefail
+          node --check tools/backup/incremental.mjs
+          node --check tools/backup/export.mjs
+          node --check tools/backup/run.mjs
+          node --check tools/backup/releases.mjs
+          node -e "JSON.parse(require('fs').readFileSync('firestore.indexes.json','utf8')); console.log('indexes JSON ok')"
+          cd frontend-react
+          npx tsc --noEmit
+
+      - name: Gate incremental safety contract
+        working-directory: source
+        shell: bash
+        run: |
+          set -euo pipefail
+          grep -q 'INCREMENTAL_SCHEMA_VERSION = 1' tools/backup/incremental.mjs
+          grep -q 'INCREMENTAL_BASELINE_REQUIRED' tools/backup/run.mjs
+          grep -q 'Nessuna lettura Firestore eseguita' tools/backup/run.mjs
+          grep -q 'trackedDeleteInTransaction' frontend-react/src/lib/businesses.ts
+          grep -q 'trackedDelete(f, db, f.doc(db, "notifications"' frontend-react/src/lib/notifications.ts
+          grep -q 'trackedDelete(f, db, ref, user.uid)' frontend-react/src/lib/business-owner.ts
+          grep -q '_cvBackupTombstones' firestore.rules
+          grep -q '_cvBackupTombstones' firestore.indexes.json
+          grep -q 'business.deleted' tools/backup/incremental.mjs
+          grep -q 'admin_conversation_deleted' tools/backup/incremental.mjs
+          grep -q 'revokedUsers' tools/backup/incremental.mjs
+          test "$(git rev-parse HEAD)" = "$EXPECTED_BASE"
+
+      - name: Commit only after every gate is green
+        working-directory: source
+        shell: bash
+        run: |
+          set -euo pipefail
+          git add \
+            tools/backup/incremental.mjs \
+            tools/backup/export.mjs \
+            tools/backup/releases.mjs \
+            tools/backup/run.mjs \
+            frontend-react/src/lib/backup-tombstones.ts \
+            frontend-react/src/lib/businesses.ts \
+            frontend-react/src/lib/notifications.ts \
+            frontend-react/src/lib/business-owner.ts \
+            firestore.rules \
+            firestore.indexes.json \
+            tests/backup.test.mjs
+          git diff --cached --check
+          test -n "$(git diff --cached --name-only)"
+          git config user.name 'CalabriaVera Automation'
+          git config user.email 'actions@users.noreply.github.com'
+          git commit -m 'feat: add quota-safe incremental Firestore backup'
+          git push origin HEAD:react-migration
