@@ -12,4 +12,8 @@ old = '''          <div className="cv-consent-footer-line"><button type="button"
 if old not in s:
     raise SystemExit('React-only consent footer line not found')
 s = s.replace(old, '', 1)
+old_import = 'import CookieConsent, { openCookiePreferences } from "./CookieConsent";'
+if old_import not in s:
+    raise SystemExit('CookieConsent import target not found')
+s = s.replace(old_import, 'import CookieConsent from "./CookieConsent";', 1)
 p.write_text(s)
