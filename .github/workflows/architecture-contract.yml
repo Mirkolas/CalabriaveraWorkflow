@@ -1,0 +1,72 @@
+name: Architecture Contract - Firebase R2 Worker D1
+
+on:
+  workflow_dispatch:
+  repository_dispatch:
+    types: [source-deploy]
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/architecture-contract.yml'
+      - '.github/workflows/cloudflare-d1-workflows.yml'
+      - '.github/workflows/cloudflare-d1-sync-after-deploy.yml'
+      - '.github/workflows/firebase-deploy.yml'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: architecture-contract
+  cancel-in-progress: true
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      PRIVATE_REPO: ${{ secrets.PRIVATE_REPO }}
+      PRIVATE_REPO_PAT: ${{ secrets.PRIVATE_REPO_PAT || secrets.PERSONAL_ACCESS_TOKEN || secrets.PAT || secrets.GH_PAT || secrets.GITHUB_PAT }}
+
+    steps:
+      - name: Verifica accesso sorgente privato
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -n "$PRIVATE_REPO" || { echo "::error::PRIVATE_REPO mancante"; exit 1; }
+          test -n "$PRIVATE_REPO_PAT" || { echo "::error::PAT repository privato mancante"; exit 1; }
+
+      - name: Scarica sorgente privato
+        uses: actions/checkout@v7
+        with:
+          repository: ${{ secrets.PRIVATE_REPO }}
+          token: ${{ env.PRIVATE_REPO_PAT }}
+          ref: main
+          path: source
+          persist-credentials: false
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version: '22'
+
+      - name: Verifica architettura runtime definitiva
+        working-directory: source/frontend-react
+        run: node scripts/verify-runtime-architecture.mjs
+
+      - name: Verifica che D1 resti fuori dal runtime del sito
+        shell: bash
+        run: |
+          set -euo pipefail
+          if grep -Eq '"d1_databases"|\[\[d1_databases\]\]' source/frontend-react/wrangler.jsonc; then
+            echo "::error::D1 non può essere collegato al Cloudflare Worker del sito."
+            exit 1
+          fi
+          grep -q '"binding"[[:space:]]*:[[:space:]]*"IMAGES"' source/frontend-react/wrangler.jsonc
+          grep -q '"bucket_name"[[:space:]]*:[[:space:]]*"calabriavera-images"' source/frontend-react/wrangler.jsonc
+          echo "Runtime: Firebase Auth/Firestore + R2 + Worker; D1 assente."
+
+      - name: Verifica che D1 sia usato dai workflow automatici
+        shell: bash
+        run: |
+          set -euo pipefail
+          grep -Rqs 'wrangler@4 d1\|wrangler d1' .github/workflows/cloudflare-d1-workflows.yml .github/workflows/cloudflare-d1-sync-after-deploy.yml
+          echo "D1 confinato ai workflow automatici verificati."
