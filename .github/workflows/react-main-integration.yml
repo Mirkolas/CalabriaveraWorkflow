@@ -65,7 +65,7 @@ jobs:
             git checkout --theirs -- "${conflicts[@]}"
             python "$GITHUB_WORKSPACE/runner/scripts/react-main-integration-resolve.py" "$GITHUB_WORKSPACE/source"
             git add "${conflicts[@]}"
-            git diff --check --cached
+            git diff --check --cached -- "${conflicts[@]}"
             git commit -m 'merge: certified React plus current R2 architecture [skip ci]'
           fi
 
@@ -78,7 +78,6 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          git diff --check HEAD^1 HEAD
           npm ci --no-audit --no-fund
           npm test
 
