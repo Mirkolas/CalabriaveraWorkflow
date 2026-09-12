@@ -1,0 +1,108 @@
+name: React migration - runtime dataset diagnostic
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/react-runtime-dataset-diagnostic.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  diagnose:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      PRIVATE_REPO: ${{ secrets.PRIVATE_REPO }}
+      PRIVATE_REPO_PAT: ${{ secrets.PRIVATE_REPO_PAT || secrets.PERSONAL_ACCESS_TOKEN || secrets.PAT || secrets.GH_PAT || secrets.GITHUB_PAT }}
+      STAGING_BASE_URL: https://calabriavera.sonotacamirko.workers.dev
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          repository: ${{ secrets.PRIVATE_REPO }}
+          token: ${{ env.PRIVATE_REPO_PAT }}
+          ref: react-migration
+          path: source
+          persist-credentials: false
+          fetch-depth: 0
+      - uses: actions/setup-node@v7
+        with:
+          node-version: '24'
+          cache: npm
+          cache-dependency-path: source/frontend-react/package-lock.json
+      - name: Verify exact app head and committed generated source
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git -C source rev-parse HEAD)" = "c828a8a22ac045a3c307df71063c852e4a950eaa"
+          python3 - <<'PY'
+          from pathlib import Path
+          import re
+          p=Path('source/frontend-react/src/generated/tourism-data-core.ts')
+          text=p.read_text(encoding='utf-8')
+          ids=re.findall(r'"id"\s*:\s*"([^"]+)"', text)
+          print('COMMITTED_GENERATED_COUNT', len(ids))
+          print('COMMITTED_HAS_ISOLA_DINO', 'turismo-isola-dino' in ids)
+          assert len(ids)==52
+          PY
+      - name: Build locally and inspect emitted dataset module
+        working-directory: source/frontend-react
+        shell: bash
+        run: |
+          set -euo pipefail
+          npm ci
+          npm run build
+          node --input-type=module <<'NODE'
+          import fs from 'node:fs';
+          import path from 'node:path';
+          const dir='dist-ssr/assets';
+          const file=fs.readdirSync(dir).find(x=>x.startsWith('tourism-data-core-')&&x.endsWith('.js'));
+          if(!file) throw new Error('SSR tourism chunk missing');
+          const mod=await import(path.resolve(dir,file));
+          const arr=mod.TOURISM_BUSINESSES || Object.values(mod).find(v=>Array.isArray(v));
+          console.log('LOCAL_SSR_CHUNK', file);
+          console.log('LOCAL_RUNTIME_COUNT', arr?.length);
+          console.log('LOCAL_RUNTIME_HAS_ISOLA_DINO', !!arr?.some(x=>x?.id==='turismo-isola-dino'));
+          if(arr?.length!==52) process.exit(2);
+          NODE
+      - name: Inspect exact staging HTML and loaded JavaScript graph
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -rf /tmp/staging-assets && mkdir -p /tmp/staging-assets
+          curl -fsS "$STAGING_BASE_URL/catalogo?datasetdiag=$(date +%s)" -o /tmp/catalog.html
+          echo "STAGING_VERSION=$(curl -fsS "$STAGING_BASE_URL/build-version.txt?diag=$(date +%s)")"
+          python3 - <<'PY'
+          from pathlib import Path
+          import re, urllib.parse, urllib.request
+          base='https://calabriavera.sonotacamirko.workers.dev'
+          html=Path('/tmp/catalog.html').read_text(encoding='utf-8',errors='ignore')
+          urls=set(re.findall(r'(?:src|href)=["\']([^"\']+\.js(?:\?[^"\']*)?)["\']',html))
+          print('HTML_JS', sorted(urls))
+          queue=list(urls); seen=set()
+          out=Path('/tmp/staging-assets')
+          while queue:
+              u=queue.pop(0)
+              full=urllib.parse.urljoin(base+'/',u)
+              if full in seen: continue
+              seen.add(full)
+              try:
+                  data=urllib.request.urlopen(full,timeout=20).read().decode('utf-8','ignore')
+              except Exception as e:
+                  print('FETCH_ERROR',full,e); continue
+              name=urllib.parse.urlparse(full).path.rsplit('/',1)[-1]
+              (out/name).write_text(data,encoding='utf-8')
+              for dep in re.findall(r'["\'](\.?/?[^"\']+\.js)["\']',data):
+                  if dep.startswith('.') or dep.startswith('/assets/'):
+                      queue.append(urllib.parse.urljoin(full,dep))
+          merged='\n'.join(p.read_text(encoding='utf-8',errors='ignore') for p in out.glob('*.js'))
+          print('STAGING_JS_FILES',len(list(out.glob('*.js'))))
+          print('STAGING_HAS_REVISION','20260912-catalog-map-v2' in merged)
+          print('STAGING_HAS_ISOLA_DINO','turismo-isola-dino' in merged)
+          print('STAGING_HAS_OLD_TROPEA','turismo-centro-storico-tropea' in merged)
+          for p in sorted(out.glob('*tourism*')):
+              print('STAGING_TOURISM_ASSET',p.name,p.stat().st_size,'isola=', 'turismo-isola-dino' in p.read_text(encoding='utf-8',errors='ignore'))
+          assert '20260912-catalog-map-v2' in merged
+          PY
