@@ -1,0 +1,154 @@
+name: React migration - post-cutover production smoke
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/react-post-cutover-smoke.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: react-post-cutover-production-smoke
+  cancel-in-progress: true
+
+jobs:
+  smoke:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    env:
+      PRODUCTION_BASE_URL: https://calabriavera.com
+      EXPECTED_SHA: 243c33a029eb55ae94310b2daabd75cd66154a86
+    steps:
+      - uses: actions/setup-node@v7
+        with:
+          node-version: '24'
+
+      - name: Wait for exact production revision
+        shell: bash
+        run: |
+          set -euo pipefail
+          for attempt in {1..72}; do
+            actual="$(curl --fail --silent --show-error --max-time 15 "$PRODUCTION_BASE_URL/build-version.txt?postcutover=$attempt" 2>/dev/null | tr -d '\r\n' || true)"
+            if [ "$actual" = "$EXPECTED_SHA" ]; then
+              echo "PRODUCTION_SHA_GREEN=$actual"
+              exit 0
+            fi
+            echo "Waiting for production ($attempt/72): ${actual:-no version}"
+            sleep 10
+          done
+          echo "::error::Production did not publish $EXPECTED_SHA"
+          exit 1
+
+      - name: Verify public data endpoints
+        shell: bash
+        run: |
+          set -euo pipefail
+          curl --fail --silent --show-error --max-time 20 "$PRODUCTION_BASE_URL/__data/businesses.json?postcutover=$EXPECTED_SHA" > /tmp/businesses.json
+          curl --fail --silent --show-error --max-time 20 "$PRODUCTION_BASE_URL/__data/blog.json?postcutover=$EXPECTED_SHA" > /tmp/blog.json
+          node - <<'NODE'
+          const fs=require('node:fs');
+          const businesses=JSON.parse(fs.readFileSync('/tmp/businesses.json','utf8'));
+          const blog=JSON.parse(fs.readFileSync('/tmp/blog.json','utf8'));
+          const b=Array.isArray(businesses)?businesses:(businesses.items||[]);
+          const p=Array.isArray(blog)?blog:(blog.items||[]);
+          if(!b.length) throw new Error('production businesses snapshot empty');
+          if(!p.length) throw new Error('production blog snapshot empty');
+          console.log(`PRODUCTION_DATA_GREEN businesses=${b.length} blog=${p.length}`);
+          NODE
+
+      - name: Install isolated Chromium
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p /tmp/cv-production-smoke
+          npm install --prefix /tmp/cv-production-smoke --no-package-lock --no-save playwright@1.62.1
+          /tmp/cv-production-smoke/node_modules/.bin/playwright install --with-deps chromium
+
+      - name: Run production browser smoke
+        shell: bash
+        env:
+          PLAYWRIGHT_MODULE: /tmp/cv-production-smoke/node_modules/playwright
+        run: |
+          set -euo pipefail
+          node --input-type=module <<'NODE'
+          import { createRequire } from 'node:module';
+          const require=createRequire(import.meta.url);
+          const { chromium }=require(process.env.PLAYWRIGHT_MODULE);
+          const base=process.env.PRODUCTION_BASE_URL.replace(/\/$/,'');
+          const sha=process.env.EXPECTED_SHA;
+          const browser=await chromium.launch({headless:true});
+          const failures=[];
+          try {
+            const checks=[
+              ['/', async page=>{
+                await page.waitForSelector('main',{timeout:12000});
+                const r=await page.evaluate(()=>({
+                  footerLogo:document.querySelector('.footer .footer-logo')?.getBoundingClientRect().width||0,
+                  socials:document.querySelectorAll('.social-links .social-link').length,
+                  consent:Boolean(document.querySelector('.cv-consent-footer-line')),
+                  flag:getComputedStyle(document.querySelector('.cv-language-flag')).backgroundImage,
+                  bodyWidth:document.body.scrollWidth,
+                  viewport:document.documentElement.clientWidth,
+                }));
+                if(r.footerLogo<180) failures.push(`home footer logo too small: ${r.footerLogo}`);
+                if(r.socials!==3) failures.push(`home social links=${r.socials}`);
+                if(!r.consent) failures.push('home cookie footer line missing');
+                if(!String(r.flag).includes('/assets/flags/it.svg')) failures.push(`home language flag missing: ${r.flag}`);
+                if(r.bodyWidth>r.viewport+2) failures.push(`home horizontal overflow ${r.bodyWidth}>${r.viewport}`);
+              }],
+              ['/catalogo', async page=>{
+                await page.waitForSelector('.catalog-layout',{timeout:12000});
+                await page.waitForFunction(()=>document.querySelectorAll('[data-business-card], .activity-card, .cv-business-card').length>0,{timeout:12000}).catch(()=>{});
+                const body=(await page.locator('body').innerText()).toLowerCase();
+                if(!body.includes('isola dino')) failures.push('catalog canonical tourism item missing');
+              }],
+              ['/mappa', async page=>{
+                await page.waitForSelector('.leaflet-container',{timeout:15000});
+                const r=await page.evaluate(()=>({leaflet:Boolean(document.querySelector('.leaflet-container')),controls:document.querySelectorAll('.leaflet-control-container').length,text:document.body.innerText.toLowerCase()}));
+                if(!r.leaflet||r.controls<1) failures.push(`map leaflet incomplete controls=${r.controls}`);
+                if(!r.text.includes('isola dino')) failures.push('map canonical tourism item missing');
+              }],
+              ['/blog', async page=>{
+                await page.waitForFunction(()=>document.querySelectorAll('article').length>0,{timeout:12000}).catch(()=>{});
+                const articles=await page.locator('article').count();
+                if(articles<1) failures.push('blog has no articles');
+              }],
+            ];
+            for(const [route,check] of checks){
+              const context=await browser.newContext({serviceWorkers:'block',viewport:{width:1365,height:900}});
+              const page=await context.newPage();
+              const errors=[];
+              page.on('pageerror',e=>errors.push(String(e.message||e)));
+              const response=await page.goto(`${base}${route}?postcutover=${sha}`,{waitUntil:'domcontentloaded',timeout:25000}).catch(()=>null);
+              if(!response||response.status()>=400) failures.push(`${route}: HTTP ${response?.status()||0}`);
+              try{await check(page);}catch(e){failures.push(`${route}: ${e?.message||e}`);}
+              if(errors.length) failures.push(`${route}: page errors ${errors.join(' | ')}`);
+              await context.close();
+            }
+
+            for(const route of ['/profilo','/preferiti','/dashboard','/messaggi','/aggiungi-attivita','/admin','/admin/blog']){
+              const context=await browser.newContext({serviceWorkers:'block'});
+              const page=await context.newPage();
+              const errors=[];
+              page.on('pageerror',e=>errors.push(String(e.message||e)));
+              await page.goto(`${base}${route}?postcutover=${sha}`,{waitUntil:'domcontentloaded',timeout:20000}).catch(()=>null);
+              await page.waitForFunction(()=>location.pathname==='/login',{timeout:12000}).catch(()=>{});
+              if(new URL(page.url()).pathname!=='/login') failures.push(`${route}: anonymous user not redirected to /login`);
+              if(errors.length) failures.push(`${route}: page errors ${errors.join(' | ')}`);
+              await context.close();
+            }
+
+            const context=await browser.newContext({serviceWorkers:'block'});
+            const page=await context.newPage();
+            const backupResponse=await page.goto(`${base}/backup?postcutover=${sha}`,{waitUntil:'domcontentloaded',timeout:20000}).catch(()=>null);
+            await page.waitForSelector('#backup-root',{state:'visible',timeout:12000}).catch(()=>{});
+            const backup=await page.evaluate(()=>({root:Boolean(document.querySelector('#backup-root')),title:document.querySelector('h1')?.textContent?.trim()||''}));
+            if(backupResponse?.status()!==200||!backup.root||backup.title!=='Backup e ripristino') failures.push(`backup mismatch ${JSON.stringify({status:backupResponse?.status()||0,...backup})}`);
+            await context.close();
+          } finally { await browser.close(); }
+          if(failures.length){console.error(failures.join('\n'));process.exit(1);}
+          console.log('PRODUCTION_BROWSER_SMOKE_GREEN');
+          NODE
