@@ -1,0 +1,107 @@
+name: React migration - sync latest main before cutover
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/react-sync-main-before-cutover.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: react-sync-main-before-cutover
+  cancel-in-progress: true
+
+jobs:
+  merge-test-push:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      PRIVATE_REPO: ${{ secrets.PRIVATE_REPO }}
+      PRIVATE_REPO_PAT: ${{ secrets.PRIVATE_REPO_PAT || secrets.PERSONAL_ACCESS_TOKEN || secrets.PAT || secrets.GH_PAT || secrets.GITHUB_PAT }}
+      EXPECTED_REACT_HEAD: a8af3493560aebdda7763d3abb896aba0f6eac90
+    steps:
+      - name: Verify private repository access
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -n "$PRIVATE_REPO"
+          test -n "$PRIVATE_REPO_PAT"
+
+      - name: Checkout React migration with full history
+        uses: actions/checkout@v7
+        with:
+          repository: ${{ secrets.PRIVATE_REPO }}
+          token: ${{ env.PRIVATE_REPO_PAT }}
+          ref: react-migration
+          fetch-depth: 0
+          persist-credentials: true
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version: '24'
+          cache: npm
+          cache-dependency-path: |
+            package-lock.json
+            frontend-react/package-lock.json
+
+      - uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: '21'
+
+      - name: Freeze and merge current main
+        id: main
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$EXPECTED_REACT_HEAD"
+          git fetch origin main react-migration --prune
+          main_sha="$(git rev-parse origin/main)"
+          echo "main_sha=$main_sha" >> "$GITHUB_OUTPUT"
+          echo "Frozen main: $main_sha"
+          git config user.name 'CalabriaVera Automation'
+          git config user.email 'actions@users.noreply.github.com'
+          git merge --no-ff --no-edit "$main_sha"
+          git diff --check HEAD^ HEAD
+
+      - name: Install root dependencies
+        run: npm ci
+
+      - name: Run Auth and Firestore emulator contract tests
+        env:
+          CI: 'true'
+        run: npm run test:emulators
+
+      - name: Build React client SSR and prerender
+        working-directory: frontend-react
+        shell: bash
+        run: |
+          set -euo pipefail
+          npm ci
+          npm run build
+          test -s dist/index.html
+          test -s dist/catalogo/index.html
+          test -s dist/blog/index.html
+          grep -q 'turismo-isola-dino' dist/catalogo/index.html
+
+      - name: Verify main did not move during validation
+        shell: bash
+        run: |
+          set -euo pipefail
+          git fetch origin main --prune
+          current_main="$(git rev-parse origin/main)"
+          test "$current_main" = "${{ steps.main.outputs.main_sha }}" || {
+            echo "::error::main advanced from ${{ steps.main.outputs.main_sha }} to $current_main; refusing stale push"
+            exit 1
+          }
+          git merge-base --is-ancestor "$current_main" HEAD
+          git diff --check
+
+      - name: Push tested merge to react-migration
+        shell: bash
+        run: |
+          set -euo pipefail
+          git push origin HEAD:react-migration
