@@ -1,6 +1,6 @@
 from pathlib import Path
 
-# Trigger the dynamic cutover gate after the latest protected main sync.
+# Trigger the dynamic cutover gate for the validated Firebase production bridge.
 path = Path('automation/scripts/react-parity-audit-v2.cjs')
 s = path.read_text()
 
