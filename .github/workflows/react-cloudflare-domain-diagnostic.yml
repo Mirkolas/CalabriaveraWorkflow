@@ -1,0 +1,41 @@
+name: React Cloudflare domain diagnostic
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/react-cloudflare-domain-diagnostic.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  diagnose:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: DNS and endpoint diagnostics
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo '=== DNS apex ==='
+          dig +short A calabriavera.com || true
+          dig +short AAAA calabriavera.com || true
+          dig +short CNAME calabriavera.com || true
+          echo '=== DNS www ==='
+          dig +short A www.calabriavera.com || true
+          dig +short AAAA www.calabriavera.com || true
+          dig +short CNAME www.calabriavera.com || true
+
+          for base in \
+            https://calabriavera.sonotacamirko.workers.dev \
+            https://calabriavera.com \
+            https://www.calabriavera.com; do
+            echo "=== $base ==="
+            curl --silent --show-error --location --connect-timeout 8 --max-time 20 \
+              -D - -o /tmp/body "$base/build-version.txt?diag=$GITHUB_RUN_ID" || true
+            printf 'body: '; head -c 200 /tmp/body 2>/dev/null || true; echo
+            curl --silent --show-error --head --connect-timeout 8 --max-time 20 \
+              "$base/?diag=$GITHUB_RUN_ID" | grep -Ei '^(HTTP/|server:|cf-ray:|cf-cache-status:|location:|x-powered-by:|cache-control:)' || true
+          done
