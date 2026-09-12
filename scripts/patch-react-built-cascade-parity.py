@@ -52,14 +52,10 @@ old_parity = '''  const parityStyles = ["/assets/css/language-modern.css", liveP
   routeCss[route] = styles;
 '''
 new_parity = '''  // Reproduce the authoritative production build, not only the source HTML.
-  // scripts/stabilize-shell.mjs removes page-only CSS, appends CORE_STYLES in
-  // this exact order and finally appends the page-specific stylesheet.
   for (const path of PAGE_ONLY_STYLE_PATHS) styles = removeStylePath(styles, path);
   for (const href of CORE_STYLES) styles = ensureStyle(styles, href);
   for (const href of PAGE_STYLES[page] || []) styles = ensureStyle(styles, href);
 
-  // scripts/unify-css.mjs then removes legacy business detail CSS and appends
-  // the shared experience/render/review styles before concatenating the bundle.
   for (const path of LEGACY_BUSINESS_STYLES) styles = removeStylePath(styles, path);
   styles = ensureStyle(styles, SHARED_EXPERIENCE_STYLE);
   styles = ensureStyle(styles, RENDER_PERFORMANCE_STYLE);
@@ -75,7 +71,8 @@ if old_parity not in c:
 c = c.replace(old_parity, new_parity, 1)
 copy.write_text(c)
 
-# Unknown routes share /404 CSS.
+# Unknown routes share /404 CSS and the legacy wrapper IDs must exist because
+# header-unified.css and ui-final-overrides.css scope their final shell rules to them.
 layout = Path('frontend-react/src/components/Layout.tsx')
 l = layout.read_text()
 old_key = '''function mainRouteKey(path: string) {
@@ -96,6 +93,18 @@ new_key = '''function mainRouteKey(path: string) {
 if old_key not in l:
     raise SystemExit('Layout route key contract changed')
 l = l.replace(old_key, new_key, 1)
+if '<div id="site-header">' not in l:
+    l = l.replace('''      <header className="site-header cv-header">''', '''      <div id="site-header">
+      <header className="site-header cv-header">''', 1)
+    l = l.replace('''      </header>\n\n      <main id="main-content"''', '''      </header>
+      </div>\n\n      <main id="main-content"''', 1)
+if '<div id="site-footer">' not in l:
+    l = l.replace('''      <footer className="footer">''', '''      <div id="site-footer">
+      <footer className="footer">''', 1)
+    l = l.replace('''      </footer>\n\n      {showBusinessReport''', '''      </footer>
+      </div>\n\n      {showBusinessReport''', 1)
+if '<div id="site-header">' not in l or '<div id="site-footer">' not in l:
+    raise SystemExit('legacy shell wrappers were not restored')
 layout.write_text(l)
 
 # Exact legacy 404 markup and SEO. Do not hard-code visual metrics: the exact
