@@ -31,7 +31,7 @@ jobs:
       group: firebase-production
       cancel-in-progress: false
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 20
     env:
       PRIVATE_REPO: ${{ secrets.PRIVATE_REPO }}
       PRIVATE_REPO_PAT: ${{ secrets.PRIVATE_REPO_PAT || secrets.PERSONAL_ACCESS_TOKEN || secrets.PAT || secrets.GH_PAT || secrets.GITHUB_PAT }}
@@ -48,7 +48,7 @@ jobs:
         uses: actions/checkout@v7
         with:
           repository: ${{ secrets.PRIVATE_REPO }}
-          token: ${{ secrets.PRIVATE_REPO_PAT || secrets.PERSONAL_ACCESS_TOKEN || secrets.PAT || secrets.GH_PAT || secrets.GITHUB_PAT }}
+          token: ${{ env.PRIVATE_REPO_PAT }}
           ref: main
           path: source
           persist-credentials: false
@@ -56,75 +56,47 @@ jobs:
       - uses: actions/setup-node@v7
         with:
           node-version: '22'
-          cache: npm
-          cache-dependency-path: source/package-lock.json
 
-      - name: Genera Story Instagram 9:16 con safe area
+      - name: Suite completa repository
         working-directory: source
         run: |
           set -euo pipefail
-          src="assets/Story-Promo_instagram-facebook.png"
-          out="assets/Story-Promo_instagram-safe.png"
-          test -f "$src"
-          if ! command -v ffmpeg >/dev/null 2>&1; then
-            sudo apt-get update -qq
-            sudo apt-get install -y ffmpeg
-          fi
-          ffmpeg -hide_banner -loglevel error -y -i "$src" -filter_complex "[0:v]split=2[bgsrc][fgsrc];[bgsrc]scale=1080:1920:force_original_aspect_ratio=increase,crop=1080:1920,gblur=sigma=28[bg];[fgsrc]scale=920:1640:force_original_aspect_ratio=decrease[fg];[bg][fg]overlay=(W-w)/2:(H-h)/2" -frames:v 1 "$out"
-          dims=$(ffprobe -v error -select_streams v:0 -show_entries stream=width,height -of csv=s=x:p=0 "$out")
-          type=$(file -b --mime-type "$out")
-          size=$(wc -c < "$out")
-          echo "Story Instagram: ${dims}, ${size} byte"
-          test "$dims" = "1080x1920"
-          test "$type" = "image/png"
-          test "$size" -gt 25000
+          npm ci --no-audit --no-fund
+          npm test
 
-      - name: Valida PNG Story promozionale
-        working-directory: source
+      - name: Build React produzione
+        working-directory: source/frontend-react
+        env:
+          CV_PRERENDER_OFFLINE: '1'
         run: |
           set -euo pipefail
-          for story in assets/Story-Promo_instagram-facebook.png assets/Story-Promo_instagram-safe.png; do
-            test -f "$story"
-            type=$(file -b --mime-type "$story")
-            info=$(file -b "$story")
-            size=$(wc -c < "$story")
-            echo "$story: $info"
-            echo "Dimensione: $size byte"
-            test "$type" = "image/png"
-            test "$size" -gt 25000
-          done
-
-      - name: Valida favicon e icone ufficiali
-        working-directory: source
-        run: |
-          set -euo pipefail
-          for file in favicon.ico favicon-32x32.png favicon-16x16.png apple-touch-icon.png android-chrome-192x192.png android-chrome-512x512.png; do
-            test -s "assets/$file"
-            echo "$file: $(file -b "assets/$file")"
-          done
-          test -s assets/site.webmanifest
-          echo "Favicon e icone dirette in assets validate correttamente"
-
-      - working-directory: source
-        run: npm ci
-
-      - working-directory: source
-        run: npm test
+          npm ci --no-audit --no-fund
+          npm run build
 
       - uses: google-github-actions/auth@v3
         with:
           workload_identity_provider: ${{ vars.FIREBASE_WIF_PROVIDER }}
           service_account: ${{ vars.FIREBASE_DEPLOY_SERVICE_ACCOUNT }}
 
-      - working-directory: source
-        run: npm run deploy
-
-      - name: Verifica SEO pubblicato
+      - name: Deploy Firestore rules e indexes
         working-directory: source
-        env:
-          SITE_URL: https://calabriavera.com
-          FIREBASE_PROJECT_ID: calabriavera-e08d4
-        run: node tools/verify-seo-deploy.mjs
+        run: npx --yes firebase-tools@15.22.1 deploy --project calabriavera-e08d4 --only firestore:rules,firestore:indexes
+
+      - name: Deploy React su Firebase Hosting
+        working-directory: source/frontend-react
+        run: npx --yes firebase-tools@15.22.1 deploy --project calabriavera-e08d4 --config firebase.react.json --only hosting
+
+      - name: Verifica build pubblicata su calabriavera.com
+        working-directory: source
+        shell: bash
+        run: |
+          set -euo pipefail
+          expected="$(git rev-parse HEAD)"
+          live="$(curl --fail --silent --show-error --location --retry 6 --retry-delay 3 -H 'Cache-Control: no-cache' "https://calabriavera.com/build-version.txt?run=$GITHUB_RUN_ID" | tr -d '\r\n')"
+          test "$live" = "$expected"
+          html="$(curl --fail --silent --show-error --location --retry 6 --retry-delay 3 -H 'Cache-Control: no-cache' "https://calabriavera.com/?run=$GITHUB_RUN_ID")"
+          printf '%s' "$html" | grep -Eqi '<meta[^>]+name=["'"']robots["'"'][^>]+content=["'"']index,follow'
+          echo "React produzione verificato: $live"
 
   admin-maintenance:
     needs: retry_gate
@@ -150,7 +122,7 @@ jobs:
         uses: actions/checkout@v7
         with:
           repository: ${{ secrets.PRIVATE_REPO }}
-          token: ${{ secrets.PRIVATE_REPO_PAT || secrets.PERSONAL_ACCESS_TOKEN || secrets.PAT || secrets.GH_PAT || secrets.GITHUB_PAT }}
+          token: ${{ env.PRIVATE_REPO_PAT }}
           ref: main
           path: source
           persist-credentials: false
