@@ -6,7 +6,7 @@ if len(sys.argv) != 2:
 
 root = Path(sys.argv[1]).resolve()
 
-# Catalog: restore exact final pre-React labels/placeholders.
+# Catalog: restore exact final pre-React labels/placeholders and DOM placement.
 p = root / "frontend-react/src/pages/CatalogPage.tsx"
 s = p.read_text()
 marker = "const PAGE_SIZE = 18;\n"
@@ -26,9 +26,19 @@ s = s.replace('placeholder={uiText("searchWhatHint",language)}', 'placeholder={L
 s = s.replace('<option value="">{uiText("all",language)}</option>{categoryOptions.map', '<option value="">{LEGACY_CATALOG_ALL[language]}</option>{categoryOptions.map')
 s = s.replace('<option value="">{uiText("all",language)}</option>{PROVINCES.map', '<option value="">{LEGACY_CATALOG_ALL[language]}</option>{PROVINCES.map')
 s = s.replace('<option value="">{uiText("allCities",language)}</option>{cities.map', '<option value="">{LEGACY_CATALOG_ALL[language]}</option>{cities.map')
+old_catalog = '''            <label>{uiText("what",language)}<input id="keyword" name="keyword" value={keyword} onChange={(event)=>setKeyword(event.target.value)} list="cv-catalog-suggestions" autoComplete="off" placeholder={LEGACY_CATALOG_SEARCH[language]} /></label>
+            <datalist id="cv-catalog-suggestions">{suggestions.map((value)=><option key={value} value={value}/>)}</datalist>
+            <span className="cv-smart-hint">Suggerimenti per nome, città e categoria; i risultati più pertinenti vengono mostrati prima.</span>
+'''
+new_catalog = '''            <label>{uiText("what",language)}<input id="keyword" name="keyword" value={keyword} onChange={(event)=>setKeyword(event.target.value)} list="cv-catalog-suggestions" autoComplete="off" placeholder={LEGACY_CATALOG_SEARCH[language]} /><datalist id="cv-catalog-suggestions">{suggestions.map((value)=><option key={value} value={value}/>)}</datalist><span className="cv-smart-hint">Suggerimenti per nome, città e categoria; i risultati più pertinenti vengono mostrati prima.</span></label>
+'''
+if old_catalog in s:
+    s = s.replace(old_catalog, new_catalog, 1)
+elif new_catalog not in s:
+    raise SystemExit("Catalog smart-hint DOM target missing")
 p.write_text(s)
 
-# Styles: remove React-only catalog shift and include the exact legacy blog tab CSS.
+# Keep the previous source parity markers; these do not own route styling at runtime.
 p = root / "frontend-react/src/styles.css"
 s = p.read_text()
 s = s.replace('body[data-page="catalog"] .cv-smart-hint{font-size:10px;line-height:1.45;color:#607080;margin-top:-5px}', '')
@@ -43,21 +53,28 @@ body[data-page="blog"] .cv-blog-tab.is-active{background:#00345b;color:#fff;box-
 '''
 p.write_text(s)
 
-# Blog: CSS is bundled in React, so remove the broken runtime request for a file not copied to public/.
+# Blog: put the exact legacy blog-sections.css rules in the rendered page.
+# styles.css is intentionally not a runtime owner for these legacy route bundles.
 p = root / "frontend-react/src/pages/MagazinePage.tsx"
 s = p.read_text()
-block = '''  useEffect(() => {
-    if (document.querySelector('link[data-cv-blog-sections]')) return;
-    const link = document.createElement("link");
-    link.rel = "stylesheet";
-    link.href = "/assets/css/blog-sections.css?v=20260905-2";
-    link.dataset.cvBlogSections = "";
-    document.head.appendChild(link);
-  }, []);
-
+if "BLOG_SECTIONS_CSS" not in s:
+    anchor = "const VISIBLE_PAGE_SIZE = 12;\n"
+    if anchor not in s:
+        raise SystemExit("Magazine CSS insertion point missing")
+    css = r'''const BLOG_SECTIONS_CSS = `
+body[data-page="blog"] .cv-blog-tabs{display:flex;gap:10px;flex-wrap:wrap;margin:0 0 1.4rem;padding:6px;border:1px solid rgba(0,52,91,.12);border-radius:14px;background:#f5f8fa;width:max-content;max-width:100%}
+body[data-page="blog"] .cv-blog-tab{appearance:none;border:0;border-radius:10px;padding:.72rem 1rem;background:transparent;color:#00345b;font-weight:800;line-height:1.15;cursor:pointer}
+body[data-page="blog"] .cv-blog-tab:hover,body[data-page="blog"] .cv-blog-tab:focus-visible{background:#e8f0f5;outline:none}
+body[data-page="blog"] .cv-blog-tab.is-active{background:#00345b;color:#fff;box-shadow:0 4px 14px rgba(0,52,91,.18)}
+@media(max-width:560px){body[data-page="blog"] .cv-blog-tabs{display:grid;grid-template-columns:1fr 1fr;width:100%;gap:6px}body[data-page="blog"] .cv-blog-tab{padding:.68rem .55rem;font-size:.9rem}}
+`;
 '''
-if block in s:
-    s = s.replace(block, "", 1)
+    s = s.replace(anchor, anchor + css, 1)
+if '<style>{BLOG_SECTIONS_CSS}</style>' not in s:
+    target = '  return (<>'
+    if target not in s:
+        raise SystemExit("Magazine return target missing")
+    s = s.replace(target, '  return (<><style>{BLOG_SECTIONS_CSS}</style>', 1)
 p.write_text(s)
 
 # Legal pages: reproduce the final assets/js/legal-identity.js DOM transformation.
