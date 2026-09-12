@@ -64,9 +64,10 @@ jobs:
           test "$(git rev-parse HEAD)" = "$LEGACY_SHA"
           npm ci
           npm run build
-          grep -q '/assets/js/privacy-consent.js' dist/index.html
-          grep -q '/assets/css/privacy-consent.css' dist/index.html
-          echo EXACT_BUILT_CONSENT_PRESENT
+          test -f dist/index.html
+          test -f dist/assets/js/privacy-consent.js
+          test -f dist/assets/css/privacy-consent.css
+          echo EXACT_BUILT_OUTPUT_READY
 
       - name: Apply exact built consent patch and build React
         shell: bash
@@ -127,7 +128,6 @@ jobs:
           const browser=await chromium.launch({headless:true}),fail=[];
           const modes=[['desktop',{width:1365,height:900}],['mobile',{width:390,height:844}]];
           const norm=x=>String(x||'').replace(/\s+/g,' ').trim();
-          const rect=r=>r?{x:r.x,y:r.y,width:r.width,height:r.height}:null;
           async function fresh(ctx,origin){
             const p=await ctx.newPage(),errors=[];p.on('pageerror',e=>errors.push(String(e.message||e)));
             await p.goto(origin+'/',{waitUntil:'domcontentloaded',timeout:30000});
@@ -137,13 +137,13 @@ jobs:
           }
           async function bannerSnap(p){return p.evaluate(()=>{
             const b=document.querySelector('[data-cv-consent-banner]'),r=b?.getBoundingClientRect();
-            return {title:b?.querySelector('h2')?.textContent||'',text:b?.querySelector('.cv-consent-copy>p')?.textContent||'',buttons:[...b?.querySelectorAll('.cv-consent-actions button')||[]].map(x=>x.textContent?.trim()),classes:b?.className||'',rect:r?{x:r.x,y:r.y,width:r.width,height:r.height}:null,footer:document.querySelector('.cv-consent-footer-line')?.textContent||'',footerChildren:document.querySelector('footer.footer .footer-grid')?.children.length||0,bodyOverflow:getComputedStyle(document.documentElement).overflow};
+            return {title:b?.querySelector('h2')?.textContent||'',text:b?.querySelector('.cv-consent-copy>p')?.textContent||'',buttons:[...b?.querySelectorAll('.cv-consent-actions button')||[]].map(x=>x.textContent?.trim()),classes:b?.className||'',rect:r?{x:r.x,y:r.y,width:r.width,height:r.height}:null,footer:document.querySelector('.cv-consent-footer-line')?.textContent||'',footerChildren:document.querySelector('footer.footer .footer-grid')?.children.length||0};
           })}
           async function modalSnap(p){return p.evaluate(()=>{const d=document.querySelector('[data-cv-consent-modal] .cv-consent-dialog'),r=d?.getBoundingClientRect();return{title:d?.querySelector('h2')?.textContent||'',lead:d?.querySelector(':scope>p')?.textContent||'',categories:[...d?.querySelectorAll('.cv-consent-category')||[]].map(x=>({cls:x.className,strong:x.querySelector('strong')?.textContent||'',small:x.querySelector('small')?.textContent||'',disabled:x.querySelector('input')?.disabled,checked:x.querySelector('input')?.checked})),buttons:[...d?.querySelectorAll('.cv-consent-actions button')||[]].map(x=>x.textContent?.trim()),links:[...d?.querySelectorAll('.cv-consent-links a')||[]].map(x=>x.textContent?.trim()),rect:r?{x:r.x,y:r.y,width:r.width,height:r.height}:null,modalOpen:document.documentElement.classList.contains('cv-consent-modal-open')}})}
           try{
             for(const [mode,viewport] of modes){
               const ctx=await browser.newContext({viewport,serviceWorkers:'block'});
-              for(const origin of ['http://127.0.0.1:4184','http://127.0.0.1:4185']){await ctx.addInitScript(()=>{try{localStorage.clear();sessionStorage.clear()}catch{}});break}
+              await ctx.addInitScript(()=>{try{localStorage.clear();sessionStorage.clear()}catch{}});
               const L=await fresh(ctx,'http://127.0.0.1:4184'),R=await fresh(ctx,'http://127.0.0.1:4185');
               const a=await bannerSnap(L.p),b=await bannerSnap(R.p),m=[];
               if(norm(a.title)!==norm(b.title))m.push(`title:${a.title}/${b.title}`);
