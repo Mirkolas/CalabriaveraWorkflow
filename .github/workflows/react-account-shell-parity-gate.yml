@@ -64,6 +64,7 @@ jobs:
         run: |
           set -euo pipefail
           python - <<'PY'
+          import re
           from pathlib import Path
 
           root = Path('source/frontend-react/src')
@@ -72,10 +73,9 @@ jobs:
           for name in ('DashboardPage.tsx', 'FavoritesPage.tsx', 'ProfilePage.tsx', 'MessagesPage.tsx'):
               path = root / 'pages' / name
               text = path.read_text()
-              old = 'robots: "noindex,nofollow"'
-              if old not in text:
+              text, count = re.subn(r'robots:\s*"noindex,nofollow"', 'robots: "index,follow"', text, count=1)
+              if count != 1:
                   raise SystemExit(f'{name}: robots legacy target non trovato')
-              text = text.replace(old, 'robots: "index,follow"', 1)
               path.write_text(text)
 
           # Dashboard: replica toast e stati legacy, senza introdurre UI aggiuntiva.
@@ -162,6 +162,7 @@ jobs:
         run: |
           set -euo pipefail
           python - <<'PY'
+          import re
           from pathlib import Path
 
           oracle = Path('oracle')
@@ -183,8 +184,8 @@ jobs:
 
           for name in ('DashboardPage.tsx', 'FavoritesPage.tsx', 'ProfilePage.tsx', 'MessagesPage.tsx'):
               value = (react / 'pages' / name).read_text()
-              assert 'robots: "index,follow"' in value, name
-              assert 'robots: "noindex,nofollow"' not in value, name
+              assert re.search(r'robots:\s*"index,follow"', value), name
+              assert not re.search(r'robots:\s*"noindex,nofollow"', value), name
 
           assert 'legacyToast("Attività eliminata.")' in dashboard
           assert 'legacyToast("Impossibile eliminare l’attività.")' in dashboard
