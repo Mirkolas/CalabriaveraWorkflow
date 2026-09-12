@@ -4,18 +4,21 @@ const { chromium } = require(process.env.PLAYWRIGHT_MODULE || 'playwright');
 
 const MAIN=(process.env.MAIN_BASE_URL||'https://calabriavera.com').replace(/\/$/,'');
 const REACT=(process.env.STAGING_BASE_URL||'https://calabriavera.sonotacamirko.workers.dev').replace(/\/$/,'');
+const EXPECTED_SHA=process.env.EXPECTED_SHA||'';
+const EXPECTED_REVISION='20260912-catalog-map-v2';
 const OUT=path.resolve(process.env.PARITY_OUT||'parity-audit-fast');
 fs.mkdirSync(OUT,{recursive:true});
 
 function countFrom(text=''){ const m=String(text).match(/(\d+)\s+attivit/i); return m?Number(m[1]):-1; }
 
 async function capture(browser, base, route, label){
-  const context=await browser.newContext({viewport:{width:1365,height:900}});
+  const context=await browser.newContext({viewport:{width:1365,height:900},serviceWorkers:'block'});
   const page=await context.newPage();
   const errors=[];
   page.on('pageerror',e=>errors.push(`page:${e.message||e}`));
   page.on('console',m=>{ if(m.type()==='error'&&!/favicon|ERR_BLOCKED_BY_CLIENT|tile|net::ERR_ABORTED/i.test(m.text())) errors.push(`console:${m.text()}`); });
-  const response=await page.goto(base+route,{waitUntil:'domcontentloaded',timeout:20000}).catch(()=>null);
+  const suffix=base===REACT?`${route.includes('?')?'&':'?'}gate=${encodeURIComponent(EXPECTED_SHA||Date.now())}`:'';
+  const response=await page.goto(base+route+suffix,{waitUntil:'domcontentloaded',timeout:20000}).catch(()=>null);
   if(route==='/catalogo'){
     await page.waitForFunction(()=>/^\d+\s+attivit/i.test(document.querySelector('#result-count')?.textContent?.trim()||'') && document.querySelectorAll('#results>.activity-item').length>0,null,{timeout:12000}).catch(()=>{});
   }else{
@@ -39,6 +42,8 @@ async function capture(browser, base, route, label){
       clusters:document.querySelectorAll('.cv-map-cluster-shell').length, pins:document.querySelectorAll('.cv-map-pin-shell').length,
       mapPanel:Boolean(document.querySelector('#map-panel')), fitButton:Boolean(document.querySelector('#map-fit-results')), mobileFilterButton:Boolean(document.querySelector('#map-mobile-filters')),
       serviceVisible:visible(document.querySelector('#service')), verifiedVisible:visible(document.querySelector('#verified')), mapResultsVisible:visible(document.querySelector('#map-results')),
+      catalogRevision:document.querySelector('[data-react-catalog-revision]')?.getAttribute('data-react-catalog-revision')||'',
+      mapRevision:document.querySelector('[data-react-map-revision]')?.getAttribute('data-react-map-revision')||'',
       overflow:Math.max(0,document.documentElement.scrollWidth-document.documentElement.clientWidth),
     };
   });
@@ -60,13 +65,15 @@ async function capture(browser, base, route, label){
       capture(browser,REACT,'/mappa','map-exact-react'),
     ]);
   } finally { await browser.close(); }
-  const report={generatedAt:new Date().toISOString(),main:MAIN,react:REACT,mainCatalog,reactCatalog,mainMap,reactMap,failures:[]};
+  const report={generatedAt:new Date().toISOString(),expectedSha:EXPECTED_SHA,expectedRevision:EXPECTED_REVISION,main:MAIN,react:REACT,mainCatalog,reactCatalog,mainMap,reactMap,failures:[]};
   const f=report.failures;
   for(const [name,row] of Object.entries({mainCatalog,reactCatalog,mainMap,reactMap})){
     if(row.status!==200) f.push(`${name}: HTTP ${row.status}`);
     if(row.errors.length) f.push(`${name}: ${row.errors.join(' | ')}`);
     if(row.overflow>4) f.push(`${name}: horizontal overflow ${row.overflow}px`);
   }
+  if(reactCatalog.catalogRevision!==EXPECTED_REVISION) f.push(`catalog runtime revision mismatch expected=${EXPECTED_REVISION} actual=${reactCatalog.catalogRevision||'missing'}`);
+  if(reactMap.mapRevision!==EXPECTED_REVISION) f.push(`map runtime revision mismatch expected=${EXPECTED_REVISION} actual=${reactMap.mapRevision||'missing'}`);
   if(mainCatalog.count<52||reactCatalog.count!==mainCatalog.count) f.push(`catalog total mismatch main=${mainCatalog.count} react=${reactCatalog.count}`);
   if(mainCatalog.activityCards!==reactCatalog.activityCards||reactCatalog.activityCards!==Math.min(18,reactCatalog.count)) f.push(`catalog initial cards mismatch main=${mainCatalog.activityCards} react=${reactCatalog.activityCards}`);
   for(const key of ['categoryOptions','provinceOptions','cityOptions']) if(mainCatalog[key]!==reactCatalog[key]) f.push(`catalog ${key} mismatch main=${mainCatalog[key]} react=${reactCatalog[key]}`);
