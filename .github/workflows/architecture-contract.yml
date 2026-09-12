@@ -12,6 +12,8 @@ on:
       - '.github/workflows/cloudflare-r2-static-images.yml'
       - '.github/workflows/cloudflare-r2-migrate-business-images.yml'
       - '.github/workflows/firebase-deploy.yml'
+      - '.github/workflows/daily-backup.yml'
+      - '.github/workflows/restore.yml'
 
 permissions:
   contents: read
