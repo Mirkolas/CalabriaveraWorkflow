@@ -1,4 +1,4 @@
-name: Architecture Contract - Firebase R2 Worker D1
+name: Architecture Contract - Firebase Firestore R2 Worker
 
 on:
   workflow_dispatch:
@@ -8,8 +8,9 @@ on:
     branches: [main]
     paths:
       - '.github/workflows/architecture-contract.yml'
-      - '.github/workflows/cloudflare-d1-workflows.yml'
-      - '.github/workflows/cloudflare-d1-sync-after-deploy.yml'
+      - '.github/workflows/magazine-sync.yml'
+      - '.github/workflows/cloudflare-r2-static-images.yml'
+      - '.github/workflows/cloudflare-r2-migrate-business-images.yml'
       - '.github/workflows/firebase-deploy.yml'
 
 permissions:
@@ -58,7 +59,7 @@ jobs:
         working-directory: source/frontend-react
         run: node scripts/verify-runtime-architecture.mjs
 
-      - name: Verifica che D1 resti fuori dal runtime del sito
+      - name: Verifica assenza D1 e presenza R2
         shell: bash
         run: |
           set -euo pipefail
@@ -68,16 +69,32 @@ jobs:
           fi
           grep -q '"binding"[[:space:]]*:[[:space:]]*"IMAGES"' source/frontend-react/wrangler.jsonc
           grep -q '"bucket_name"[[:space:]]*:[[:space:]]*"calabriavera-images"' source/frontend-react/wrangler.jsonc
-          echo "Runtime: Firebase Auth/Firestore + R2 + Worker; D1 assente."
+          test ! -e source/frontend-react/d1
+          test ! -e source/frontend-react/scripts/build-d1-seed.mjs
+          test ! -e source/tools/lib/d1-workflow-store.mjs
+          if grep -REqi --exclude='architecture-contract.yml' 'AUTOMATION_STATE_BACKEND:[[:space:]]*d1|D1_DATABASE|wrangler@4[[:space:]]+d1' workflow-repo/.github/workflows; then
+            echo "::error::I workflow non devono più usare D1."
+            exit 1
+          fi
+          echo "Architettura: Firebase Auth/Firestore + R2 + Worker; D1 rimosso."
 
-      - name: Verifica che D1 sia usato dai workflow automatici
+      - name: Verifica migrazione immagini R2 a letture Firestore limitate
         shell: bash
         run: |
           set -euo pipefail
-          for workflow in \
-            workflow-repo/.github/workflows/cloudflare-d1-workflows.yml \
-            workflow-repo/.github/workflows/cloudflare-d1-sync-after-deploy.yml; do
-            test -f "$workflow" || { echo "::error::Workflow D1 mancante: $workflow"; exit 1; }
-            grep -Fq 'wrangler@4 d1' "$workflow" || { echo "::error::Nessun comando D1 trovato in $workflow"; exit 1; }
-          done
-          echo "D1 confinato ai workflow automatici verificati."
+          script=source/tools/admin/migrate-business-images-r2.mjs
+          node --check "$script"
+          grep -Fq 'scanPaged' "$script"
+          grep -Fq 'FIRESTORE_QUOTA_EXHAUSTED' "$script"
+          grep -Fq 'MIGRATE_PAGE_SIZE' "$script"
+          grep -Fq 'MIGRATE_SCAN_LIMIT' "$script"
+          grep -Fq 'orderBy(FieldPath.documentId())' "$script"
+          if grep -Fq "db.collection('businesses').get()" "$script"; then
+            echo "::error::La migrazione immagini non può ripristinare una scansione completa di businesses."
+            exit 1
+          fi
+          if grep -Fq "db.collectionGroup('images').get()" "$script"; then
+            echo "::error::La migrazione immagini non può ripristinare una scansione completa collectionGroup images."
+            exit 1
+          fi
+          echo "Migrazione immagini R2: sintassi e limiti Firestore verificati."
