@@ -83,8 +83,13 @@ if old3 not in s:
 s = s.replace(old3, new3, 1)
 
 # Public pages must carry canonical + hreflang in the HTML response itself, before client hydration.
-marker = '  const cleanRoute = page.path.replace(/^\\/(?:en|fr|de|es)(?=\\/|$)/, "") || "/";\n'
-seo = '''  if (!robots.startsWith("noindex")) {
+# The exact-built CSS patch intentionally removes the old cleanRoute/parity-link block, so anchor on
+# the title replacement line that remains stable after that transform.
+anchor = '  html = html.replace(/<title>'
+idx = s.find(anchor)
+if idx < 0:
+    raise SystemExit('prerender title replacement contract changed')
+seo = r'''  if (!robots.startsWith("noindex")) {
     const canonicalPath = page.canonicalPath || page.path || "/";
     const canonicalClean = canonicalPath.replace(/^\/(?:en|fr|de|es)(?=\/|$)/, "") || "/";
     const canonicalHref = `https://calabriavera.com${canonicalPath === "/" ? "" : canonicalPath}`;
@@ -97,9 +102,7 @@ seo = '''  if (!robots.startsWith("noindex")) {
     html = html.replace("</head>", `<link rel="canonical" href="${canonicalHref}" />${alternateLinks}</head>`);
   }
 '''
-if marker not in s:
-    raise SystemExit('prerender cleanRoute contract changed')
-s = s.replace(marker, seo + marker, 1)
+s = s[:idx] + seo + s[idx:]
 p.write_text(s)
 
 print('Activity indexing patch applied: live approved merge, Firestore detail fallback, 1000-row resolver, uncapped prerender, server canonical/hreflang')
