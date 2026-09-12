@@ -41,7 +41,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          test "$(git -C source rev-parse HEAD)" = "ce65efff3fd46a0ae44dced4d7991a8154b1c559"
+          test "$(git -C source rev-parse HEAD)" = "c828a8a22ac045a3c307df71063c852e4a950eaa"
       - uses: actions/setup-node@v7
         with:
           node-version: '24'
@@ -82,4 +82,15 @@ jobs:
           for lang in it en fr de es; do test -s "source/frontend-react/dist/assets/flags/$lang.svg"; done
           grep -q 'footerActivities: "Attività"' source/frontend-react/src/lib/language.ts
           grep -q 'social-links' source/frontend-react/src/components/Layout.tsx
+          python3 - <<'PY'
+          from pathlib import Path
+          import re
+          generated=Path('source/frontend-react/src/generated/tourism-data-core.ts').read_text(encoding='utf-8')
+          ids=re.findall(r'"id"\s*:\s*"([^"]+)"',generated)
+          assert len(ids)==52 and len(set(ids))==52, len(ids)
+          assert 'turismo-isola-dino' in ids
+          bundle='\n'.join(p.read_text(encoding='utf-8',errors='ignore') for p in Path('source/frontend-react/dist/assets').glob('*.js'))
+          assert '20260912-catalog-map-v2' in bundle
+          print('FINAL_GENERATED_ASSETS_GREEN')
+          PY
           git -C source diff --check
