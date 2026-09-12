@@ -1,0 +1,188 @@
+name: React exact backup parity - shell v2
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/react-exact-shell-parity-v2.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: react-exact-shell-parity-v2
+  cancel-in-progress: true
+
+jobs:
+  patch-and-diagnose:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      PRIVATE_REPO: ${{ secrets.PRIVATE_REPO }}
+      PRIVATE_REPO_PAT: ${{ secrets.PRIVATE_REPO_PAT || secrets.PERSONAL_ACCESS_TOKEN || secrets.PAT || secrets.GH_PAT || secrets.GITHUB_PAT }}
+      LEGACY_SHA: 7be434e3418e95cff9825e4cc3f4b4ed75cd1076
+    steps:
+      - name: Verify access
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -n "$PRIVATE_REPO"; test -n "$PRIVATE_REPO_PAT"
+
+      - name: Checkout workflow tools
+        uses: actions/checkout@v7
+        with:
+          path: workflow
+          persist-credentials: false
+
+      - name: Checkout exact backup
+        uses: actions/checkout@v7
+        with:
+          repository: ${{ secrets.PRIVATE_REPO }}
+          token: ${{ env.PRIVATE_REPO_PAT }}
+          ref: backup-main-pre-react-2026-09-11
+          path: legacy
+          persist-credentials: false
+          fetch-depth: 1
+
+      - name: Checkout React branch
+        uses: actions/checkout@v7
+        with:
+          repository: ${{ secrets.PRIVATE_REPO }}
+          token: ${{ env.PRIVATE_REPO_PAT }}
+          ref: react-migration
+          path: source
+          persist-credentials: true
+          fetch-depth: 5
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version: '24'
+
+      - name: Verify source and apply shell patch
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git -C legacy rev-parse HEAD)" = "$LEGACY_SHA"
+          cd source
+          python3 ../workflow/scripts/patch-react-exact-shell.py
+          cd frontend-react
+          npm ci
+          npm run build
+
+      - name: Install browser tooling
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p /tmp/cv-shell-v2
+          npm install --prefix /tmp/cv-shell-v2 --no-package-lock --no-save playwright@1.62.1 serve@14.2.4
+          /tmp/cv-shell-v2/node_modules/.bin/playwright install --with-deps chromium
+
+      - name: Start exact backup and React
+        shell: bash
+        run: |
+          set -euo pipefail
+          nohup /tmp/cv-shell-v2/node_modules/.bin/serve legacy -l 4184 >/tmp/cv-shell-v2-legacy.log 2>&1 & echo $! >/tmp/cv-shell-v2-legacy.pid
+          nohup /tmp/cv-shell-v2/node_modules/.bin/serve -s source/frontend-react/dist -l 4185 >/tmp/cv-shell-v2-react.log 2>&1 & echo $! >/tmp/cv-shell-v2-react.pid
+          for attempt in {1..30}; do
+            if curl -fsS http://127.0.0.1:4184/index.html >/dev/null && curl -fsS http://127.0.0.1:4185/ >/dev/null; then exit 0; fi
+            sleep 1
+          done
+          exit 1
+
+      - name: Generate shell comparison report
+        env:
+          PLAYWRIGHT_MODULE: /tmp/cv-shell-v2/node_modules/playwright
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p shell-report
+          node --input-type=module <<'NODE'
+          import { createRequire } from 'node:module';
+          import fs from 'node:fs';
+          const require=createRequire(import.meta.url),{chromium}=require(process.env.PLAYWRIGHT_MODULE);
+          const browser=await chromium.launch({headless:true});
+          const routes=[['home','/index.html','/'],['catalogo','/catalogo.html','/catalogo'],['mappa','/mappa.html','/mappa'],['blog','/blog.html','/blog'],['login','/login.html','/login'],['registrazione','/registrazione.html','/registrazione'],['privacy','/privacy-policy.html','/privacy-policy'],['cookie','/cookie-policy.html','/cookie-policy'],['termini','/termini.html','/termini'],['note-legali','/note-legali.html','/note-legali'],['chi-siamo','/chi-siamo.html','/chi-siamo'],['contatti','/contatti.html','/contatti']];
+          const modes=[['desktop',{width:1365,height:900}],['mobile',{width:390,height:844}]];
+          const consent={version:3,scope:'technical-only',savedAt:new Date().toISOString(),expiresAt:new Date(Date.now()+30*864e5).toISOString(),necessary:true,preferences:false,analytics:false,marketing:false,source:'gate'};
+          const rows=[];
+          try{
+            for(const [mode,viewport] of modes){
+              const context=await browser.newContext({viewport,serviceWorkers:'block'});
+              await context.addInitScript(v=>{try{localStorage.setItem('cv-cookie-consent-v3',JSON.stringify(v))}catch{}},consent);
+              for(const [name,legacyPath,reactPath] of routes){
+                const row={mode,name,legacyPath,reactPath};
+                for(const [side,origin,p] of [['legacy','http://127.0.0.1:4184',legacyPath],['react','http://127.0.0.1:4185',reactPath]]){
+                  const page=await context.newPage();
+                  const errors=[]; page.on('pageerror',e=>errors.push(String(e.message||e)));
+                  await page.goto(origin+p,{waitUntil:'domcontentloaded',timeout:30000});
+                  await page.waitForTimeout(1400);
+                  const header=await page.locator('header.site-header').evaluate(el=>{
+                    const s=getComputedStyle(el),r=el.getBoundingClientRect(),logo=el.querySelector('.brand-logo')?.getBoundingClientRect(),inner=el.querySelector('.header-inner')?.getBoundingClientRect();
+                    return {bg:s.backgroundColor,color:s.color,height:Math.round(r.height*100)/100,position:s.position,shadow:s.boxShadow,border:s.borderBottom,logoW:logo?Math.round(logo.width*100)/100:0,logoH:logo?Math.round(logo.height*100)/100:0,innerH:inner?Math.round(inner.height*100)/100:0};
+                  }).catch(()=>null);
+                  const footerChildren=await page.locator('footer.footer .footer-grid').evaluate(el=>el.children.length).catch(()=>0);
+                  const css=await page.locator('link[rel="stylesheet"]').evaluateAll(nodes=>nodes.map(n=>new URL(n.href,location.origin).pathname));
+                  const menu=await page.locator('#menu-toggle').evaluate(el=>{const s=getComputedStyle(el),r=el.getBoundingClientRect();return {display:s.display,w:Math.round(r.width*100)/100,h:Math.round(r.height*100)/100,text:el.textContent?.trim()||''}}).catch(()=>null);
+                  row[side]={header,footerChildren,css,menu,errors};
+                  await page.screenshot({path:`shell-report/${mode}-${name}-${side}.png`,fullPage:false});
+                  await page.close();
+                }
+                const mismatches=[];
+                const a=row.legacy.header,b=row.react.header;
+                if(!a||!b)mismatches.push('header-missing'); else {
+                  if(a.bg.replace(/\s+/g,'')!==b.bg.replace(/\s+/g,''))mismatches.push(`bg:${a.bg}!=${b.bg}`);
+                  if(Math.abs(a.height-b.height)>1)mismatches.push(`height:${a.height}!=${b.height}`);
+                  if(a.position!==b.position)mismatches.push(`position:${a.position}!=${b.position}`);
+                  if(Math.abs(a.logoW-b.logoW)>1||Math.abs(a.logoH-b.logoH)>1)mismatches.push(`logo:${a.logoW}x${a.logoH}!=${b.logoW}x${b.logoH}`);
+                  if(Math.abs(a.innerH-b.innerH)>1)mismatches.push(`innerH:${a.innerH}!=${b.innerH}`);
+                }
+                if(row.legacy.footerChildren!==row.react.footerChildren)mismatches.push(`footerChildren:${row.legacy.footerChildren}!=${row.react.footerChildren}`);
+                if((row.legacy.menu?.display||'')!==(row.react.menu?.display||''))mismatches.push(`menuDisplay:${row.legacy.menu?.display}!=${row.react.menu?.display}`);
+                row.mismatches=mismatches;
+                rows.push(row);
+                console.log(`${mode}/${name}: ${mismatches.length?mismatches.join(' | '):'OK'}`);
+              }
+              await context.close();
+            }
+          }finally{await browser.close()}
+          fs.writeFileSync('shell-report/report.json',JSON.stringify(rows,null,2));
+          NODE
+
+      - name: Upload shell report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: react-exact-shell-parity-v2-report
+          path: shell-report
+          retention-days: 7
+
+      - name: Enforce shell equality
+        shell: bash
+        run: |
+          set -euo pipefail
+          node <<'NODE'
+          const rows=require('./shell-report/report.json');
+          const bad=rows.filter(row=>row.mismatches?.length || row.react.errors?.length);
+          if(bad.length){console.error(JSON.stringify(bad.map(x=>({mode:x.mode,name:x.name,mismatches:x.mismatches,legacy:x.legacy.header,react:x.react.header,legacyFooter:x.legacy.footerChildren,reactFooter:x.react.footerChildren})),null,2));process.exit(1)}
+          console.log('EXACT_SHELL_GREEN');
+          NODE
+
+      - name: Commit exact shell to react-migration
+        working-directory: source
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name 'calabriavera-parity-bot'; git config user.email 'actions@users.noreply.github.com'
+          git add frontend-react/scripts/copy-legacy-assets.mjs frontend-react/src/components/Layout.tsx frontend-react/src/generated/main-route-css.ts frontend-react/public/main-route-css.json
+          git diff --cached --quiet && { echo 'No changes to commit'; exit 0; }
+          git commit -m 'fix: match React shell and CSS cascade to exact pre-React backup'
+          git push origin HEAD:react-migration
+          echo "PATCH_SHA=$(git rev-parse HEAD)"
+
+      - name: Stop servers
+        if: always()
+        shell: bash
+        run: |
+          kill "$(cat /tmp/cv-shell-v2-legacy.pid 2>/dev/null)" 2>/dev/null || true
+          kill "$(cat /tmp/cv-shell-v2-react.pid 2>/dev/null)" 2>/dev/null || true
