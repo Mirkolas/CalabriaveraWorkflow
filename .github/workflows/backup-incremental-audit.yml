@@ -31,13 +31,14 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+          find assets frontend-react tools apps-script scripts tests -type f \
+            \( -name '*.js' -o -name '*.mjs' -o -name '*.cjs' -o -name '*.ts' -o -name '*.tsx' -o -name '*.gs' \) \
+            ! -path '*/node_modules/*' ! -path '*/dist/*' ! -path '*/dist-ssr/*' -print0 > /tmp/cv-files
           echo '=== Firebase SDK mutations ==='
-          rg -n --glob '!node_modules/**' --glob '!dist/**' --glob '!frontend-react/dist/**' --glob '!frontend-react/dist-ssr/**' \
-            '\b(setDoc|addDoc|updateDoc|deleteDoc|writeBatch|runTransaction|batch\.set|batch\.update|batch\.delete|transaction\.set|transaction\.update|transaction\.delete)\b' \
-            assets frontend-react tools apps-script scripts tests firestore.rules || true
+          xargs -0 grep -nEH '\b(setDoc|addDoc|updateDoc|deleteDoc|writeBatch|runTransaction|batch\.(set|update|delete)|transaction\.(set|update|delete))\b' < /tmp/cv-files || true
           echo '=== REST/Admin mutations ==='
-          rg -n --glob '!node_modules/**' --glob '!dist/**' --glob '!frontend-react/dist/**' --glob '!frontend-react/dist-ssr/**' \
-            '(documents:commit|documents:batchWrite|method:[[:space:]]*["'"'](PATCH|DELETE)["'"']|\.delete\(|deleteDocument|updateDocument)' \
-            tools apps-script scripts assets frontend-react || true
+          xargs -0 grep -nEH 'documents:(commit|batchWrite)|deleteDocument|updateDocument|\.delete\(' < /tmp/cv-files || true
           echo '=== Existing audit/change-log markers ==='
-          rg -n --glob '!node_modules/**' --glob '!dist/**' '(_cvBackupChanges|auditEvent|adminActions|updatedAt|deletedAt)' assets frontend-react tools apps-script firestore.rules | head -n 500 || true
+          xargs -0 grep -nEH '_cvBackupChanges|auditEvent|adminActions|updatedAt|deletedAt' < /tmp/cv-files | head -n 800 || true
+          echo '=== Rules references ==='
+          grep -nE '_cvBackupChanges|adminActions|auditLogs|allow (create|update|delete|write)' firestore.rules || true
