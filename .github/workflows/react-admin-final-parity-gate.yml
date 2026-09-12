@@ -88,7 +88,7 @@ jobs:
         working-directory: oracle
         run: npm run build
 
-      - name: Vendor runtime oracle e abilita gate offline
+      - name: Vendor runtime oracle, route esatte e gate offline
         shell: bash
         run: |
           set -euo pipefail
@@ -107,7 +107,9 @@ jobs:
           new = '''// Admin parity is pinned to the immutable BUILD-PATCHED runtime produced by the authoritative pre-React oracle.\n// The vendored files live outside public so every React build recreates public/assets/js deterministically.\nconst oracleAdminRoot = resolve(reactRoot, "oracle-admin");\nconst oracleLegacyJs = resolve(oracleAdminRoot, "assets/js");\nconst publicLegacyJs = resolve(reactRoot, "public/assets/js");\nif (!existsSync(oracleLegacyJs)) throw new Error(`Runtime admin oracle mancante: ${oracleLegacyJs}`);\nif (existsSync(publicLegacyJs)) rmSync(publicLegacyJs, { recursive: true, force: true });\nmkdirSync(dirname(publicLegacyJs), { recursive: true });\ncpSync(oracleLegacyJs, publicLegacyJs, { recursive: true });\nconst oracleFirebaseConfig = resolve(oracleAdminRoot, "firebase/firebase-config.js");\nif (!existsSync(oracleFirebaseConfig)) throw new Error(`Config Firebase oracle mancante: ${oracleFirebaseConfig}`);\nconst publicFirebaseConfig = resolve(reactRoot, "public/firebase/firebase-config.js");\nmkdirSync(dirname(publicFirebaseConfig), { recursive: true });\ncopyFileSync(oracleFirebaseConfig, publicFirebaseConfig);\nconsole.log(`Bridge admin oracle: ${publicLegacyJs}`);\n'''
           if old not in text:
               raise SystemExit('blocco build/copy legacy non riconosciuto')
-          copier.write_text(text.replace(old, new, 1))
+          text = text.replace(old, new, 1)
+          text = text.replace('  "/admin/backup": "pages/admin/backup.html",\n', '')
+          copier.write_text(text)
 
           prerender = Path('source/frontend-react/scripts/prerender-home.mjs')
           text = prerender.read_text()
@@ -120,6 +122,25 @@ jobs:
               raise SystemExit('queryCollection non trovata')
           text = text.replace(query_anchor, query_anchor + '  if (PRERENDER_OFFLINE) return [];\n', 1)
           prerender.write_text(text)
+
+          admin = Path('source/frontend-react/src/pages/AdminPage.tsx')
+          text = admin.read_text()
+          if '  backup: "Backup",\n' not in text:
+              raise SystemExit('label admin backup non trovato')
+          admin.write_text(text.replace('  backup: "Backup",\n', '', 1))
+
+          app = Path('source/frontend-react/src/App.tsx')
+          text = app.read_text()
+          insert_after = 'const serverRendering = typeof window === "undefined";\n'
+          admin_routes = '''const ADMIN_ROUTES = new Set([\n  "/admin/attivita", "/admin/recensioni", "/admin/segnalazioni", "/admin/utenti",\n  "/admin/comunicazioni", "/admin/messaggi", "/admin/blog", "/admin/categorie",\n  "/admin/comuni", "/admin/impostazioni", "/admin/seo", "/admin/sistema",\n]);\n'''
+          if insert_after not in text:
+              raise SystemExit('anchor App admin routes non trovato')
+          text = text.replace(insert_after, insert_after + admin_routes, 1)
+          old_route = '  if (path === "/admin" || path.startsWith("/admin/")) return <AdminPage />;\n'
+          new_route = '  if (path === "/admin" || ADMIN_ROUTES.has(path)) return <AdminPage />;\n'
+          if old_route not in text:
+              raise SystemExit('wildcard admin route non trovato')
+          app.write_text(text.replace(old_route, new_route, 1))
           PY
 
       - name: Verifica vendor identico all'oracle
@@ -166,7 +187,7 @@ jobs:
           done
           echo "Bundle CSS admin: parità byte-per-byte OK"
 
-      - name: Verifica bridge, route e output build
+      - name: Verifica bridge, menu, route e output build
         shell: bash
         run: |
           set -euo pipefail
@@ -175,9 +196,24 @@ jobs:
           from pathlib import Path
 
           admin = Path('source/frontend-react/src/pages/AdminPage.tsx').read_text()
+          app = Path('source/frontend-react/src/App.tsx').read_text()
           route_map = json.loads(Path('source/frontend-react/public/main-route-css.json').read_text())
           css = route_map['routeCss']
           pages = route_map['routePages']
+          legacy_console = Path('oracle/assets/js/admin-console.js').read_text()
+
+          expected_slugs = [
+            'attivita', 'recensioni', 'segnalazioni', 'utenti', 'comunicazioni', 'messaggi',
+            'blog', 'categorie', 'comuni', 'impostazioni', 'seo', 'sistema',
+          ]
+          for slug in expected_slugs:
+              assert f'["{slug}",' in legacy_console, slug
+              assert f'"/admin/{slug}"' in app, slug
+          assert '["backup",' not in legacy_console
+          assert 'backup: "Backup"' not in admin
+          assert '"/admin/backup"' not in app
+          assert 'path.startsWith("/admin/")' not in app
+          assert 'ADMIN_ROUTES.has(path)' in app
 
           expected_css = {
             '/admin': '/assets/css/cv-bundle-28783d3e87e06008.css',
@@ -193,10 +229,11 @@ jobs:
             '/admin/seo': '/assets/css/cv-bundle-28783d3e87e06008.css',
             '/admin/sistema': '/assets/css/cv-bundle-28783d3e87e06008.css',
             '/admin/impostazioni': '/assets/css/cv-bundle-28783d3e87e06008.css',
-            '/admin/backup': '/assets/css/cv-bundle-28783d3e87e06008.css',
           }
           for route, bundle in expected_css.items():
               assert css.get(route) == [bundle], (route, css.get(route), bundle)
+          assert '/admin/backup' not in css
+          assert '/admin/backup' not in pages
 
           for route in ('/admin/segnalazioni', '/admin/comunicazioni', '/admin/sistema'):
               assert pages.get(route) == 'admin-index', (route, pages.get(route))
@@ -226,10 +263,9 @@ jobs:
           assert 'if (PRERENDER_OFFLINE) return [];' in prerender
 
           dist = Path('source/frontend-react/dist')
-          for route in ('admin', 'admin/attivita', 'admin/utenti', 'admin/messaggi', 'admin/segnalazioni', 'admin/comunicazioni', 'admin/sistema'):
-              target = dist / route / 'index.html'
-              assert target.exists(), target
-          print('Admin bridge/routes/offline build: OK')
+          assert (dist / 'index.html').exists()
+          assert list((dist / 'assets').glob('AdminPage-*.js'))
+          print('Admin bridge/menu/routes/offline build: OK')
           PY
 
       - name: Commit runtime oracle immutabile
@@ -241,8 +277,10 @@ jobs:
           git config user.email "actions@users.noreply.github.com"
           git add frontend-react/oracle-admin \
                   frontend-react/scripts/copy-legacy-assets.mjs \
-                  frontend-react/scripts/prerender-home.mjs
+                  frontend-react/scripts/prerender-home.mjs \
+                  frontend-react/src/pages/AdminPage.tsx \
+                  frontend-react/src/App.tsx
           git diff --cached --check
           git diff --cached --quiet && { echo "::error::Nessuna modifica da committare"; exit 1; }
-          git commit -m "fix: pin admin runtime to authoritative oracle build"
+          git commit -m "fix: pin exact oracle admin runtime and routes"
           git push origin HEAD:react-migration
