@@ -7,6 +7,7 @@ on:
       - '.github/workflows/react-admin-parity.yml'
       - 'scripts/patch-react-admin-parity.py'
       - 'scripts/fix-react-admin-generated.py'
+      - 'scripts/fix-react-admin-audit.py'
   workflow_dispatch:
 
 permissions:
@@ -48,7 +49,7 @@ jobs:
           set -euo pipefail
           python3 automation/scripts/patch-react-admin-parity.py
           python3 automation/scripts/fix-react-admin-generated.py
-          nl -ba source/frontend-react/src/pages/AdminPage.tsx | sed -n '126,132p'
+          python3 automation/scripts/fix-react-admin-audit.py
       - name: Build React client SSR and prerender
         working-directory: source/frontend-react
         shell: bash
@@ -74,6 +75,8 @@ jobs:
           grep -q 'Elimina definitivamente' "$f"
           grep -q 'id="settings-form"' "$f"
           grep -q 'auditEvent("admin_conversation_deleted"' source/frontend-react/src/lib/admin.ts
+          grep -q 'admin_conversation_deleted' source/frontend-react/src/lib/auth.ts
+          grep -q "admin() && request.resource.data.event == 'admin_conversation_deleted'" source/firestore.rules
           test -s source/frontend-react/src/pages/BackupPage.tsx
           grep -q 'id="backup-root"' source/frontend-react/src/pages/BackupPage.tsx
           grep -q 'calabriavera/actions/workflows/daily-backup.yml' source/frontend-react/src/pages/BackupPage.tsx
@@ -87,7 +90,7 @@ jobs:
           set -euo pipefail
           git -C source config user.name 'CalabriaVera Automation'
           git -C source config user.email 'actions@users.noreply.github.com'
-          git -C source add frontend-react/src/pages/AdminPage.tsx frontend-react/src/pages/BackupPage.tsx frontend-react/src/App.tsx frontend-react/src/lib/admin.ts
+          git -C source add frontend-react/src/pages/AdminPage.tsx frontend-react/src/pages/BackupPage.tsx frontend-react/src/App.tsx frontend-react/src/lib/admin.ts frontend-react/src/lib/auth.ts firestore.rules
           git -C source diff --cached --quiet && exit 0
           git -C source commit -m 'fix: restore main admin workflows and layout'
           git -C source push origin HEAD:react-migration
