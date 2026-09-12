@@ -1,0 +1,94 @@
+name: React migration - private route gate
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/react-private-route-gate.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  private-routes:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      PRIVATE_REPO: ${{ secrets.PRIVATE_REPO }}
+      PRIVATE_REPO_PAT: ${{ secrets.PRIVATE_REPO_PAT || secrets.PERSONAL_ACCESS_TOKEN || secrets.PAT || secrets.GH_PAT || secrets.GITHUB_PAT }}
+      STAGING_BASE_URL: https://calabriavera.sonotacamirko.workers.dev
+      EXPECTED_SHA: a8af3493560aebdda7763d3abb896aba0f6eac90
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          repository: ${{ secrets.PRIVATE_REPO }}
+          token: ${{ env.PRIVATE_REPO_PAT }}
+          ref: react-migration
+          path: source
+          persist-credentials: false
+          fetch-depth: 0
+      - name: Verify exact app revision and staging deploy
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git -C source rev-parse HEAD)" = "$EXPECTED_SHA"
+          for attempt in {1..72}; do
+            actual="$(curl --fail --silent --show-error --max-time 15 "$STAGING_BASE_URL/build-version.txt?privategate=$attempt" 2>/dev/null | tr -d '\r\n' || true)"
+            if [ "$actual" = "$EXPECTED_SHA" ]; then
+              echo "PRIVATE_GATE_STAGING_SHA_GREEN=$actual"
+              exit 0
+            fi
+            sleep 10
+          done
+          echo "::error::Staging did not publish $EXPECTED_SHA"
+          exit 1
+      - uses: actions/setup-node@v7
+        with:
+          node-version: '24'
+      - name: Install isolated Chromium
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p /tmp/cv-private-gate
+          npm install --prefix /tmp/cv-private-gate --no-package-lock --no-save playwright@1.62.1
+          /tmp/cv-private-gate/node_modules/.bin/playwright install --with-deps chromium
+      - name: Verify anonymous route protection and public backup
+        shell: bash
+        env:
+          PLAYWRIGHT_MODULE: /tmp/cv-private-gate/node_modules/playwright
+        run: |
+          set -euo pipefail
+          node --input-type=module <<'NODE'
+          import { createRequire } from 'node:module';
+          const require=createRequire(import.meta.url);
+          const { chromium }=require(process.env.PLAYWRIGHT_MODULE);
+          const base=process.env.STAGING_BASE_URL.replace(/\/$/,'');
+          const sha=process.env.EXPECTED_SHA;
+          const protectedRoutes=['/profilo','/preferiti','/dashboard','/messaggi','/aggiungi-attivita','/admin','/admin/blog'];
+          const browser=await chromium.launch({headless:true});
+          const failures=[];
+          try {
+            for (const route of protectedRoutes) {
+              const context=await browser.newContext({serviceWorkers:'block'});
+              const page=await context.newPage();
+              const errors=[];
+              page.on('pageerror',e=>errors.push(String(e.message||e)));
+              const response=await page.goto(`${base}${route}?privategate=${sha}`,{waitUntil:'domcontentloaded',timeout:20000}).catch(()=>null);
+              await page.waitForFunction(()=>location.pathname.endsWith('/login') || location.pathname==='/login',{timeout:12000}).catch(()=>{});
+              const path=new URL(page.url()).pathname;
+              if(path!=='/login') failures.push(`${route}: expected /login, got ${page.url()} status=${response?.status()||0}`);
+              if(errors.length) failures.push(`${route}: page errors ${errors.join(' | ')}`);
+              await context.close();
+            }
+            const context=await browser.newContext({serviceWorkers:'block'});
+            const page=await context.newPage();
+            const response=await page.goto(`${base}/backup?privategate=${sha}`,{waitUntil:'domcontentloaded',timeout:20000}).catch(()=>null);
+            await page.waitForSelector('#backup-root',{state:'visible',timeout:12000}).catch(()=>{});
+            const backup=await page.evaluate(()=>({path:location.pathname,root:Boolean(document.querySelector('#backup-root')),title:document.querySelector('h1')?.textContent?.trim()||''}));
+            if(response?.status()!==200||backup.path!=='/backup'||!backup.root||backup.title!=='Backup e ripristino') failures.push(`/backup: ${JSON.stringify({status:response?.status()||0,...backup})}`);
+            await context.close();
+          } finally { await browser.close(); }
+          if(failures.length){console.error(failures.join('\n'));process.exit(1);}
+          console.log('PRIVATE_ROUTE_GATE_GREEN');
+          NODE
