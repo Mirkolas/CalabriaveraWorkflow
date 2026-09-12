@@ -1,0 +1,186 @@
+name: React exact built backup parity - consent v2
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/react-exact-built-consent-parity-v2.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: react-exact-built-consent-parity-v2
+  cancel-in-progress: true
+
+jobs:
+  patch-and-gate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 35
+    env:
+      PRIVATE_REPO: ${{ secrets.PRIVATE_REPO }}
+      PRIVATE_REPO_PAT: ${{ secrets.PRIVATE_REPO_PAT || secrets.PERSONAL_ACCESS_TOKEN || secrets.PAT || secrets.GH_PAT || secrets.GITHUB_PAT }}
+      LEGACY_SHA: 7be434e3418e95cff9825e4cc3f4b4ed75cd1076
+    steps:
+      - name: Verify access
+        run: test -n "$PRIVATE_REPO" && test -n "$PRIVATE_REPO_PAT"
+
+      - name: Checkout workflow tools
+        uses: actions/checkout@v7
+        with:
+          path: workflow
+          persist-credentials: false
+
+      - name: Checkout exact backup
+        uses: actions/checkout@v7
+        with:
+          repository: ${{ secrets.PRIVATE_REPO }}
+          token: ${{ env.PRIVATE_REPO_PAT }}
+          ref: backup-main-pre-react-2026-09-11
+          path: legacy
+          persist-credentials: false
+          fetch-depth: 1
+
+      - name: Checkout React branch
+        uses: actions/checkout@v7
+        with:
+          repository: ${{ secrets.PRIVATE_REPO }}
+          token: ${{ env.PRIVATE_REPO_PAT }}
+          ref: react-migration
+          path: source
+          persist-credentials: true
+          fetch-depth: 5
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version: '24'
+
+      - name: Build exact backup deploy output
+        working-directory: legacy
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$LEGACY_SHA"
+          npm ci
+          npm run build
+          test -f dist/assets/js/privacy-consent.js
+          test -f dist/assets/css/privacy-consent.css
+
+      - name: Apply exact consent patch and build React
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd source
+          python3 ../workflow/scripts/patch-react-exact-consent.py
+          cp ../legacy/assets/css/privacy-consent.css frontend-react/src/consent.css
+          cd frontend-react
+          npm ci
+          npm run build
+          test -f dist/assets/css/privacy-consent.css
+          grep -q 'privacy-consent.css' ../src/components/Layout.tsx
+          grep -q 'assets/css/privacy-consent.css' ../scripts/copy-legacy-assets.mjs
+
+      - name: Install browser tooling
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p /tmp/cv-consent-v2
+          npm install --prefix /tmp/cv-consent-v2 --no-package-lock --no-save playwright@1.62.1 serve@14.2.4
+          /tmp/cv-consent-v2/node_modules/.bin/playwright install --with-deps chromium
+
+      - name: Start built backup and React
+        shell: bash
+        run: |
+          set -euo pipefail
+          nohup /tmp/cv-consent-v2/node_modules/.bin/serve legacy/dist -l 4184 >/tmp/cv-consent-v2-legacy.log 2>&1 & echo $! >/tmp/cv-consent-v2-legacy.pid
+          nohup /tmp/cv-consent-v2/node_modules/.bin/serve -s source/frontend-react/dist -l 4185 >/tmp/cv-consent-v2-react.log 2>&1 & echo $! >/tmp/cv-consent-v2-react.pid
+          for attempt in {1..30}; do
+            curl -fsS http://127.0.0.1:4184/ >/dev/null 2>&1 && curl -fsS http://127.0.0.1:4185/ >/dev/null 2>&1 && exit 0
+            sleep 1
+          done
+          exit 1
+
+      - name: Enforce exact built consent parity
+        env:
+          PLAYWRIGHT_MODULE: /tmp/cv-consent-v2/node_modules/playwright
+        shell: bash
+        run: |
+          set -euo pipefail
+          node --input-type=module <<'NODE'
+          import {createRequire} from 'node:module';
+          const {chromium}=createRequire(import.meta.url)(process.env.PLAYWRIGHT_MODULE);
+          const browser=await chromium.launch({headless:true});
+          const failures=[];
+          const modes=[['desktop',{width:1365,height:900}],['mobile',{width:390,height:844}]];
+          const norm=x=>String(x||'').replace(/\s+/g,' ').trim();
+          async function openFresh(ctx,origin){
+            const p=await ctx.newPage(),errors=[];p.on('pageerror',e=>errors.push(String(e.message||e)));
+            await p.goto(origin+'/',{waitUntil:'domcontentloaded',timeout:30000});
+            await p.locator('[data-cv-consent-banner]').waitFor({state:'visible',timeout:15000});
+            await p.waitForTimeout(250);
+            return {p,errors};
+          }
+          async function snapBanner(p){return p.evaluate(()=>{
+            const b=document.querySelector('[data-cv-consent-banner]'),r=b?.getBoundingClientRect();
+            const buttons=[...b?.querySelectorAll('.cv-consent-actions .button')||[]].map(el=>{const s=getComputedStyle(el),q=el.getBoundingClientRect();return{text:el.textContent?.trim()||'',h:q.height,padding:s.padding,lineHeight:s.lineHeight,fontSize:s.fontSize}});
+            const links=[...document.querySelectorAll('link[data-cv-main-parity]')].map(el=>new URL(el.href,location.origin).pathname);
+            return {title:b?.querySelector('h2')?.textContent||'',copy:b?.querySelector('.cv-consent-copy>p')?.textContent||'',buttonsText:buttons.map(x=>x.text),buttons,rect:r?{x:r.x,y:r.y,width:r.width,height:r.height}:null,footer:document.querySelector('.cv-consent-footer-line')?.textContent||'',footerChildren:document.querySelector('footer.footer .footer-grid')?.children.length||0,links};
+          })}
+          async function snapModal(p){return p.evaluate(()=>{const d=document.querySelector('[data-cv-consent-modal] .cv-consent-dialog'),r=d?.getBoundingClientRect();return{title:d?.querySelector('h2')?.textContent||'',lead:d?.querySelector(':scope>p')?.textContent||'',categories:[...d?.querySelectorAll('.cv-consent-category')||[]].map(x=>({cls:x.className,strong:x.querySelector('strong')?.textContent||'',small:x.querySelector('small')?.textContent||'',disabled:x.querySelector('input')?.disabled,checked:x.querySelector('input')?.checked})),buttons:[...d?.querySelectorAll('.cv-consent-actions button')||[]].map(x=>x.textContent?.trim()),links:[...d?.querySelectorAll('.cv-consent-links a')||[]].map(x=>x.textContent?.trim()),rect:r?{x:r.x,y:r.y,width:r.width,height:r.height}:null,open:document.documentElement.classList.contains('cv-consent-modal-open')}})}
+          try{
+            for(const [mode,viewport] of modes){
+              const ctx=await browser.newContext({viewport,serviceWorkers:'block'});
+              await ctx.addInitScript(()=>{try{localStorage.clear();sessionStorage.clear()}catch{}});
+              const L=await openFresh(ctx,'http://127.0.0.1:4184'),R=await openFresh(ctx,'http://127.0.0.1:4185');
+              const a=await snapBanner(L.p),b=await snapBanner(R.p),m=[];
+              if(norm(a.title)!==norm(b.title))m.push('title');
+              if(norm(a.copy)!==norm(b.copy))m.push('copy');
+              if(JSON.stringify(a.buttonsText)!==JSON.stringify(b.buttonsText))m.push('buttons-text');
+              if(norm(a.footer)!==norm(b.footer)||a.footerChildren!==b.footerChildren)m.push(`footer:${a.footerChildren}/${b.footerChildren}`);
+              if(!b.links.length||b.links.at(-1)!=='/assets/css/privacy-consent.css')m.push(`privacy-css-order:${JSON.stringify(b.links)}`);
+              if(!a.rect||!b.rect)m.push('banner-missing');else if(Math.abs(a.rect.width-b.rect.width)>3||Math.abs(a.rect.height-b.rect.height)>4||Math.abs(a.rect.x-b.rect.x)>3||Math.abs(a.rect.y-b.rect.y)>4)m.push(`bannerRect:${JSON.stringify(a.rect)}/${JSON.stringify(b.rect)}`);
+              if(a.buttons.length!==b.buttons.length)m.push('button-count');else for(let i=0;i<a.buttons.length;i++){if(Math.abs(a.buttons[i].h-b.buttons[i].h)>1)m.push(`button${i}.h:${a.buttons[i].h}/${b.buttons[i].h}`);if(a.buttons[i].padding!==b.buttons[i].padding)m.push(`button${i}.padding:${a.buttons[i].padding}/${b.buttons[i].padding}`);if(a.buttons[i].lineHeight!==b.buttons[i].lineHeight)m.push(`button${i}.lineHeight:${a.buttons[i].lineHeight}/${b.buttons[i].lineHeight}`)}
+              await L.p.locator('[data-cv-consent-customize]').click();await R.p.locator('[data-cv-consent-customize]').click();
+              const am=await snapModal(L.p),bm=await snapModal(R.p);
+              if(norm(am.title)!==norm(bm.title)||norm(am.lead)!==norm(bm.lead))m.push('modal-copy');
+              if(JSON.stringify(am.categories)!==JSON.stringify(bm.categories))m.push('modal-categories');
+              if(JSON.stringify(am.buttons)!==JSON.stringify(bm.buttons)||JSON.stringify(am.links)!==JSON.stringify(bm.links))m.push('modal-actions');
+              if(!am.open||!bm.open)m.push('modal-open-class');
+              if(!am.rect||!bm.rect)m.push('modal-missing');else if(Math.abs(am.rect.width-bm.rect.width)>3||Math.abs(am.rect.height-bm.rect.height)>5)m.push(`modalRect:${JSON.stringify(am.rect)}/${JSON.stringify(bm.rect)}`);
+              await L.p.keyboard.press('Escape');await R.p.keyboard.press('Escape');await L.p.waitForTimeout(80);await R.p.waitForTimeout(80);
+              if(await L.p.locator('[data-cv-consent-modal]').count()||await R.p.locator('[data-cv-consent-modal]').count())m.push('escape-close');
+              await L.p.locator('[data-cv-consent-customize]').click();await R.p.locator('[data-cv-consent-customize]').click();
+              for(const p of [L.p,R.p]){await p.locator('[data-cv-consent-modal]').click({position:{x:2,y:2}});await p.waitForTimeout(80)}
+              if(await L.p.locator('[data-cv-consent-modal]').count()||await R.p.locator('[data-cv-consent-modal]').count())m.push('overlay-close');
+              await L.p.locator('[data-cv-consent-customize]').click();await R.p.locator('[data-cv-consent-customize]').click();
+              await L.p.locator('[data-cv-consent-save]').click();await R.p.locator('[data-cv-consent-save]').click();await L.p.waitForTimeout(100);await R.p.waitForTimeout(100);
+              for(const [side,p] of [['legacy',L.p],['react',R.p]]){const state=await p.evaluate(()=>({banner:Boolean(document.querySelector('[data-cv-consent-banner]')),modal:Boolean(document.querySelector('[data-cv-consent-modal]')),record:JSON.parse(localStorage.getItem('cv-cookie-consent-v3')||'null')}));if(state.banner||state.modal)m.push(`${side}-not-closed`);if(state.record?.version!==3||state.record?.scope!=='technical-only'||state.record?.necessary!==true||state.record?.preferences!==false||state.record?.analytics!==false||state.record?.marketing!==false)m.push(`${side}-record`)}
+              if(R.errors.length)m.push(`react-errors:${R.errors.join(';')}`);
+              console.log(`${mode}: ${m.length?m.join(' | '):'OK'}`);if(m.length)failures.push({mode,m,a,b,am,bm});
+              await L.p.close();await R.p.close();await ctx.close();
+            }
+          } finally { await browser.close(); }
+          if(failures.length){console.error(JSON.stringify(failures,null,2));process.exit(1)}
+          console.log('EXACT_BUILT_CONSENT_V2_GREEN');
+          NODE
+
+      - name: Commit exact built consent to react-migration
+        working-directory: source
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name 'calabriavera-parity-bot'
+          git config user.email 'actions@users.noreply.github.com'
+          git add frontend-react/scripts/copy-legacy-assets.mjs frontend-react/src/components/Layout.tsx frontend-react/src/components/CookieConsent.tsx frontend-react/src/consent.css
+          git diff --cached --quiet && { echo 'No changes to commit'; exit 0; }
+          git commit -m 'fix: match consent UI to exact built pre-React backup'
+          git push origin HEAD:react-migration
+          echo "PATCH_SHA=$(git rev-parse HEAD)"
+
+      - name: Stop servers
+        if: always()
+        shell: bash
+        run: |
+          kill "$(cat /tmp/cv-consent-v2-legacy.pid 2>/dev/null)" 2>/dev/null || true
+          kill "$(cat /tmp/cv-consent-v2-react.pid 2>/dev/null)" 2>/dev/null || true
