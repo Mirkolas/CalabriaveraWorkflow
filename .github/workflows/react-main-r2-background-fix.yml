@@ -1,4 +1,4 @@
-name: React main R2 background fix
+name: React integrated R2 and route transition repair
 
 on:
   workflow_dispatch:
@@ -7,17 +7,19 @@ on:
     paths:
       - '.github/workflows/react-main-r2-background-fix.yml'
       - 'scripts/react-main-r2-background-fix.py'
+      - 'scripts/react-route-css-transition-fix.py'
+      - 'scripts/react-route-css-no-flash.mjs'
 
 permissions:
   contents: read
 
 env:
-  EXPECTED_CANDIDATE_SHA: 3c18af318a2067edf8a263bbaa1300e26fc1494e
+  EXPECTED_BASE_SHA: 3c18af318a2067edf8a263bbaa1300e26fc1494e
 
 jobs:
   repair:
     runs-on: ubuntu-latest
-    timeout-minutes: 25
+    timeout-minutes: 30
     env:
       PRIVATE_REPO_PAT: ${{ secrets.PRIVATE_REPO_PAT || secrets.PERSONAL_ACCESS_TOKEN || secrets.PAT || secrets.GH_PAT || secrets.GITHUB_PAT }}
     steps:
@@ -27,7 +29,7 @@ jobs:
           path: runner
           persist-credentials: false
 
-      - name: Checkout exact integrated candidate
+      - name: Checkout integrated candidate branch
         uses: actions/checkout@v7
         with:
           repository: Mirkolas/calabriavera
@@ -40,27 +42,37 @@ jobs:
         with:
           node-version: '22'
 
-      - name: Verify exact candidate and R2 objects
+      - name: Verify candidate ancestry and R2 objects
         shell: bash
         run: |
           set -euo pipefail
-          test "$(git -C source rev-parse HEAD)" = "$EXPECTED_CANDIDATE_SHA"
+          git -C source merge-base --is-ancestor "$EXPECTED_BASE_SHA" HEAD
+          echo "CHECKOUT_SHA=$(git -C source rev-parse HEAD)" >> "$GITHUB_ENV"
           for asset in \
             assets/images/home/tropea-1600.webp \
             assets/images/home/tropea-960.webp \
             assets/images/home/sila-1280.webp \
             assets/images/home/sila-720.webp; do
-            curl --fail --silent --show-error --location --retry 3 --output /dev/null "https://img.calabriavera.com/static/$asset"
+            curl --fail --silent --show-error --location \
+              --connect-timeout 5 --max-time 20 --retry 2 --retry-all-errors \
+              --output /dev/null "https://img.calabriavera.com/static/$asset"
             echo "R2 reachable: $asset"
           done
 
-      - name: Apply exact legacy backgrounds with R2 URLs
+      - name: Apply R2 backgrounds and atomic route CSS swap
         shell: bash
         run: |
           set -euo pipefail
           python runner/scripts/react-main-r2-background-fix.py source
-          git -C source diff --check -- frontend-react/src/pages/OriginalHomePage.tsx frontend-react/src/pages/MagazinePage.tsx
-          git -C source diff -- frontend-react/src/pages/OriginalHomePage.tsx frontend-react/src/pages/MagazinePage.tsx
+          python runner/scripts/react-route-css-transition-fix.py source
+          git -C source diff --check -- \
+            frontend-react/src/pages/OriginalHomePage.tsx \
+            frontend-react/src/pages/MagazinePage.tsx \
+            frontend-react/src/components/Layout.tsx
+          git -C source diff -- \
+            frontend-react/src/pages/OriginalHomePage.tsx \
+            frontend-react/src/pages/MagazinePage.tsx \
+            frontend-react/src/components/Layout.tsx
 
       - name: Full repository regression suite
         working-directory: source
@@ -80,14 +92,34 @@ jobs:
           npm ci --no-audit --no-fund
           npm run build
 
-      - name: Commit verified fix to integration branch
+      - name: Browser guard against route CSS flash
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p /tmp/cv-flash
+          npm install --prefix /tmp/cv-flash --no-package-lock --no-save playwright@1.62.1
+          /tmp/cv-flash/node_modules/.bin/playwright install --with-deps chromium
+          cp runner/scripts/react-route-css-no-flash.mjs /tmp/cv-flash/test.mjs
+          node /tmp/cv-flash/test.mjs "$GITHUB_WORKSPACE/source/frontend-react/dist"
+
+      - name: Commit verified fixes to integration branch
         working-directory: source
         shell: bash
         run: |
           set -euo pipefail
+          git add \
+            frontend-react/src/pages/OriginalHomePage.tsx \
+            frontend-react/src/pages/MagazinePage.tsx \
+            frontend-react/src/components/Layout.tsx
+          if git diff --cached --quiet; then
+            echo "No repair changes required"
+            exit 0
+          fi
+          git fetch origin react-main-integration-final
+          remote_sha="$(git rev-parse FETCH_HEAD)"
+          test "$remote_sha" = "$CHECKOUT_SHA" || { echo "::error::Integration branch changed during certification; refusing non-fast-forward write"; exit 1; }
           git config user.name 'CalabriaVera Public Runner'
           git config user.email 'actions@users.noreply.github.com'
-          git add frontend-react/src/pages/OriginalHomePage.tsx frontend-react/src/pages/MagazinePage.tsx
-          git commit -m 'fix: preserve legacy backgrounds through R2 [skip ci]'
+          git commit -m 'fix: preserve R2 visuals and eliminate route CSS flash [skip ci]'
           git push origin HEAD:react-main-integration-final
           echo "Candidate SHA: $(git rev-parse HEAD)"
