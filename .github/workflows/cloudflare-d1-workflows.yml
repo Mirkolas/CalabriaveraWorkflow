@@ -131,6 +131,7 @@ jobs:
         if: github.event.inputs.operation == 'cadence-smoke-test'
         working-directory: source
         env:
+          AUTOMATION_STATE_BACKEND: d1
           AUTOMATION_INTERVAL_MINUTES: '1'
           AUTOMATION_LOCK_MINUTES: '5'
           AUTOMATION_FORCE: 'true'
