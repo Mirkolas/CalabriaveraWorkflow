@@ -59,10 +59,13 @@ jobs:
           base=http://127.0.0.1:5000
           test "$(curl -fsS "$base/build-version.txt" | tr -d '\r\n')" = "$EXPECTED_SHA"
           for route in / /catalogo /mappa /blog /chi-siamo /privacy-policy /en/ /en/catalogo /en/blog /login /profilo /admin /backup; do
-            code="$(curl -sS -o /tmp/page.html -w '%{http_code}' "$base$route")"
-            test "$code" = 200 || { echo "::error::$route HTTP $code"; exit 1; }
+            code="$(curl -LsS -o /tmp/page.html -w '%{http_code}' "$base$route")"
+            test "$code" = 200 || { echo "::error::$route final HTTP $code"; exit 1; }
             grep -q '<div id="root"' /tmp/page.html
           done
+          initial_en="$(curl -sS -o /dev/null -w '%{http_code} %{redirect_url}' "$base/en/")"
+          echo "Firebase /en/ canonical redirect: $initial_en"
+          echo "$initial_en" | grep -q '^301 http://127.0.0.1:5000/en$'
           curl -fsS "$base/catalogo" -o /tmp/catalog.html
           grep -q 'data-prerender-path="/catalogo"' /tmp/catalog.html
           grep -q 'turismo-isola-dino' /tmp/catalog.html
