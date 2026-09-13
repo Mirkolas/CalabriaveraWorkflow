@@ -123,6 +123,32 @@ jobs:
           FIREBASE_PROJECT_ID: calabriavera-e08d4
         run: node tools/backup/prepare-hosting-dist.mjs
 
+      - name: Compatibilità backup con alias Firebase reindirizzato
+        if: steps.preflight.outputs.ready == 'true'
+        shell: bash
+        run: |
+          cat > /tmp/cv-backup-fetch-compat.mjs <<'EOF'
+          const nativeFetch = globalThis.fetch;
+          globalThis.fetch = async function cvBackupFetch(input, init) {
+            const raw = typeof input === 'string' || input instanceof URL ? String(input) : String(input?.url || '');
+            let original;
+            try { original = new URL(raw); } catch { return nativeFetch(input, init); }
+            const generated = original.pathname === '/__/firebase/init.js' || original.pathname === '/__/firebase/init.json';
+            if (generated && original.hostname === 'calabriavera-e08d4.web.app') {
+              const target = new URL(original.pathname + original.search, 'https://calabriavera.com');
+              const response = await nativeFetch(target, init);
+              return new Proxy(response, {
+                get(targetResponse, prop) {
+                  if (prop === 'url') return original.href;
+                  const value = Reflect.get(targetResponse, prop, targetResponse);
+                  return typeof value === 'function' ? value.bind(targetResponse) : value;
+                }
+              });
+            }
+            return nativeFetch(input, init);
+          };
+          EOF
+
       - name: Backup cifrato, verifica remota e rotazione
         if: steps.preflight.outputs.ready == 'true'
         working-directory: source
@@ -134,6 +160,7 @@ jobs:
           CALABRIAVERA_BACKUP_ENCRYPTION_KEY: ${{ secrets.CALABRIAVERA_BACKUP_ENCRYPTION_KEY }}
           FIREBASE_AUTH_HASH_CONFIG: ${{ secrets.FIREBASE_AUTH_HASH_CONFIG }}
           BACKUP_MODE: ${{ steps.preflight.outputs.mode }}
+          NODE_OPTIONS: --import=/tmp/cv-backup-fetch-compat.mjs
         shell: bash
         run: |
           set -euo pipefail
