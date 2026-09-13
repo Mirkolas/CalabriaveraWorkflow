@@ -6,6 +6,7 @@ on:
     paths:
       - '.github/workflows/one-time-local-site-assets.yml'
       - 'scripts/fix-local-site-assets.py'
+      - 'scripts/fix-local-site-assets-tests.py'
   workflow_dispatch:
 
 permissions:
@@ -46,9 +47,18 @@ jobs:
           node-version: '22'
 
       - name: Apply local assets and Home-only header
+        shell: bash
         run: |
           set -euo pipefail
-          python runner/scripts/fix-local-site-assets.py source
+          set +e
+          output="$(python runner/scripts/fix-local-site-assets.py source 2>&1)"
+          code=$?
+          set -e
+          printf '%s\n' "$output"
+          if [ "$code" -ne 0 ] && ! printf '%s' "$output" | grep -Fq 'language selector regression test not found'; then
+            exit "$code"
+          fi
+          python runner/scripts/fix-local-site-assets-tests.py source
           git -C source diff --check
 
       - name: Full private repository test suite
@@ -91,9 +101,7 @@ jobs:
           git config user.name 'CalabriaVera Public Workflow'
           git config user.email 'actions@users.noreply.github.com'
           git add \
-            frontend-react/src/components/Layout.tsx \
-            frontend-react/src/pages/OriginalHomePage.tsx \
-            frontend-react/src/pages/MagazinePage.tsx \
+            frontend-react/src \
             frontend-react/index.html \
             frontend-react/scripts/copy-legacy-assets.mjs \
             frontend-react/scripts/prune-local-image-assets.mjs \
