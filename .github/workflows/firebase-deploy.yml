@@ -94,6 +94,10 @@ jobs:
         working-directory: source/frontend-react
         run: npx --yes firebase-tools@15.22.1 deploy --project calabriavera-e08d4 --config firebase.react.json --only hosting
 
+      - name: Disattiva il vecchio dominio Firebase con redirect 301
+        working-directory: source
+        run: npx --yes firebase-tools@15.22.1 deploy --project calabriavera-e08d4 --config firebase.legacy-redirect.json --only hosting
+
       - name: Verifica build pubblicata su calabriavera.com
         working-directory: source
         shell: bash
@@ -117,6 +121,29 @@ jobs:
           curl --fail --silent --show-error --location -o /dev/null "https://calabriavera.com/__/auth/handler?health=$GITHUB_RUN_ID"
           curl --fail --silent --show-error --location -o /dev/null "https://calabriavera.com/__/firebase/init.json?health=$GITHUB_RUN_ID"
           echo "React produzione verificato: $live"
+
+      - name: Verifica redirect permanente del dominio Firebase legacy
+        shell: bash
+        run: |
+          set -euo pipefail
+          for path in / /catalogo /mappa; do
+            expected="https://calabriavera.com${path}"
+            status=""
+            location=""
+            for attempt in $(seq 1 20); do
+              headers="$(curl --silent --show-error --head -H 'Cache-Control: no-cache' "https://calabriavera-e08d4.web.app${path}")"
+              status="$(printf '%s\n' "$headers" | awk 'toupper($1) ~ /^HTTP\// {code=$2} END {print code}')"
+              location="$(printf '%s\n' "$headers" | awk 'BEGIN{IGNORECASE=1} /^location:/ {sub(/^[^:]+:[[:space:]]*/,""); sub(/\r$/,""); print; exit}')"
+              if [ "$status" = "301" ] && [ "$location" = "$expected" ]; then
+                break
+              fi
+              echo "Attendo redirect legacy ${path} (${attempt}/20): status=${status:-n/a}, location=${location:-n/a}"
+              sleep 3
+            done
+            test "$status" = "301"
+            test "$location" = "$expected"
+          done
+          echo "Dominio Firebase legacy reindirizzato in modo permanente a calabriavera.com."
 
       - name: Verifica sitemap, hreflang e schede attività
         working-directory: source/frontend-react
