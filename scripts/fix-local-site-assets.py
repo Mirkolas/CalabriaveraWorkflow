@@ -42,19 +42,19 @@ else:
     layout = nav_pattern.sub(nav_new, layout, count=1)
 write(layout_rel, layout)
 
-# 2) Site-facing React/CSS static references: repository /assets is authoritative.
-site_files = [
-    "frontend-react/src/pages/OriginalHomePage.tsx",
-    "frontend-react/src/pages/MagazinePage.tsx",
-    "frontend-react/index.html",
-    "assets/css/language-modern.css",
-    "assets/css/reference-replica.css",
-    "assets/site.webmanifest",
-]
-for rel in site_files:
-    text = read(rel)
-    text = text.replace("https://img.calabriavera.com/static/assets/", "/assets/")
-    write(rel, text)
+# 2) All site-facing React/CSS static references use the repository /assets tree.
+# User/business R2 URLs do not use /static/assets and therefore are left untouched.
+site_paths = [root / "frontend-react" / "index.html", root / "assets" / "site.webmanifest"]
+site_paths += list((root / "frontend-react" / "src").rglob("*.ts"))
+site_paths += list((root / "frontend-react" / "src").rglob("*.tsx"))
+site_paths += list((root / "frontend-react" / "src").rglob("*.css"))
+site_paths += list((root / "assets" / "css").rglob("*.css"))
+for path in dict.fromkeys(site_paths):
+    text = path.read_text(encoding="utf-8")
+    updated = text.replace("https://img.calabriavera.com/static/assets/", "/assets/")
+    if updated != text:
+        path.write_text(updated, encoding="utf-8")
+        print(f"updated {path.relative_to(root)}")
 
 # OriginalHomePage used a CDN prefix variable; make it local explicitly.
 home_rel = "frontend-react/src/pages/OriginalHomePage.tsx"
@@ -89,7 +89,7 @@ manifest = manifest.replace('"/assets/android-chrome-192x192.png"', '"/assets/an
 manifest = manifest.replace('"/assets/android-chrome-512x512.png"', '"/assets/android-chrome-512x512.png?v=20260913-local"')
 write(manifest_rel, manifest)
 
-# 5) Copy the requested canonical static assets, including the two Blog fallbacks and Story artwork.
+# 5) Copy canonical static assets, explicitly keeping both Blog fallbacks and Story artwork.
 copy_rel = "frontend-react/scripts/copy-legacy-assets.mjs"
 copy = read(copy_rel)
 anchor = '  "assets/css/privacy-consent.css",\n'
