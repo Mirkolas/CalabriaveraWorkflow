@@ -1,6 +1,10 @@
 name: Scheduled - Health guard
 
 on:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/scheduled-health.yml'
   schedule:
     - cron: '7 * * * *'
   workflow_dispatch:
