@@ -41,52 +41,66 @@ jobs:
         with:
           node-version: '22'
 
-      - name: Riduci letture Firestore Admin Messaggi
+      - name: Allinea runtime admin autorevole
         working-directory: source
         shell: bash
         run: |
           set -euo pipefail
           node <<'NODE'
           const fs = require('node:fs');
-          const file = 'assets/js/admin-upgrade.js';
-          let s = fs.readFileSync(file, 'utf8');
-
-          const helperAnchor = 'async function safeRows(name, max = 600) { try { return await listRows(name, max); } catch { return []; } }\n';
-          if (!s.includes(helperAnchor)) throw new Error('Anchor safeRows non trovato');
-          const helpers = `async function recentRows(name, field = "updatedAt", max = 120) {\n  try { const f = await services(), snap = await f.getDocs(f.query(f.collection(f.db, name), f.orderBy(field, "desc"), f.limit(max))); return snap.docs.map(doc => ({ id: doc.id, ...doc.data() })); }\n  catch { return safeRows(name, max); }\n}\nasync function queryRows(name, field, op, value, max = 300) {\n  try { const f = await services(), snap = await f.getDocs(f.query(f.collection(f.db, name), f.where(field, op, value), f.limit(max))); return snap.docs.map(doc => ({ id: doc.id, ...doc.data() })); }\n  catch { return []; }\n}\nasync function rowsByIds(name, ids, max = 300) {\n  const unique = [...new Set((ids || []).map(String).filter(Boolean))].slice(0, max);\n  if (!unique.length) return [];\n  try {\n    const f = await services(), rows = [];\n    for (let offset = 0; offset < unique.length; offset += 30) {\n      const chunk = unique.slice(offset, offset + 30);\n      const snap = await f.getDocs(f.query(f.collection(f.db, name), f.where(f.documentId(), "in", chunk)));\n      rows.push(...snap.docs.map(doc => ({ id: doc.id, ...doc.data() })));\n    }\n    return rows;\n  } catch { return []; }\n}\n`;
-          if (!s.includes('async function recentRows(')) s = s.replace(helperAnchor, helperAnchor + helpers);
-
-          const replacement = `async function renderAdminMessages(output){\n  output.innerHTML='<div class="notice">Caricamento messaggi…</div>';\n  const conversations=await recentRows("conversations","updatedAt",120);\n  const participantIds=[...new Set(conversations.flatMap(c=>c.participantIds||[]).map(String).filter(Boolean))];\n  const businessIds=[...new Set(conversations.map(c=>String(c.businessId||"")).filter(Boolean))];\n  const [users,businesses,unreadMessages]=await Promise.all([rowsByIds("users",participantIds,240),rowsByIds("businesses",businessIds,120),queryRows("messages","status","==","sent",300)]);\n  const userById=new Map(users.map(x=>[x.id,x])),businessById=new Map(businesses.map(x=>[x.id,x])),unreadByConversation=new Map();\n  unreadMessages.forEach(message=>{const id=String(message.conversationId||"");if(id)unreadByConversation.set(id,(unreadByConversation.get(id)||0)+1);});\n  output.innerHTML=\`<div class="section-heading"><div><p class="eyebrow">Messaggistica</p><h2>Centro conversazioni</h2><p class="muted">Ultime 120 conversazioni · caricamento quota-safe</p></div><span class="badge">\${conversations.length}</span></div><div class="cv-admin-toolbar"><label>Cerca<input id="cv-admin-message-search" placeholder="Attività, utente, email, testo"></label><label>Filtro<select id="cv-admin-message-filter"><option value="">Tutte</option><option value="unread">Con messaggi non letti</option></select></label></div><div id="cv-admin-message-list" class="result-list"></div>\`;\n  const list=output.querySelector("#cv-admin-message-list"),search=output.querySelector("#cv-admin-message-search"),filter=output.querySelector("#cv-admin-message-filter");\n  function render(){\n    const q=search.value.trim().toLowerCase();\n    list.innerHTML=conversations.filter(c=>{const people=(c.participantIds||[]).map(id=>userById.get(id)),unread=Number(unreadByConversation.get(c.id)||0);return (!filter.value||unread>0)&&(!q||[businessById.get(c.businessId)?.name,c.lastMessage,...people.flatMap(p=>[p?.displayName,p?.email])].join(" ").toLowerCase().includes(q));}).map(c=>{const people=(c.participantIds||[]).map(id=>userById.get(id)),unread=Number(unreadByConversation.get(c.id)||0),participants=(c.participantIds||[]).length;return \`<article class="card"><div class="cv-admin-card-head"><div><p class="eyebrow">\${dateLabel(c.updatedAt)}</p><h3>\${escapeHtml(businessById.get(c.businessId)?.name||c.businessId||"Conversazione")}</h3></div>\${unread?statusBadge(\`\${unread} non letti\`):statusBadge("letta")}</div><p>\${escapeHtml(c.lastMessage||"Nessun messaggio")}</p><div class="cv-admin-metrics"><span><strong>\${participants}</strong> partecipanti</span><span><strong>\${unread}</strong> non letti</span></div><div class="cv-admin-participants">\${people.map((p,i)=>\`<span>\${escapeHtml(p?.displayName||p?.email||c.participantIds?.[i]||"Utente")}\${p?.email?\` · \${escapeHtml(p.email)}\`:""}</span>\`).join("")}</div>\${c.businessId?\`<a class="button button-secondary" href="/attivita?id=\${encodeURIComponent(c.businessId)}" target="_blank">Apri attività</a>\`:""}</article>\`;}).join("")||'<div class="notice">Nessuna conversazione trovata.</div>';\n  }\n  search.oninput=render;filter.onchange=render;render();\n}\n\nasync function init(){`;
-          const renderPattern = /async function renderAdminMessages\(output\)\{[\s\S]*?\n\}\n\nasync function init\(\)\{/;
-          if (!renderPattern.test(s)) throw new Error('renderAdminMessages non trovato');
-          s = s.replace(renderPattern, replacement);
-
-          const scheduleReplacements = [
-            ['["Email worker", "Ogni 1 minuto"', '["Email worker", "Ogni 10 minuti"'],
-            ['["Manutenzione admin", "Ogni 5 minuti"', '["Manutenzione admin", "Ogni giorno, 02:17 UTC"'],
-            ['["Social Facebook / Instagram", "Ogni 12 ore, minuto 23 UTC"', '["Social Facebook / Instagram", "Ogni 6 ore, minuto 17 UTC"'],
-            ['["Controllo token Meta", "Ogni giorno 07:15 UTC"', '["Controllo token Meta", "Ogni giorno, finestra 06:17 UTC"'],
-            ['["SEO / nuove attività", "Ogni 5 minuti"', '["SEO / nuove attività", "Ogni 12 ore, minuto 03 UTC"'],
-            ['["Story promozionale", "Ogni 12 ore (00:00 / 12:00 UTC)"', '["Story promozionale", "Ogni 24 ore (controllo ogni 6 ore)"'],
-            ['["Backup cifrato", "Domenica 02:30 UTC"', '["Backup cifrato", "Ogni giorno, 02:41 UTC"']
-          ];
-          for (const [before, after] of scheduleReplacements) {
-            if (!s.includes(before)) throw new Error(`Etichetta automazione non trovata: ${before}`);
-            s = s.replace(before, after);
-          }
-          fs.writeFileSync(file, s);
-
+          const rootFile = 'assets/js/admin-upgrade.js';
+          const oracleFile = 'frontend-react/oracle-admin/assets/js/admin-upgrade.js';
           const testFile = 'tests/admin-control.test.mjs';
-          let t = fs.readFileSync(testFile, 'utf8');
-          t = t.replace("  assert.match(adminUpgrade, /Ogni 1 minuto/);\n  assert.match(adminUpgrade, /Ogni 5 minuti/);\n  assert.match(adminUpgrade, /Ogni 6 ore, minuto 17 UTC/);\n  assert.match(adminUpgrade, /Ogni 12 ore, minuto 23 UTC/);\n  assert.match(adminUpgrade, /Domenica 02:30 UTC/);", "  assert.match(adminUpgrade, /Ogni 10 minuti/);\n  assert.match(adminUpgrade, /Ogni giorno, 02:17 UTC/);\n  assert.match(adminUpgrade, /Ogni 6 ore, minuto 17 UTC/);\n  assert.match(adminUpgrade, /Ogni 12 ore, minuto 03 UTC/);\n  assert.match(adminUpgrade, /Ogni giorno, 02:41 UTC/);");
-          const insertion = `\n\ntest('admin messages use bounded targeted Firestore reads', () => {\n  assert.match(adminUpgrade, /recentRows\\(\"conversations\",\"updatedAt\",120\\)/);\n  assert.match(adminUpgrade, /rowsByIds\\(\"users\",participantIds,240\\)/);\n  assert.match(adminUpgrade, /rowsByIds\\(\"businesses\",businessIds,120\\)/);\n  assert.match(adminUpgrade, /queryRows\\(\"messages\",\"status\",\"==\",\"sent\",300\\)/);\n  assert.doesNotMatch(adminUpgrade, /safeRows\\(\"messages\",\\s*1200\\)/);\n  assert.match(adminUpgrade, /Ultime 120 conversazioni · caricamento quota-safe/);\n});`;
-          if (!t.includes("admin messages use bounded targeted Firestore reads")) t += insertion + '\n';
-          fs.writeFileSync(testFile, t);
+          const root = fs.readFileSync(rootFile, 'utf8');
+          let oracle = fs.readFileSync(oracleFile, 'utf8');
+
+          function extract(text, pattern, label) {
+            const match = text.match(pattern);
+            if (!match) throw new Error(`${label} non trovato`);
+            return match[0];
+          }
+
+          const rootHelpers = extract(root, /async function recentRows\([\s\S]*?\n}\nasync function queryRows\([\s\S]*?\n}\nasync function rowsByIds\([\s\S]*?\n}\n/, 'helper quota-safe root');
+          if (/async function recentRows\(/.test(oracle)) {
+            oracle = oracle.replace(/async function recentRows\([\s\S]*?\n}\nasync function queryRows\([\s\S]*?\n}\nasync function rowsByIds\([\s\S]*?\n}\n/, rootHelpers);
+          } else {
+            const anchor = 'async function safeRows(name, max = 600) { try { return await listRows(name, max); } catch { return []; } }\n';
+            if (!oracle.includes(anchor)) throw new Error('safeRows oracle non trovato');
+            oracle = oracle.replace(anchor, anchor + rootHelpers);
+          }
+
+          const rootRenderer = extract(root, /async function renderAdminMessages\(output\)\{[\s\S]*?\n}\n\nasync function init\(\)\{/, 'renderAdminMessages root');
+          if (!/async function renderAdminMessages\(output\)\{/.test(oracle)) throw new Error('renderAdminMessages oracle non trovato');
+          oracle = oracle.replace(/async function renderAdminMessages\(output\)\{[\s\S]*?\n}\n\nasync function init\(\)\{/, rootRenderer);
+
+          const schedules = [
+            ['Ogni 1 minuto', 'Ogni 10 minuti'],
+            ['Ogni 5 minuti', 'Ogni giorno, 02:17 UTC'],
+            ['Ogni 12 ore, minuto 23 UTC', 'Ogni 6 ore, minuto 17 UTC'],
+            ['Ogni giorno 07:15 UTC', 'Ogni giorno, finestra 06:17 UTC'],
+            ['Ogni 5 minuti', 'Ogni 12 ore, minuto 03 UTC'],
+            ['Ogni 12 ore (00:00 / 12:00 UTC)', 'Ogni 24 ore (controllo ogni 6 ore)'],
+            ['Domenica 02:30 UTC', 'Ogni giorno, 02:41 UTC']
+          ];
+          for (const [before, after] of schedules) {
+            if (oracle.includes(before)) oracle = oracle.replace(before, after);
+          }
+          fs.writeFileSync(oracleFile, oracle);
+
+          let tests = fs.readFileSync(testFile, 'utf8');
+          const oracleConst = "const adminOracle = readFileSync(new URL('../frontend-react/oracle-admin/assets/js/admin-upgrade.js', import.meta.url), 'utf8');\n";
+          if (!tests.includes('const adminOracle =')) {
+            tests = tests.replace("const adminUpgrade = readFileSync(new URL('../assets/js/admin-upgrade.js', import.meta.url), 'utf8');\n", "const adminUpgrade = readFileSync(new URL('../assets/js/admin-upgrade.js', import.meta.url), 'utf8');\n" + oracleConst);
+          }
+          if (!tests.includes("authoritative admin oracle keeps quota-safe messages")) {
+            tests += `\n\ntest('authoritative admin oracle keeps quota-safe messages', () => {\n  assert.match(adminOracle, /recentRows\\(\"conversations\",\"updatedAt\",120\\)/);\n  assert.match(adminOracle, /rowsByIds\\(\"users\",participantIds,240\\)/);\n  assert.match(adminOracle, /queryRows\\(\"messages\",\"status\",\"==\",\"sent\",300\\)/);\n  assert.match(adminOracle, /Ultime 120 conversazioni · caricamento quota-safe/);\n  assert.doesNotMatch(adminOracle, /safeRows\\(\"messages\",\\s*1200\\)/);\n});\n`;
+          }
+          fs.writeFileSync(testFile, tests);
           NODE
 
-          node --check assets/js/admin-upgrade.js
-          git diff --check -- assets/js/admin-upgrade.js tests/admin-control.test.mjs
-          git diff -- assets/js/admin-upgrade.js tests/admin-control.test.mjs
+          node --check frontend-react/oracle-admin/assets/js/admin-upgrade.js
+          git diff --check -- frontend-react/oracle-admin/assets/js/admin-upgrade.js tests/admin-control.test.mjs
+          git diff -- frontend-react/oracle-admin/assets/js/admin-upgrade.js tests/admin-control.test.mjs
 
       - name: Suite completa repository privato
         working-directory: source
@@ -95,14 +109,18 @@ jobs:
           npm ci --no-audit --no-fund
           npm test
 
-      - name: Build React prima del commit
+      - name: Build React e verifica asset costruito
         working-directory: source/frontend-react
         env:
           CV_PRERENDER_OFFLINE: '1'
+        shell: bash
         run: |
           set -euo pipefail
           npm ci --no-audit --no-fund
           npm run build
+          grep -Fq 'Ultime 120 conversazioni · caricamento quota-safe' dist/assets/js/admin-upgrade.js
+          grep -Fq 'queryRows("messages","status","==","sent",300)' dist/assets/js/admin-upgrade.js
+          ! grep -Fq 'safeRows("messages",1200)' dist/assets/js/admin-upgrade.js
 
       - name: Commit privato senza Actions private
         id: commit
@@ -112,11 +130,11 @@ jobs:
           set -euo pipefail
           git config user.name 'CalabriaVera Public Workflow'
           git config user.email 'actions@users.noreply.github.com'
-          git add assets/js/admin-upgrade.js tests/admin-control.test.mjs
+          git add frontend-react/oracle-admin/assets/js/admin-upgrade.js tests/admin-control.test.mjs
           if git diff --cached --quiet; then
             echo 'Nessuna modifica da committare.'
           else
-            git commit -m 'perf: reduce admin message Firestore reads [skip ci]'
+            git commit -m 'perf: align quota-safe admin oracle [skip ci]'
             git push origin HEAD:main
           fi
           sha="$(git rev-parse HEAD)"
@@ -127,10 +145,12 @@ jobs:
         working-directory: source/frontend-react
         env:
           CV_PRERENDER_OFFLINE: '1'
+        shell: bash
         run: |
           set -euo pipefail
           npm run build
           test "$(tr -d '\r\n' < dist/build-version.txt)" = "${{ steps.commit.outputs.sha }}"
+          grep -Fq 'Ultime 120 conversazioni · caricamento quota-safe' dist/assets/js/admin-upgrade.js
 
       - name: Autenticazione Firebase
         uses: google-github-actions/auth@v3
