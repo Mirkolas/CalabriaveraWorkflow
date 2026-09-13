@@ -1,6 +1,11 @@
 name: Sorgente privato - Trigger automatici
 
 on:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/source-watch.yml'
+      - '.github/workflows/scheduled-retry-gate.yml'
   schedule:
     - cron: '2 * * * *'
   workflow_dispatch:
