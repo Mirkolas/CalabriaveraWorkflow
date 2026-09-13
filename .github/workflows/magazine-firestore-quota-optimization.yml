@@ -1,0 +1,101 @@
+name: One-time Magazine Firestore quota optimization
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/magazine-firestore-quota-optimization.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  PRIVATE_REPO: ${{ secrets.PRIVATE_REPO }}
+  PRIVATE_REPO_PAT: ${{ secrets.PRIVATE_REPO_PAT || secrets.PERSONAL_ACCESS_TOKEN || secrets.PAT || secrets.GH_PAT || secrets.GITHUB_PAT }}
+
+jobs:
+  optimize:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Verifica accesso sorgente privato
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -n "$PRIVATE_REPO" || { echo '::error::PRIVATE_REPO mancante'; exit 1; }
+          test -n "$PRIVATE_REPO_PAT" || { echo '::error::PAT repository privato mancante'; exit 1; }
+
+      - name: Checkout main privato
+        uses: actions/checkout@v7
+        with:
+          repository: ${{ secrets.PRIVATE_REPO }}
+          token: ${{ env.PRIVATE_REPO_PAT }}
+          ref: main
+          path: source
+          persist-credentials: true
+          fetch-depth: 1
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version: '22'
+
+      - name: Limita letture della coda Magazine
+        working-directory: source
+        shell: bash
+        run: |
+          set -euo pipefail
+          node <<'NODE'
+          const fs = require('node:fs');
+          const file = 'tools/publish-magazine-batch.mjs';
+          let s = fs.readFileSync(file, 'utf8');
+          const constants = 'const LIVE_FEED_LIMIT = 120;\n';
+          if (!s.includes(constants)) throw new Error('LIVE_FEED_LIMIT non trovato');
+          if (!s.includes('const QUEUE_SCAN_LIMIT = 300;')) {
+            s = s.replace(constants, constants + 'const QUEUE_SCAN_LIMIT = 300;\nconst RECENT_SCAN_LIMIT = 250;\n');
+          }
+          const queuedOld = 'db.collection("blogPosts").where("status", "==", "queued").get()';
+          const queuedNew = 'db.collection("blogPosts").where("status", "==", "queued").limit(QUEUE_SCAN_LIMIT).get()';
+          if (s.includes(queuedOld)) s = s.replace(queuedOld, queuedNew);
+          else if (!s.includes(queuedNew)) throw new Error('Query queued inattesa');
+          const recentOld = 'db.collection("blogPosts").where("sitePublishedAt", ">=", recentCutoff).get()';
+          const recentNew = 'db.collection("blogPosts").where("sitePublishedAt", ">=", recentCutoff).limit(RECENT_SCAN_LIMIT).get()';
+          if (s.includes(recentOld)) s = s.replace(recentOld, recentNew);
+          else if (!s.includes(recentNew)) throw new Error('Query recent inattesa');
+          s = s.replace('  maxDailyPublications: MAX_DAILY_PUBLICATIONS,\n', '  maxDailyPublications: MAX_DAILY_PUBLICATIONS,\n  queueScanLimit: QUEUE_SCAN_LIMIT,\n  recentScanLimit: RECENT_SCAN_LIMIT,\n');
+          fs.writeFileSync(file, s);
+
+          const testFile = 'tests/automation-cadence.test.mjs';
+          let t = fs.readFileSync(testFile, 'utf8');
+          t = t.replace(
+            'assert.match(siteBatch, /collection\\("blogPosts"\\)\\.where\\("status", "==", "queued"\\)\\.get\\(\\)/);',
+            'assert.match(siteBatch, /const QUEUE_SCAN_LIMIT = 300/);\n  assert.match(siteBatch, /const RECENT_SCAN_LIMIT = 250/);\n  assert.match(siteBatch, /collection\\("blogPosts"\\)\\.where\\("status", "==", "queued"\\)\\.limit\\(QUEUE_SCAN_LIMIT\\)\\.get\\(\\)/);\n  assert.match(siteBatch, /where\\("sitePublishedAt", ">=", recentCutoff\\)\\.limit\\(RECENT_SCAN_LIMIT\\)\\.get\\(\\)/);\n  assert.doesNotMatch(siteBatch, /where\\("status", "==", "queued"\\)\\.get\\(\\)/);'
+          );
+          fs.writeFileSync(testFile, t);
+          NODE
+          node --check tools/publish-magazine-batch.mjs
+          git diff --check -- tools/publish-magazine-batch.mjs tests/automation-cadence.test.mjs
+          git diff -- tools/publish-magazine-batch.mjs tests/automation-cadence.test.mjs
+
+      - name: Suite completa repository privato
+        working-directory: source
+        run: |
+          set -euo pipefail
+          npm ci --no-audit --no-fund
+          npm test
+
+      - name: Commit privato senza Actions private
+        working-directory: source
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name 'CalabriaVera Public Workflow'
+          git config user.email 'actions@users.noreply.github.com'
+          git add tools/publish-magazine-batch.mjs tests/automation-cadence.test.mjs
+          if git diff --cached --quiet; then
+            echo 'Nessuna modifica da committare.'
+          else
+            git commit -m 'perf: bound Magazine Firestore reads [skip ci]'
+            git push origin HEAD:main
+          fi
+          echo "Private main: $(git rev-parse HEAD)"
