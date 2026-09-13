@@ -1,4 +1,4 @@
-name: One-time - Deploy site shell fix
+name: One-time - Verify site shell production
 
 on:
   push:
@@ -8,120 +8,40 @@ on:
 
 permissions:
   contents: read
-  actions: write
 
 jobs:
-  fix-and-dispatch:
+  verify:
     runs-on: ubuntu-latest
-    timeout-minutes: 6
+    timeout-minutes: 4
     env:
-      PRIVATE_REPO: ${{ secrets.PRIVATE_REPO }}
-      PRIVATE_REPO_PAT: ${{ secrets.PRIVATE_REPO_PAT || secrets.PERSONAL_ACCESS_TOKEN || secrets.PAT || secrets.GH_PAT || secrets.GITHUB_PAT }}
+      EXPECTED_BUILD: 54f425a3384ba8e5b8b5fb6e1a444dc722810f6a
     steps:
-      - name: Verifica configurazione
+      - name: Verifica Firebase Hosting e dominio pubblico
         shell: bash
         run: |
           set -euo pipefail
-          test -n "$PRIVATE_REPO" || { echo "::error::PRIVATE_REPO mancante"; exit 1; }
-          test -n "$PRIVATE_REPO_PAT" || { echo "::error::PAT repository privato mancante"; exit 1; }
-
-      - name: Scarica sorgente privato
-        uses: actions/checkout@v7
-        with:
-          repository: ${{ secrets.PRIVATE_REPO }}
-          token: ${{ env.PRIVATE_REPO_PAT }}
-          ref: main
-          path: source
-          persist-credentials: true
-
-      - name: Allinea test UI ai manifest privati
-        shell: bash
-        run: |
-          set -euo pipefail
-          python - <<'PY'
-          from pathlib import Path
-          p = Path('source/tests/ui-regression.test.mjs')
-          text = p.read_text()
-
-          old_seo = '''test('l automazione SEO controlla Firestore ogni sei ore e avvia il deploy solo quando serve', () => {
-            assert.match(seoWorkflow, /cron: '27 \\*\\/6 \\* \\* \\*'/);
-            assert.match(seoWorkflow, /node tools\\/check-seo-sync\\.mjs/);
-            assert.match(seoWorkflow, /steps\\.changes\\.outputs\\.needs_sync == 'true'/);
-            assert.match(seoWorkflow, /gh workflow run firebase-deploy\\.yml --ref main/);
-            assert.match(seoWorkflow, /GH_TOKEN: \\$\\{\\{ github\\.token \\}\\}/);
-            assert.match(seoWatcher, /readPublicCollection/);
-            assert.match(seoWatcher, /businessFingerprint/);
-            assert.match(seoWatcher, /firebase-deploy\\.yml\\/runs/);
-            assert.match(publicData, /documents:runQuery/);
-            assert.match(publicData, /stringValue:'approved'/);
-            assert.doesNotMatch(seoWorkflow, /google-github-actions\\/auth@v3/);
-            assert.doesNotMatch(seoWorkflow, /workload_identity_provider|service_account|token_format/);
-            assert.doesNotMatch(seoWorkflow, /secrets\\.[A-Z0-9_]*(?:PAT|PERSONAL_ACCESS_TOKEN)/i);
-            assert.doesNotMatch(seoWorkflow, /personal access token/i);
-          });'''.replace('          ', '')
-
-          new_seo = '''test('il manifest SEO delega il runner pubblico e il watcher mantiene la logica di sincronizzazione', () => {
-            assert.match(seoWorkflow, /name: Trigger manifest - SEO/);
-            assert.match(seoWorkflow, /tools\\/check-seo-sync\\.mjs/);
-            assert.match(seoWorkflow, /tools\\/lib\\/seo-snapshot\\.mjs/);
-            assert.match(seoWorkflow, /if: \\$\\{\\{ false \\}\\}/);
-            assert.match(seoWatcher, /readPublicCollection/);
-            assert.match(seoWatcher, /businessFingerprint/);
-            assert.match(seoWatcher, /firebase-deploy\\.yml\\/runs/);
-            assert.match(publicData, /documents:runQuery/);
-            assert.match(publicData, /stringValue:'approved'/);
-            assert.doesNotMatch(seoWorkflow, /google-github-actions\\/auth@v3/);
-            assert.doesNotMatch(seoWorkflow, /workload_identity_provider|service_account|token_format/);
-            assert.doesNotMatch(seoWorkflow, /secrets\\.[A-Z0-9_]*(?:PAT|PERSONAL_ACCESS_TOKEN)/i);
-          });'''.replace('          ', '')
-
-          if old_seo in text:
-              text = text.replace(old_seo, new_seo, 1)
-          elif new_seo not in text:
-              raise SystemExit('Blocco test SEO non riconosciuto')
-
-          old_apps = '''test('automazioni social e Apps Script pubblicano link sul dominio ufficiale', () => {
-            assert.match(magazineWorkflow, /SITE_URL: https:\\/\\/calabriavera\\.com/);
-            assert.match(magazineWorkflow, /assets\\/Story-Promo_instagram-facebook\\.png/);
-            assert.match(promoPublisher, /PROMO_STORY_IMAGE_URL/);
-            assert.match(promoPublisher, /\\$\\{SITE_URL\\}\\/assets\\/Story-Promo_instagram-facebook\\.png/);
-            assert.match(magazineWorkflow, /SITE_URL: https:\\/\\/calabriavera\\.com/);
-            assert.match(appsScriptWorkflow, /s#https:\\/\\/calabriavera\\.web\\.app#https:\\/\\/calabriavera\\.com#g/);
-            assert.match(appsScriptWorkflow, /grep -q "https:\\/\\/calabriavera\\.com" apps-script\\/EmailAutomation\\.gs/);
-          });'''.replace('          ', '')
-
-          new_apps = '''test('i manifest Social e Apps Script delegano il runner pubblico mantenendo sorgenti e dominio condivisi', () => {
-            assert.match(magazineWorkflow, /SITE_URL: https:\\/\\/calabriavera\\.com/);
-            assert.match(magazineWorkflow, /assets\\/Story-Promo_instagram-facebook\\.png/);
-            assert.match(promoPublisher, /PROMO_STORY_IMAGE_URL/);
-            assert.match(promoPublisher, /\\$\\{SITE_URL\\}\\/assets\\/Story-Promo_instagram-facebook\\.png/);
-            assert.match(appsScriptWorkflow, /tools\\/check-apps-script\\.mjs/);
-            assert.match(appsScriptWorkflow, /if: \\$\\{\\{ false \\}\\}/);
-            assert.doesNotMatch(appsScriptWorkflow, /google-github-actions\\/auth|clasp|secrets\\./i);
-          });'''.replace('          ', '')
-
-          if old_apps in text:
-              text = text.replace(old_apps, new_apps, 1)
-          elif new_apps not in text:
-              raise SystemExit('Blocco test Apps Script non riconosciuto')
-
-          p.write_text(text)
-          PY
-          git -C source diff --check
-          git -C source config user.name 'CalabriaVera Public Workflow'
-          git -C source config user.email 'actions@users.noreply.github.com'
-          git -C source add tests/ui-regression.test.mjs
-          if ! git -C source diff --cached --quiet; then
-            git -C source commit -m 'test: align UI workflow assertions with public runner [skip ci]'
-            git -C source push origin HEAD:main
-          fi
-
-      - name: Avvia deploy manuale Firebase
-        env:
-          GH_TOKEN: ${{ github.token }}
-          GH_REPO: ${{ github.repository }}
-        shell: bash
-        run: |
-          set -euo pipefail
-          gh api --method POST "repos/${GH_REPO}/actions/workflows/firebase-deploy.yml/dispatches" -f ref=main >/dev/null
-          echo "Workflow Firebase avviato manualmente dopo l'allineamento dei test."
+          nonce="${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}-$(date +%s)"
+          for origin in "https://calabriavera.web.app" "https://calabriavera.com"; do
+            echo "===== ${origin} ====="
+            curl -fsSL --retry 4 --retry-delay 2 -H 'Cache-Control: no-cache' -D "headers-$(echo "$origin" | tr -cd 'a-zA-Z0-9').txt" "${origin}/build-version.txt?verify=${nonce}" -o build.txt
+            live="$(tr -d '\r\n' < build.txt)"
+            echo "build-version=${live}"
+            echo "expected=${EXPECTED_BUILD}"
+            echo "--- headers build-version ---"
+            cat "headers-$(echo "$origin" | tr -cd 'a-zA-Z0-9').txt"
+            html="$(curl -fsSL --retry 4 --retry-delay 2 -H 'Cache-Control: no-cache' "${origin}/?verify=${nonce}")"
+            robots="$(printf '%s' "$html" | grep -Eio '<meta[^>]+name=["'"']robots["'"'][^>]*>' | head -n 1 || true)"
+            echo "robots=${robots:-MANCANTE}"
+            for label in 'Esplora' 'Mappa' 'Eventi &amp; Blog' 'Chi siamo'; do
+              if printf '%s' "$html" | grep -Fq "$label"; then
+                echo "nav ${label}: OK"
+              else
+                echo "nav ${label}: MANCANTE"
+              fi
+            done
+            if [ "$live" = "$EXPECTED_BUILD" ]; then
+              echo "build ${origin}: OK"
+            else
+              echo "build ${origin}: STALE"
+            fi
+          done
