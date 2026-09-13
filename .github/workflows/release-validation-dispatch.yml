@@ -1,4 +1,5 @@
 # Temporary dispatcher for the final browser validation. Removed after a green run.
+# Rerun after aligning the reserved Firebase init endpoint check with the app auth config.
 name: Release validation dispatch
 
 on:
