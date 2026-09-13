@@ -1,3 +1,4 @@
+# Temporary dispatcher for the final browser validation. Removed after a green run.
 name: Release validation dispatch
 
 on:
