@@ -64,10 +64,12 @@ jobs:
           npm ci --no-audit --no-fund
           npm test
 
-      - name: Build React produzione
+      - name: Build React produzione con SEO live
         working-directory: source/frontend-react
         env:
-          CV_PRERENDER_OFFLINE: '1'
+          CV_PRERENDER_OFFLINE: '0'
+          FIREBASE_PROJECT_ID: calabriavera-e08d4
+          SITE_URL: https://calabriavera.com
         run: |
           set -euo pipefail
           npm ci --no-audit --no-fund
@@ -109,6 +111,12 @@ jobs:
           curl --fail --silent --show-error --location -o /dev/null "https://calabriavera.com/__/auth/handler?health=$GITHUB_RUN_ID"
           curl --fail --silent --show-error --location -o /dev/null "https://calabriavera.com/__/firebase/init.json?health=$GITHUB_RUN_ID"
           echo "React produzione verificato: $live"
+
+      - name: Verifica sitemap, hreflang e schede attività
+        working-directory: source/frontend-react
+        env:
+          SITE_URL: https://calabriavera.com
+        run: node ../tools/verify-seo-deploy.mjs
 
   admin-maintenance:
     needs: retry_gate

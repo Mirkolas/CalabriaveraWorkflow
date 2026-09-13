@@ -2,7 +2,7 @@ name: SEO - Sincronizza attività e sitemap
 
 on:
   schedule:
-    - cron: '3 */12 * * *'
+    - cron: '*/5 * * * *'
   workflow_dispatch:
   repository_dispatch:
     types: [source-seo-push]
@@ -20,8 +20,8 @@ jobs:
     uses: ./.github/workflows/scheduled-retry-gate.yml
     with:
       workflow_file: seo-sync.yml
-      cadence_minutes: 720
-      anchor_offset_minutes: 3
+      cadence_minutes: 5
+      anchor_offset_minutes: 0
 
   sync:
     needs: retry_gate
