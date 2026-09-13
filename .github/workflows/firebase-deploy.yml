@@ -92,10 +92,33 @@ jobs:
         run: |
           set -euo pipefail
           expected="$(git rev-parse HEAD)"
-          live="$(curl --fail --silent --show-error --location --retry 6 --retry-delay 3 -H 'Cache-Control: no-cache' "https://calabriavera.com/build-version.txt?run=$GITHUB_RUN_ID" | tr -d '\r\n')"
+          live=""
+          for attempt in $(seq 1 20); do
+            live="$(curl --fail --silent --show-error --location -H 'Cache-Control: no-cache' "https://calabriavera.com/build-version.txt?run=${GITHUB_RUN_ID}&attempt=${attempt}" | tr -d '\r\n' || true)"
+            if [ "$live" = "$expected" ]; then
+              echo "Dominio personalizzato allineato al tentativo ${attempt}."
+              break
+            fi
+            echo "Attendo propagazione Firebase Hosting sul dominio personalizzato (${attempt}/20): live=${live:-non-disponibile}, expected=${expected}"
+            sleep 6
+          done
           test "$live" = "$expected"
-          html="$(curl --fail --silent --show-error --location --retry 6 --retry-delay 3 -H 'Cache-Control: no-cache' "https://calabriavera.com/?run=$GITHUB_RUN_ID")"
-          printf '%s' "$html" | grep -Eqi '<meta[^>]+name=["'"']robots["'"'][^>]+content=["'"']index,follow'
+          html="$(curl --fail --silent --show-error --location -H 'Cache-Control: no-cache' "https://calabriavera.com/?run=$GITHUB_RUN_ID")"
+          printf '%s' "$html" | node -e '
+            let html = "";
+            process.stdin.setEncoding("utf8");
+            process.stdin.on("data", chunk => html += chunk);
+            process.stdin.on("end", () => {
+              const tags = html.match(/<meta\b[^>]*>/gi) || [];
+              const ok = tags.some(tag => /\bname=["'"']robots["'"']/i.test(tag) && /\bcontent=["'"']index,follow["'"']/i.test(tag));
+              if (!ok) {
+                console.error("Meta robots index,follow non trovato");
+                process.exit(1);
+              }
+            });
+          '
+          curl --fail --silent --show-error --location -o /dev/null "https://calabriavera.com/__/auth/handler?health=$GITHUB_RUN_ID"
+          curl --fail --silent --show-error --location -o /dev/null "https://calabriavera.com/__/firebase/init.json?health=$GITHUB_RUN_ID"
           echo "React produzione verificato: $live"
 
   admin-maintenance:
