@@ -1,12 +1,6 @@
 name: Firebase - Backup cifrato incrementale
 
 on:
-  # Trigger temporaneo: questa modifica attiva una sola baseline v1.
-  # Verrà rimosso dopo la prima baseline verificata.
-  push:
-    branches: [main]
-    paths:
-      - '.github/workflows/daily-backup.yml'
   schedule:
     - cron: '41 2 * * *'
   workflow_dispatch:
@@ -82,8 +76,8 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.PRIVATE_REPO_PAT || secrets.PERSONAL_ACCESS_TOKEN || secrets.PAT || secrets.GH_PAT || secrets.GITHUB_PAT }}
           CALABRIAVERA_BACKUP_ENCRYPTION_KEY: ${{ secrets.CALABRIAVERA_BACKUP_ENCRYPTION_KEY }}
-          REQUESTED_MODE: ${{ github.event_name == 'push' && 'baseline-v1' || github.event_name == 'schedule' && 'incremental' || inputs.mode }}
-          BASELINE_CONFIRM: ${{ github.event_name == 'push' && 'ACTIVATE BASELINE V1' || inputs.confirm }}
+          REQUESTED_MODE: ${{ github.event_name == 'schedule' && 'incremental' || inputs.mode }}
+          BASELINE_CONFIRM: ${{ inputs.confirm }}
         shell: bash
         run: |
           set -euo pipefail
