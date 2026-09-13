@@ -1,0 +1,66 @@
+name: One-shot business image diagnostic
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/diagnose-business-image.yml'
+
+permissions:
+  contents: read
+  id-token: write
+
+jobs:
+  diagnose:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    env:
+      PRIVATE_REPO: ${{ secrets.PRIVATE_REPO }}
+      PRIVATE_REPO_PAT: ${{ secrets.PRIVATE_REPO_PAT || secrets.PERSONAL_ACCESS_TOKEN || secrets.PAT || secrets.GH_PAT || secrets.GITHUB_PAT }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          repository: ${{ secrets.PRIVATE_REPO }}
+          token: ${{ env.PRIVATE_REPO_PAT }}
+          ref: main
+          path: source
+          persist-credentials: false
+      - uses: actions/setup-node@v7
+        with:
+          node-version: '22'
+      - working-directory: source
+        run: npm --prefix tools ci --no-audit --no-fund
+      - uses: google-github-actions/auth@v3
+        with:
+          workload_identity_provider: ${{ vars.FIREBASE_WIF_PROVIDER }}
+          service_account: ${{ vars.FIREBASE_DEPLOY_SERVICE_ACCOUNT }}
+      - name: Leggi solo riferimenti immagine pubblici
+        working-directory: source/tools
+        env:
+          FIREBASE_PROJECT_ID: calabriavera-e08d4
+        shell: bash
+        run: |
+          node --input-type=module <<'NODE'
+          import { applicationDefault, initializeApp } from 'firebase-admin/app';
+          import { getFirestore } from 'firebase-admin/firestore';
+          initializeApp({ credential: applicationDefault(), projectId: process.env.FIREBASE_PROJECT_ID });
+          const db = getFirestore();
+          const id = 'lpukobEdPH9bDtT38KCS';
+          const snap = await db.collection('businesses').doc(id).get();
+          const data = snap.data() || {};
+          const gallery = await db.collection('businesses').doc(id).collection('images').orderBy('order', 'asc').limit(10).get().catch(() => null);
+          console.log('BUSINESS_IMAGE_DIAGNOSTIC=' + JSON.stringify({
+            exists: snap.exists,
+            imageKey: data.imageKey || null,
+            r2ImageKey: data.r2ImageKey || null,
+            imageUrl: data.imageUrl || null,
+            hasImageDataUrl: Boolean(data.imageDataUrl),
+            gallery: gallery ? gallery.docs.map(doc => ({
+              id: doc.id,
+              imageKey: doc.data().imageKey || null,
+              r2ImageKey: doc.data().r2ImageKey || null,
+              imageUrl: doc.data().imageUrl || null,
+              hasImageDataUrl: Boolean(doc.data().imageDataUrl)
+            })) : []
+          }));
+          NODE
