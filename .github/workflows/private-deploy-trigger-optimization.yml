@@ -46,13 +46,13 @@ jobs:
           const testFile='tests/workflow-static.test.mjs';
           let t=fs.readFileSync(testFile,'utf8');
           if(!t.includes("backend-only changes do not trigger Firebase Hosting deploy")) {
-            t += `\n\ntest('backend-only changes do not trigger Firebase Hosting deploy', () => {\n  const firebase = source('firebase-deploy.yml');\n  for (const path of [\"tools/**\", \"tests/**\", \"apps-script/**\", \".github/workflows/**\"]) {\n    assert.match(firebase, new RegExp(\"- ['\\\"]\" + path.replace(/[.*+?^$\\{\\}()|[\\]\\\\]/g, '\\\\$&') + \"['\\\"]\"));\n  }\n});\n`;
+            t += `\n\ntest('backend-only changes do not trigger Firebase Hosting deploy', () => {\n  const firebase = source('firebase-deploy.yml');\n  for (const path of [\"tools/**\", \"tests/**\", \"apps-script/**\", \".github/workflows/**\"]) {\n    assert.ok(firebase.includes(\"- '\" + path + \"'\"), \`firebase-deploy deve ignorare \${path}\`);\n  }\n});\n`;
           }
           fs.writeFileSync(testFile,t);
           NODE
           git diff --check -- .github/workflows/firebase-deploy.yml tests/workflow-static.test.mjs
-          grep -Fq "- 'tools/**'" .github/workflows/firebase-deploy.yml
-          grep -Fq "- 'apps-script/**'" .github/workflows/firebase-deploy.yml
+          grep -Fq -- "- 'tools/**'" .github/workflows/firebase-deploy.yml
+          grep -Fq -- "- 'apps-script/**'" .github/workflows/firebase-deploy.yml
       - name: Suite completa
         working-directory: source
         run: |
