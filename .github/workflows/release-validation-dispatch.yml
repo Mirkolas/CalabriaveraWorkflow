@@ -1,5 +1,5 @@
 # Temporary dispatcher for the final browser validation. Removed after a green run.
-# Rerun after aligning the service-worker assertions with the production implementation.
+# Rerun after aligning the business-detail share assertions with the final layout.
 name: Release validation dispatch
 
 on:
