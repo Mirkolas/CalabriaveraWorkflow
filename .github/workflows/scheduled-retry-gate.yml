@@ -49,9 +49,9 @@ jobs:
         run: |
           set -euo pipefail
 
-          # Un avvio umano o un aggiornamento esplicito del runner resta sempre disponibile
-          # per release, emergenze e manutenzione.
-          if [ "$EVENT_NAME" = "workflow_dispatch" ] || [ "$EVENT_NAME" = "push" ]; then
+          # Avvii umani, aggiornamenti del runner e source-deploy sono release esplicite:
+          # non devono essere bloccati dalla finestra giornaliera riservata alla manutenzione.
+          if [ "$EVENT_NAME" = "workflow_dispatch" ] || [ "$EVENT_NAME" = "push" ] || { [ "$EVENT_NAME" = "repository_dispatch" ] && [ "$WORKFLOW_FILE" = "firebase-deploy.yml" ]; }; then
             echo "should_run=true" >> "$GITHUB_OUTPUT"
             echo "campaign=explicit" >> "$GITHUB_OUTPUT"
             echo "Avvio esplicito: esecuzione consentita."
@@ -75,7 +75,7 @@ jobs:
           case "$WORKFLOW_FILE" in
             magazine-sync.yml) quota_floor=360 ;;      # max 4 cicli/giorno
             seo-sync.yml) quota_floor=5 ;;             # delta SEO quasi real-time
-            firebase-deploy.yml) quota_floor=1440 ;;   # manutenzione admin max 1/giorno
+            firebase-deploy.yml) quota_floor=1440 ;;   # manutenzione admin schedulata max 1/giorno
             daily-backup.yml) quota_floor=10080 ;;     # backup completo max 1/settimana
           esac
           if [ "$quota_floor" -gt 0 ] && [ "$cadence" -lt "$quota_floor" ]; then
@@ -94,9 +94,8 @@ jobs:
           echo "campaign=$campaign" >> "$GITHUB_OUTPUT"
           echo "Finestra quota $campaign: $campaign_start -> $campaign_end ($cadence minuti)"
 
-          # Per schedule e repository_dispatch conta QUALSIASI tentativo reale completato
-          # nella finestra, non soltanto i successi. In questo modo un errore quota non
-          # scatena retry duplicati nella stessa campagna.
+          # Per gli avvii schedulati e i dispatch quota-sensitive conta QUALSIASI tentativo
+          # reale completato nella finestra, non soltanto i successi.
           set +e
           runs_json="$(gh api \
             -H "Accept: application/vnd.github+json" \
@@ -106,8 +105,6 @@ jobs:
           set -e
 
           if [ "$api_code" -ne 0 ]; then
-            # Fail closed sui workflow quota-sensitive: un problema dell'API GitHub non
-            # deve trasformarsi in letture Firestore duplicate.
             if [ "$quota_floor" -gt 0 ]; then
               echo "::warning::Impossibile verificare i tentativi precedenti: blocco prudenziale di $WORKFLOW_FILE."
               cat /tmp/retry-gate.err || true
