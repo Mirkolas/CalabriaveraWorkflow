@@ -90,6 +90,52 @@ jobs:
           console.log('Privato: artefatti D1 rimossi.');
           NODE
 
+      - name: Verifica tool runtime privati senza riferimenti D1
+        shell: bash
+        run: |
+          set -euo pipefail
+          node <<'NODE'
+          const fs = require('node:fs');
+          const path = require('node:path');
+          const offenders = [];
+          const forbidden = /d1-workflow-store|\bd1Query\b|\bd1Rows\b|wrangler\s+(?:@\S+\s+)?d1\b|(?:AUTOMATION_STATE_BACKEND|WORKFLOW_STATE_BACKEND)\s*[,=:]\s*["']?d1/i;
+          function walk(dir) {
+            for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+              const full = path.join(dir, entry.name);
+              if (entry.isDirectory()) walk(full);
+              else if (/\.(?:mjs|cjs|js)$/.test(entry.name)) {
+                const text = fs.readFileSync(full, 'utf8');
+                if (forbidden.test(text)) offenders.push(full.replace(/^source\//, ''));
+              }
+            }
+          }
+          walk('source/tools');
+          if (offenders.length) throw new Error(`Riferimenti D1 nei tool runtime: ${offenders.join(', ')}`);
+          console.log('Tool runtime privati: solo Firestore, nessun riferimento D1.');
+          NODE
+
+      - name: Verifica indici Firestore quota-safe
+        shell: bash
+        run: |
+          set -euo pipefail
+          node <<'NODE'
+          const fs = require('node:fs');
+          const config = JSON.parse(fs.readFileSync('source/firestore.indexes.json', 'utf8'));
+          const indexes = config.indexes || [];
+          function hasIndex(expected) {
+            return indexes.some(index => index.collectionGroup === 'blogPosts' && expected.every(([fieldPath, order]) =>
+              index.fields?.some(field => field.fieldPath === fieldPath && field.order === order)
+            ));
+          }
+          if (!hasIndex([['socialPending', 'ASCENDING'], ['sourcePublishedAt', 'DESCENDING']])) {
+            throw new Error('Indice blogPosts socialPending/sourcePublishedAt mancante');
+          }
+          if (!hasIndex([['sourceId', 'ASCENDING'], ['importedAt', 'DESCENDING']])) {
+            throw new Error('Indice blogPosts sourceId/importedAt mancante');
+          }
+          console.log('Indici Firestore quota-safe dichiarati.');
+          NODE
+
       - name: Verifica workflow pubblici senza D1
         shell: bash
         run: |
@@ -113,6 +159,25 @@ jobs:
           }
           if (offenders.length) throw new Error(`Uso D1 nei workflow: ${offenders.join(', ')}`);
           console.log('Workflow pubblici: nessun uso D1.');
+          NODE
+
+      - name: Verifica guard quota Magazine
+        shell: bash
+        run: |
+          set -euo pipefail
+          node <<'NODE'
+          const fs = require('node:fs');
+          const text = fs.readFileSync('workflow-repo/.github/workflows/magazine-sync.yml', 'utf8');
+          const required = [
+            'id: magazine',
+            'RESOURCE_EXHAUSTED',
+            "quota_exhausted=true",
+            "steps.magazine.outputs.quota_exhausted != 'true'",
+            'Social e Story non verranno avviati in questa run'
+          ];
+          const missing = required.filter(marker => !text.includes(marker));
+          if (missing.length) throw new Error(`Guard quota Magazine incompleto: ${missing.join(', ')}`);
+          console.log('Magazine: guard quota Firestore presente.');
           NODE
 
       - name: Verifica migrazione immagini R2 a letture Firestore limitate
