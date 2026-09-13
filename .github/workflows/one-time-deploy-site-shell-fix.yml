@@ -14,9 +14,9 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 4
     env:
-      EXPECTED_BUILD: 54f425a3384ba8e5b8b5fb6e1a444dc722810f6a
+      EXPECTED_BUILD: 0ce63be2d0b60fb8bba227f74d4a40c0faea7e9b
     steps:
-      - name: Verifica Firebase Hosting e dominio pubblico
+      - name: Verifica Firebase Hosting, dominio pubblico e auth handler
         shell: bash
         run: |
           set -euo pipefail
@@ -28,8 +28,6 @@ jobs:
             live="$(tr -d '\r\n' < "build-${safe}.txt")"
             echo "build-version=${live}"
             echo "expected=${EXPECTED_BUILD}"
-            echo "--- headers build-version ---"
-            cat "headers-${safe}.txt"
             curl -fsSL --retry 4 --retry-delay 2 -H 'Cache-Control: no-cache' "${origin}/?verify=${nonce}" -o "home-${safe}.html"
             if grep -Eqi 'name=["'\'' ]*robots' "home-${safe}.html"; then
               echo "robots meta: PRESENTE"
@@ -43,9 +41,16 @@ jobs:
                 echo "nav ${label}: MANCANTE"
               fi
             done
+            auth_code="$(curl -sS -o "auth-${safe}.html" -w '%{http_code}' --retry 4 --retry-delay 2 "${origin}/__/auth/handler?verify=${nonce}")"
+            echo "auth-handler ${origin}: HTTP ${auth_code}"
+            init_code="$(curl -sS -o "firebase-${safe}.json" -w '%{http_code}' --retry 4 --retry-delay 2 "${origin}/__/firebase/init.json?verify=${nonce}")"
+            echo "firebase-init ${origin}: HTTP ${init_code}"
             if [ "$live" = "$EXPECTED_BUILD" ]; then
               echo "build ${origin}: OK"
             else
               echo "build ${origin}: STALE"
+              exit 1
             fi
+            test "$auth_code" = "200"
+            test "$init_code" = "200"
           done
