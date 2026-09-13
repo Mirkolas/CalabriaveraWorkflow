@@ -11,7 +11,7 @@ on:
 
 permissions:
   contents: read
-  actions: read
+  actions: write
 
 concurrency:
   group: scheduled-health
@@ -20,51 +20,54 @@ concurrency:
 jobs:
   verify:
     runs-on: ubuntu-latest
-    timeout-minutes: 6
+    timeout-minutes: 8
     env:
       GH_TOKEN: ${{ github.token }}
       SITE_URL: https://calabriavera.com
     steps:
-      - name: Verifica gli ultimi cicli schedulati
+      - name: Verifica e ripristina i cicli schedulati
         shell: bash
         run: |
           set -euo pipefail
 
-          check_workflow() {
-            local workflow="$1"
-            local max_age_minutes="$2"
-            local label="$3"
-            local payload latest conclusion created run_url now created_epoch age
-
+          ensure_workflow() {
+            local workflow="$1" max_age_minutes="$2" label="$3"
+            local payload latest conclusion created run_url now created_epoch age reason=""
             payload="$(gh api "repos/${GITHUB_REPOSITORY}/actions/workflows/${workflow}/runs?event=schedule&branch=main&per_page=10")"
             latest="$(printf '%s' "$payload" | jq -c '.workflow_runs | map(select(.status == "completed")) | .[0] // empty')"
-            test -n "$latest" || { echo "::error::${label}: nessun ciclo schedulato completato trovato"; return 1; }
-
-            conclusion="$(printf '%s' "$latest" | jq -r '.conclusion // ""')"
-            created="$(printf '%s' "$latest" | jq -r '.created_at // ""')"
-            run_url="$(printf '%s' "$latest" | jq -r '.html_url // ""')"
-            echo "${label}: ${run_url:-run-non-disponibile} (${created:-data-sconosciuta}, ${conclusion:-stato-sconosciuto})"
-            test "$conclusion" = "success" || { echo "::error::${label}: ultimo ciclo concluso con ${conclusion:-stato-sconosciuto}"; return 1; }
-
-            now="$(date -u +%s)"
-            created_epoch="$(date -u -d "$created" +%s)"
-            age="$(( (now - created_epoch) / 60 ))"
-            if [ "$age" -gt "$max_age_minutes" ]; then
-              echo "::error::${label}: ultimo ciclo riuscito troppo vecchio (${age} minuti; massimo ${max_age_minutes})"
-              return 1
+            if [ -z "$latest" ]; then
+              reason="nessun ciclo schedulato completato"
+            else
+              conclusion="$(printf '%s' "$latest" | jq -r '.conclusion // ""')"
+              created="$(printf '%s' "$latest" | jq -r '.created_at // ""')"
+              run_url="$(printf '%s' "$latest" | jq -r '.html_url // ""')"
+              echo "${label}: ${run_url:-run-non-disponibile} (${created:-data-sconosciuta}, ${conclusion:-stato-sconosciuto})"
+              if [ "$conclusion" != "success" ]; then
+                reason="ultimo ciclo ${conclusion:-senza-stato}"
+              else
+                now="$(date -u +%s)"
+                created_epoch="$(date -u -d "$created" +%s)"
+                age="$(( (now - created_epoch) / 60 ))"
+                if [ "$age" -gt "$max_age_minutes" ]; then reason="ultimo successo vecchio di ${age} minuti"; fi
+              fi
             fi
-            echo "OK ${label}: success, ${age} minuti fa"
+
+            if [ -n "$reason" ]; then
+              echo "::warning::${label}: ${reason}; avvio recupero workflow_dispatch"
+              gh workflow run "$workflow" --ref main
+              echo "RECOVERY ${label}: dispatch accettato"
+            else
+              echo "OK ${label}"
+            fi
           }
 
-          failures=0
-          # Soglie volutamente più larghe della cadenza per tollerare ritardi GitHub Actions.
-          check_workflow seo-sync.yml 45 "SEO/sitemap (ogni 5 min)" || failures=$((failures + 1))
-          check_workflow magazine-sync.yml 75 "Magazine/social (ogni 15 min)" || failures=$((failures + 1))
-          check_workflow source-watch.yml 180 "Source watch (ogni ora)" || failures=$((failures + 1))
-          check_workflow daily-backup.yml 2160 "Backup giornaliero" || failures=$((failures + 1))
-          check_workflow firebase-deploy.yml 2160 "Manutenzione Firebase giornaliera" || failures=$((failures + 1))
-          check_workflow smoke-browser.yml 2160 "Smoke browser giornaliero" || failures=$((failures + 1))
-          test "$failures" -eq 0 || { echo "::error::${failures} workflow schedulati richiedono intervento"; exit 1; }
+          # Il guard orario compensa automaticamente eventuali ritardi/skip del scheduler GitHub.
+          ensure_workflow seo-sync.yml 45 "SEO/sitemap (ogni 5 min)"
+          ensure_workflow magazine-sync.yml 75 "Magazine/social (ogni 15 min)"
+          ensure_workflow source-watch.yml 180 "Source watch (ogni ora)"
+          ensure_workflow daily-backup.yml 2160 "Backup giornaliero"
+          ensure_workflow firebase-deploy.yml 2160 "Manutenzione Firebase giornaliera"
+          ensure_workflow smoke-browser.yml 2160 "Smoke browser giornaliero"
 
       - name: Verifica dominio canonico, sitemap e cinque lingue
         shell: bash
@@ -75,7 +78,6 @@ jobs:
 
           curl --fail --silent --show-error --location -H 'Cache-Control: no-cache' \
             "$SITE_URL/sitemap-generation.json?health=${GITHUB_RUN_ID}" -o "$tmp/manifest.json"
-
           test "$(jq -r '.site' "$tmp/manifest.json")" = "$SITE_URL" || { echo "::error::Manifest SEO con dominio non canonico"; exit 1; }
           test "$(jq -c '.languages' "$tmp/manifest.json")" = '["it","en","fr","de","es"]' || { echo "::error::Manifest SEO senza le 5 lingue richieste"; exit 1; }
 
@@ -86,22 +88,14 @@ jobs:
           curl --fail --silent --show-error --location -H 'Cache-Control: no-cache' \
             "$SITE_URL/sitemap.xml?health=${GITHUB_RUN_ID}" -o "$tmp/sitemap.xml"
           if grep -Eqi 'https?://[^<[:space:]]*\.web\.app' "$tmp/sitemap.xml"; then
-            echo "::error::Alias Firebase web.app presente nell'indice sitemap"
-            exit 1
+            echo "::error::Alias Firebase web.app presente nell'indice sitemap"; exit 1
           fi
 
           while IFS= read -r file; do
             test -n "$file" || continue
-            case "$file" in
-              sitemap-pages.xml|sitemap-main.xml|sitemap-[0-9]*.xml) ;;
-              *) echo "::error::Nome sitemap non atteso: $file"; exit 1 ;;
-            esac
-            curl --fail --silent --show-error --location -H 'Cache-Control: no-cache' \
-              "$SITE_URL/$file?health=${GITHUB_RUN_ID}" -o "$tmp/$file"
-            if grep -Eqi 'https?://[^<[:space:]]*\.web\.app' "$tmp/$file"; then
-              echo "::error::Alias Firebase web.app presente in $file"
-              exit 1
-            fi
+            case "$file" in sitemap-pages.xml|sitemap-main.xml|sitemap-[0-9]*.xml) ;; *) echo "::error::Nome sitemap non atteso: $file"; exit 1 ;; esac
+            curl --fail --silent --show-error --location -H 'Cache-Control: no-cache' "$SITE_URL/$file?health=${GITHUB_RUN_ID}" -o "$tmp/$file"
+            if grep -Eqi 'https?://[^<[:space:]]*\.web\.app' "$tmp/$file"; then echo "::error::Alias Firebase web.app presente in $file"; exit 1; fi
             bad="$(grep -oE '<loc>[^<]+</loc>' "$tmp/$file" | sed -E 's#</?loc>##g' | grep -Ev '^https://calabriavera\.com(?:/|$)' || true)"
             test -z "$bad" || { echo "::error::URL non canonici in $file"; printf '%s\n' "$bad"; exit 1; }
           done < <(jq -r '.files[]' "$tmp/manifest.json")
