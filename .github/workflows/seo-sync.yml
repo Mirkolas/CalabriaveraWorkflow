@@ -73,8 +73,9 @@ jobs:
             exit 0
           fi
           if printf '%s' "$output" | grep -Eqi 'RESOURCE_EXHAUSTED|Quota exceeded|HTTP 429|FIRESTORE_429|(^|[^0-9])429([^0-9]|$)'; then
-            echo "::warning::Verifica SEO fermata: quota Firestore esaurita. Nessun retry automatico nella stessa finestra."
-            exit 75
+            echo "::warning::Verifica SEO rinviata: quota Firestore temporaneamente esaurita. Il ciclo successivo riproverà senza trasformare il limite quota in un guasto del workflow."
+            echo "needs_sync=false" >> "$GITHUB_OUTPUT"
+            exit 0
           fi
           exit "$code"
 
@@ -82,4 +83,4 @@ jobs:
         if: steps.changes.outputs.needs_sync == 'true'
         env:
           GH_TOKEN: ${{ github.token }}
-        run: gh workflow run firebase-deploy.yml --ref main
+        run: gh workflow run firebase-deploy.yml --repo "$GITHUB_REPOSITORY" --ref main
