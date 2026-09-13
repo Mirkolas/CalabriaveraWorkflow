@@ -11,7 +11,7 @@ mkdirSync(outDir, { recursive: true });
 const routes = [
   { path: '/', name: 'home', page: 'home', selectors: ['h1'] },
   { path: '/catalogo', name: 'catalogo', page: 'catalog', selectors: ['h1', '#filters', '#results'] },
-  { path: '/mappa', name: 'mappa', page: 'map', selectors: ['h1', '#map', '#map-filters'] },
+  { path: '/mappa', name: 'mappa', page: 'map', selectors: ['#map', '#map-filters'] },
   { path: '/blog', name: 'blog', page: 'blog', selectors: ['h1', '#blog-lane-tabs', '#blog-list'] },
 ];
 
@@ -125,7 +125,7 @@ async function auditViewport(browser, label, viewport) {
       }));
       const maxWidth = Math.max(metrics.scrollWidth, metrics.bodyScrollWidth);
       check(maxWidth <= metrics.innerWidth + 3, `${label} ${route.path}: overflow orizzontale ${maxWidth}px > ${metrics.innerWidth}px`);
-      check(metrics.h1.length > 0, `${label} ${route.path}: H1 vuoto`);
+      check(metrics.h1.length > 0, `${label} ${route.path}: H1 semantico assente o vuoto`);
       check(metrics.bodyHeight > 400, `${label} ${route.path}: pagina troppo bassa`);
       check(metrics.headerVisible, `${label} ${route.path}: header assente`);
       check(metrics.footerVisible, `${label} ${route.path}: footer assente`);
