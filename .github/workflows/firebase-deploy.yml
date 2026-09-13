@@ -199,10 +199,15 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+          quota_exhausted=0
           run_admin_task() {
             local label="$1"
             shift
             local output code
+            if [ "$quota_exhausted" -eq 1 ]; then
+              echo "::notice::${label} saltata: quota Firestore già esaurita in questa finestra."
+              return 0
+            fi
             set +e
             output="$("$@" 2>&1)"
             code=$?
@@ -212,8 +217,9 @@ jobs:
               return 0
             fi
             if printf '%s' "$output" | grep -Eqi 'RESOURCE_EXHAUSTED|Quota exceeded|FIRESTORE_429|ADMIN_FIRESTORE_429|(^|[^0-9])429([^0-9]|$)'; then
-              echo "::warning::${label} fermata: quota Firestore temporaneamente esaurita. Nessun retry automatico nella stessa finestra."
-              return 75
+              echo "::warning::${label} fermata: quota Firestore temporaneamente esaurita. Le altre manutenzioni vengono rinviate alla prossima finestra."
+              quota_exhausted=1
+              return 0
             fi
             return "$code"
           }
