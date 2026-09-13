@@ -1,0 +1,73 @@
+name: One-time private deploy trigger optimization
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/private-deploy-trigger-optimization.yml'
+
+permissions:
+  contents: read
+
+env:
+  PRIVATE_REPO: ${{ secrets.PRIVATE_REPO }}
+  PRIVATE_REPO_PAT: ${{ secrets.PRIVATE_REPO_PAT || secrets.PERSONAL_ACCESS_TOKEN || secrets.PAT || secrets.GH_PAT || secrets.GITHUB_PAT }}
+
+jobs:
+  optimize:
+    runs-on: ubuntu-latest
+    timeout-minutes: 12
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          repository: ${{ secrets.PRIVATE_REPO }}
+          token: ${{ env.PRIVATE_REPO_PAT }}
+          ref: main
+          path: source
+          persist-credentials: true
+          fetch-depth: 1
+      - uses: actions/setup-node@v7
+        with:
+          node-version: '22'
+      - name: Ignora modifiche backend-only nel deploy Hosting
+        working-directory: source
+        shell: bash
+        run: |
+          set -euo pipefail
+          node <<'NODE'
+          const fs=require('node:fs');
+          const file='.github/workflows/firebase-deploy.yml';
+          let s=fs.readFileSync(file,'utf8');
+          const anchor="      - '.github/workflow-templates/**'\n";
+          if(!s.includes(anchor)) throw new Error('paths-ignore Firebase non trovato');
+          const extra="      - 'tools/**'\n      - 'tests/**'\n      - 'apps-script/**'\n      - '.github/workflows/**'\n";
+          if(!s.includes("      - 'tools/**'")) s=s.replace(anchor,anchor+extra);
+          fs.writeFileSync(file,s);
+          const testFile='tests/workflow-static.test.mjs';
+          let t=fs.readFileSync(testFile,'utf8');
+          if(!t.includes("backend-only changes do not trigger Firebase Hosting deploy")) {
+            t += `\n\ntest('backend-only changes do not trigger Firebase Hosting deploy', () => {\n  const firebase = source('firebase-deploy.yml');\n  for (const path of [\"tools/**\", \"tests/**\", \"apps-script/**\", \".github/workflows/**\"]) {\n    assert.match(firebase, new RegExp(\"- ['\\\"]\" + path.replace(/[.*+?^$\\{\\}()|[\\]\\\\]/g, '\\\\$&') + \"['\\\"]\"));\n  }\n});\n`;
+          }
+          fs.writeFileSync(testFile,t);
+          NODE
+          git diff --check -- .github/workflows/firebase-deploy.yml tests/workflow-static.test.mjs
+          grep -Fq "- 'tools/**'" .github/workflows/firebase-deploy.yml
+          grep -Fq "- 'apps-script/**'" .github/workflows/firebase-deploy.yml
+      - name: Suite completa
+        working-directory: source
+        run: |
+          npm ci --no-audit --no-fund
+          npm test
+      - name: Commit privato senza Actions private
+        working-directory: source
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name 'CalabriaVera Public Workflow'
+          git config user.email 'actions@users.noreply.github.com'
+          git add .github/workflows/firebase-deploy.yml tests/workflow-static.test.mjs
+          if ! git diff --cached --quiet; then
+            git commit -m 'perf: avoid deploys for backend-only changes [skip ci]'
+            git push origin HEAD:main
+          fi
+          echo "Private main: $(git rev-parse HEAD)"
