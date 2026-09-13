@@ -113,6 +113,7 @@ jobs:
           node tools/check-meta-token-expiry.mjs
 
       - name: Controlla tutte le fonti e pubblica i nuovi contenuti
+        id: magazine
         if: github.event_name == 'schedule' || github.event_name == 'repository_dispatch' || (github.event_name == 'workflow_dispatch' && inputs.mode == 'blog')
         working-directory: source
         env:
@@ -120,7 +121,11 @@ jobs:
           AUTOMATION_INTERVAL_MINUTES: '360'
           AUTOMATION_LOCK_MINUTES: '35'
           AUTOMATION_FORCE: ${{ (github.event_name == 'workflow_dispatch' && inputs.mode == 'blog') || (github.event_name == 'repository_dispatch' && github.event.client_payload.magazine_force == true) }}
+        shell: bash
         run: |
+          set -euo pipefail
+          log="$(mktemp)"
+          set +e
           node tools/automation-cadence-runner.mjs magazine-site -- bash -lc '
             set -euo pipefail
             export MAGAZINE_CYCLE_STARTED_AT_MS=$(date +%s%3N)
@@ -140,10 +145,26 @@ jobs:
             fi
             node tools/publish-magazine-batch.mjs
             if [ "$rss_code" -ne 0 ] && [ "$tourism_code" -ne 0 ] && [ "$regional_code" -ne 0 ]; then exit 1; fi
-          '
+          ' >"$log" 2>&1
+          code=$?
+          set -e
+          cat "$log"
+          if [ "$code" -eq 0 ]; then
+            echo 'quota_exhausted=false' >> "$GITHUB_OUTPUT"
+            rm -f "$log"
+            exit 0
+          fi
+          if grep -Eqi 'RESOURCE_EXHAUSTED|Quota exceeded|FIRESTORE_429|(^|[^0-9])429([^0-9]|$)' "$log"; then
+            echo 'quota_exhausted=true' >> "$GITHUB_OUTPUT"
+            echo '::warning::Magazine rinviato: quota Firestore temporaneamente esaurita. Social e Story non verranno avviati in questa run.'
+            rm -f "$log"
+            exit 0
+          fi
+          rm -f "$log"
+          exit "$code"
 
       - name: Pubblica la coppia Social se dovuta
-        if: github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && (inputs.mode == 'social-watchdog' || inputs.mode == 'social-dry-run' || inputs.mode == 'social-publish')) || (github.event_name == 'repository_dispatch' && (github.event.client_payload.social_dry_run == true || github.event.client_payload.social_publish == true))
+        if: steps.magazine.outputs.quota_exhausted != 'true' && (github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && (inputs.mode == 'social-watchdog' || inputs.mode == 'social-dry-run' || inputs.mode == 'social-publish')) || (github.event_name == 'repository_dispatch' && (github.event.client_payload.social_dry_run == true || github.event.client_payload.social_publish == true)))
         working-directory: source
         env:
           META_GRAPH_VERSION: ${{ vars.META_GRAPH_VERSION || 'v26.0' }}
@@ -178,7 +199,7 @@ jobs:
           fi
 
       - name: Pubblica Story promozionale se dovuta
-        if: github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && (inputs.mode == 'promo-story-watchdog' || inputs.mode == 'promo-story-publish'))
+        if: steps.magazine.outputs.quota_exhausted != 'true' && (github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && (inputs.mode == 'promo-story-watchdog' || inputs.mode == 'promo-story-publish')))
         working-directory: source
         env:
           META_GRAPH_VERSION: ${{ vars.META_GRAPH_VERSION || 'v26.0' }}
