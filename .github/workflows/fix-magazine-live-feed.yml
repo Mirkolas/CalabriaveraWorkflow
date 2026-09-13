@@ -44,7 +44,7 @@ jobs:
         with:
           node-version: '22'
 
-      - name: Correggi asset lingua e first paint Home
+      - name: Correggi bandiere lingua su R2
         run: |
           set -euo pipefail
           python runner/scripts/fix-page-audit-round1.py source
@@ -63,7 +63,6 @@ jobs:
         run: |
           npm ci --no-audit --no-fund
           npm run build
-          for lang in it en fr de es; do test -s "dist/assets/flags/${lang}.svg"; done
 
       - name: Commit privato senza Actions private
         working-directory: source
@@ -72,9 +71,9 @@ jobs:
           set -euo pipefail
           git config user.name 'CalabriaVera Public Workflow'
           git config user.email 'actions@users.noreply.github.com'
-          git add frontend-react/scripts/copy-static-assets.mjs frontend-react/src/pages/HomePage.tsx tests/site-stability.test.mjs
+          git add frontend-react/src/components/Layout.tsx tests/site-stability.test.mjs
           if ! git diff --cached --quiet; then
-            git commit -m 'fix: improve first paint and language assets [skip ci]'
+            git commit -m 'fix: serve language flags from R2 [skip ci]'
             git push origin HEAD:main
           fi
           echo "Private main: $(git rev-parse HEAD)"
