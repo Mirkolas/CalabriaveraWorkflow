@@ -68,12 +68,12 @@ jobs:
             exit 1
           fi
 
-          # Tetti conservativi per il piano gratuito Firestore. I valori qui prevalgono
-          # sulle cadenze più aggressive dichiarate dai singoli workflow.
+          # Tetti per i workflow Firestore. Il controllo SEO usa aggregazioni e delta
+          # recenti, quindi può girare ogni 5 minuti senza scansioni complete ripetute.
           quota_floor=0
           case "$WORKFLOW_FILE" in
             magazine-sync.yml) quota_floor=360 ;;      # max 4 cicli/giorno
-            seo-sync.yml) quota_floor=720 ;;           # max 2 scansioni SEO/giorno
+            seo-sync.yml) quota_floor=5 ;;             # delta SEO quasi real-time
             firebase-deploy.yml) quota_floor=1440 ;;   # manutenzione admin max 1/giorno
             daily-backup.yml) quota_floor=10080 ;;     # backup completo max 1/settimana
           esac
@@ -95,7 +95,7 @@ jobs:
 
           # Per schedule e repository_dispatch conta QUALSIASI tentativo reale completato
           # nella finestra, non soltanto i successi. In questo modo un errore quota non
-          # scatena altri 4-5 retry costosi nella stessa campagna.
+          # scatena retry duplicati nella stessa campagna.
           set +e
           runs_json="$(gh api \
             -H "Accept: application/vnd.github+json" \
@@ -106,7 +106,7 @@ jobs:
 
           if [ "$api_code" -ne 0 ]; then
             # Fail closed sui workflow quota-sensitive: un problema dell'API GitHub non
-            # deve trasformarsi in migliaia di letture Firestore duplicate.
+            # deve trasformarsi in letture Firestore duplicate.
             if [ "$quota_floor" -gt 0 ]; then
               echo "::warning::Impossibile verificare i tentativi precedenti: blocco prudenziale di $WORKFLOW_FILE."
               cat /tmp/retry-gate.err || true
