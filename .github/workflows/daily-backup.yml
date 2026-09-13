@@ -119,12 +119,38 @@ jobs:
         working-directory: source
         run: npm run build
 
-      - name: Allinea dist alla release Hosting pubblicata
+      - name: Allinea dist alla release Hosting pubblicata con retry
         if: steps.preflight.outputs.ready == 'true'
         working-directory: source
         env:
           FIREBASE_PROJECT_ID: calabriavera-e08d4
-        run: node tools/backup/prepare-hosting-dist.mjs
+        shell: bash
+        run: |
+          set -uo pipefail
+          delays=(0 30 120 300)
+          for i in 1 2 3 4; do
+            wait_s="${delays[$((i-1))]}"
+            if [ "$wait_s" -gt 0 ]; then
+              echo "Retry preparazione Hosting $i/4 tra ${wait_s}s..."
+              sleep "$wait_s"
+            fi
+            echo "Preparazione Hosting tentativo $i/4"
+            set +e
+            output="$(node tools/backup/prepare-hosting-dist.mjs 2>&1)"
+            status=$?
+            set -e
+            printf '%s\n' "$output"
+            if [ "$status" -eq 0 ]; then
+              exit 0
+            fi
+            if ! printf '%s' "$output" | grep -Eq 'HTTP 429|RESOURCE_EXHAUSTED|HTTP 5[0-9][0-9]|ETIMEDOUT|ECONNRESET|fetch failed'; then
+              echo "::error::Preparazione Hosting fallita con errore non transitorio; nessun retry aggiuntivo."
+              exit "$status"
+            fi
+            echo "::warning::Errore transitorio durante preparazione Hosting; verrà ritentato senza avviare ancora il motore backup."
+          done
+          echo "::error::Preparazione Hosting fallita dopo 4 tentativi."
+          exit 1
 
       - name: Backup cifrato, checkpoint e retry immediati
         id: run_backup
