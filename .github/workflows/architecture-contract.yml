@@ -7,13 +7,7 @@ on:
   push:
     branches: [main]
     paths:
-      - '.github/workflows/architecture-contract.yml'
-      - '.github/workflows/magazine-sync.yml'
-      - '.github/workflows/cloudflare-r2-migrate-business-images.yml'
-      - '.github/workflows/cloudflare-worker-r2-api.yml'
-      - '.github/workflows/firebase-deploy.yml'
-      - '.github/workflows/daily-backup.yml'
-      - '.github/workflows/restore.yml'
+      - '.github/workflows/**'
 
 permissions:
   contents: read
@@ -56,6 +50,71 @@ jobs:
       - uses: actions/setup-node@v7
         with:
           node-version: '22'
+
+      - name: Verifica set workflow pubblico definitivo
+        shell: bash
+        run: |
+          set -euo pipefail
+          node <<'NODE'
+          const fs = require('node:fs');
+          const path = require('node:path');
+          const dir = 'workflow-repo/.github/workflows';
+          const expected = [
+            'apps-script-deploy.yml',
+            'architecture-contract.yml',
+            'cloudflare-worker-r2-api.yml',
+            'daily-backup.yml',
+            'firebase-deploy.yml',
+            'magazine-sync.yml',
+            'restore.yml',
+            'scheduled-retry-gate.yml',
+            'seo-sync.yml',
+            'smoke-browser.yml',
+            'source-watch.yml',
+            'verify.yml',
+          ];
+          const names = fs.readdirSync(dir).filter(name => /[.]ya?ml$/.test(name)).sort();
+          const missing = expected.filter(name => !names.includes(name));
+          const oneTime = names.filter(name => /^one-time-/i.test(name));
+          const removed = ['cloudflare-r2-migrate-business-images.yml'].filter(name => names.includes(name));
+          if (missing.length) throw new Error(`Workflow permanenti mancanti: ${missing.join(', ')}`);
+          if (oneTime.length) throw new Error(`Workflow one-time non ammessi nel control plane definitivo: ${oneTime.join(', ')}`);
+          if (removed.length) throw new Error(`Workflow di migrazione già completati non devono tornare: ${removed.join(', ')}`);
+
+          const checkoutOffenders = [];
+          for (const name of names) {
+            const text = fs.readFileSync(path.join(dir, name), 'utf8');
+            for (const match of text.matchAll(/uses:\s*actions\/checkout@v(\d+)/g)) {
+              if (match[1] !== '7') checkoutOffenders.push(`${name} (checkout@v${match[1]})`);
+            }
+          }
+          if (checkoutOffenders.length) throw new Error(`Versioni checkout non allineate: ${checkoutOffenders.join(', ')}`);
+          console.log(`Control plane: ${names.length} workflow YAML, set permanente presente, nessun one-time, checkout allineato.`);
+          NODE
+
+      - name: Verifica manifest workflow privati
+        shell: bash
+        run: |
+          set -euo pipefail
+          node <<'NODE'
+          const fs = require('node:fs');
+          const required = [
+            'apps-script-deploy.yml',
+            'firebase-deploy.yml',
+            'magazine-sync.yml',
+            'seo-sync.yml',
+          ];
+          const dir = 'source/.github/workflows';
+          const missing = required.filter(name => !fs.existsSync(`${dir}/${name}`));
+          if (missing.length) throw new Error(`Manifest privati mancanti per source-watch: ${missing.join(', ')}`);
+          for (const name of required) {
+            const text = fs.readFileSync(`${dir}/${name}`, 'utf8');
+            if (!text.includes('workflow_dispatch') && !text.includes('repository_dispatch') && !text.includes('schedule')) {
+              console.log(`Manifest ${name}: metadati sorgente presenti senza runner pubblico nel repository privato.`);
+            }
+          }
+          console.log('Manifest privati richiesti dal source-watch presenti.');
+          NODE
 
       - name: Verifica architettura runtime definitiva
         working-directory: source/frontend-react
