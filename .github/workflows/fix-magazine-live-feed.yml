@@ -6,6 +6,7 @@ on:
     paths:
       - '.github/workflows/fix-magazine-live-feed.yml'
       - 'scripts/fix-page-audit-round1.py'
+      - 'scripts/fix-magazine-publication-order.py'
   workflow_dispatch:
 
 permissions:
@@ -44,10 +45,11 @@ jobs:
         with:
           node-version: '22'
 
-      - name: Correggi bandiere lingua su R2
+      - name: Applica correzioni pagina e recenza Magazine
         run: |
           set -euo pipefail
           python runner/scripts/fix-page-audit-round1.py source
+          python runner/scripts/fix-magazine-publication-order.py source
           git -C source diff --check
 
       - name: Suite completa repository privato
@@ -71,9 +73,9 @@ jobs:
           set -euo pipefail
           git config user.name 'CalabriaVera Public Workflow'
           git config user.email 'actions@users.noreply.github.com'
-          git add frontend-react/src/components/Layout.tsx tests/site-stability.test.mjs
+          git add frontend-react/src/components/Layout.tsx frontend-react/src/lib/magazine.ts tools/publish-magazine-batch.mjs tests/site-stability.test.mjs
           if ! git diff --cached --quiet; then
-            git commit -m 'fix: serve language flags from R2 [skip ci]'
+            git commit -m 'fix: keep fresh Magazine content first [skip ci]'
             git push origin HEAD:main
           fi
           echo "Private main: $(git rev-parse HEAD)"
