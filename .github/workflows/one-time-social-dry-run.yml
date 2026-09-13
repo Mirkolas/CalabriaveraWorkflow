@@ -1,0 +1,32 @@
+name: One-time Social dry run
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/one-time-social-dry-run.yml'
+
+permissions:
+  contents: write
+  actions: write
+
+jobs:
+  dispatch:
+    runs-on: ubuntu-latest
+    timeout-minutes: 3
+    steps:
+      - uses: actions/checkout@v7
+      - name: Avvia Social dry-run
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: gh workflow run magazine-sync.yml --ref main -f mode=social-dry-run
+      - name: Rimuovi trigger monouso
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name 'CalabriaVera Workflow Maintenance'
+          git config user.email 'actions@users.noreply.github.com'
+          git rm .github/workflows/one-time-social-dry-run.yml
+          git commit -m 'chore: remove one-time Social dry-run trigger'
+          git push origin HEAD:main
