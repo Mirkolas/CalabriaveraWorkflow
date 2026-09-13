@@ -67,7 +67,7 @@ jobs:
           # Il guard orario controlla solo i workflow che hanno davvero un trigger schedule.
           # Se GitHub ritarda o salta il cron, avvia automaticamente un workflow_dispatch di recupero.
           ensure_workflow seo-sync.yml 45 "SEO/sitemap (ogni 5 min)"
-          ensure_workflow magazine-sync.yml 75 "Magazine/social (ogni 15 min)"
+          ensure_workflow magazine-sync.yml 450 "Magazine/social (ogni 6 ore)"
           ensure_workflow source-watch.yml 180 "Source watch (ogni ora)"
           ensure_workflow daily-backup.yml 2160 "Backup giornaliero"
           ensure_workflow firebase-deploy.yml 2160 "Manutenzione Firebase giornaliera"
