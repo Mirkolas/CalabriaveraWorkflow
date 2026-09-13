@@ -1,4 +1,4 @@
-name: One-time deploy Magazine freshness fix
+name: One-time deploy production page fixes
 
 on:
   push:
