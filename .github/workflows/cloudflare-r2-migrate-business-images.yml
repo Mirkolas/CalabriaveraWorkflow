@@ -1,6 +1,10 @@
 name: Cloudflare R2 - Migrate Business Images
 
 on:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/cloudflare-r2-migrate-business-images.yml'
   workflow_dispatch:
     inputs:
       apply:
@@ -29,6 +33,8 @@ env:
   CLOUDFLARE_ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
   PRIVATE_REPO: ${{ secrets.PRIVATE_REPO }}
   PRIVATE_REPO_PAT: ${{ secrets.PRIVATE_REPO_PAT || secrets.PERSONAL_ACCESS_TOKEN || secrets.PAT || secrets.GH_PAT || secrets.GITHUB_PAT }}
+  REQUESTED_APPLY: ${{ github.event_name == 'push' && 'true' || inputs.apply }}
+  REQUESTED_LIMIT: ${{ github.event_name == 'push' && '5000' || inputs.limit }}
 
 jobs:
   migrate:
@@ -43,11 +49,11 @@ jobs:
           test -n "$CLOUDFLARE_ACCOUNT_ID" || { echo "::error::CLOUDFLARE_ACCOUNT_ID mancante"; exit 1; }
           test -n "$PRIVATE_REPO" || { echo "::error::PRIVATE_REPO mancante"; exit 1; }
           test -n "$PRIVATE_REPO_PAT" || { echo "::error::PAT repository privato mancante"; exit 1; }
-          case "${{ inputs.limit }}" in
+          case "$REQUESTED_LIMIT" in
             ''|*[!0-9]*) echo "::error::limit deve essere un intero positivo"; exit 1 ;;
           esac
-          test "${{ inputs.limit }}" -ge 1 || { echo "::error::limit deve essere >= 1"; exit 1; }
-          test "${{ inputs.limit }}" -le 5000 || { echo "::error::limit deve essere <= 5000"; exit 1; }
+          test "$REQUESTED_LIMIT" -ge 1 || { echo "::error::limit deve essere >= 1"; exit 1; }
+          test "$REQUESTED_LIMIT" -le 5000 || { echo "::error::limit deve essere <= 5000"; exit 1; }
 
       - uses: actions/setup-node@v7
         with:
@@ -83,15 +89,17 @@ jobs:
       - name: Migra immagini business legacy verso R2
         working-directory: source
         env:
-          MIGRATE_APPLY: ${{ inputs.apply }}
-          MIGRATE_LIMIT: ${{ inputs.limit }}
+          MIGRATE_APPLY: ${{ env.REQUESTED_APPLY }}
+          MIGRATE_LIMIT: ${{ env.REQUESTED_LIMIT }}
+          MIGRATE_PAGE_SIZE: '25'
+          MIGRATE_SCAN_LIMIT: '10000'
         run: node tools/admin/migrate-business-images-r2.mjs
 
       - name: Riepilogo modalità
         if: always()
         shell: bash
         run: |
-          if [ "${{ inputs.apply }}" = "true" ]; then
+          if [ "$REQUESTED_APPLY" = "true" ]; then
             echo "Migrazione eseguita in modalità APPLY."
           else
             echo "Migrazione eseguita in DRY-RUN: nessuna scrittura su R2 o Firestore."
