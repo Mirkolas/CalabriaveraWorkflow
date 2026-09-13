@@ -1,4 +1,4 @@
-# Temporary dispatcher for the viewport-aware final production validation. Removed after green smoke.
+# Temporary dispatcher for the CDN-resilient final production validation. Removed after green smoke.
 name: Release validation dispatch
 
 on:
