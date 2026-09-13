@@ -96,7 +96,7 @@ jobs:
             case "$file" in sitemap-pages.xml|sitemap-main.xml|sitemap-[0-9]*.xml) ;; *) echo "::error::Nome sitemap non atteso: $file"; exit 1 ;; esac
             curl --fail --silent --show-error --location -H 'Cache-Control: no-cache' "$SITE_URL/$file?health=${GITHUB_RUN_ID}" -o "$tmp/$file"
             if grep -Eqi 'https?://[^<[:space:]]*\.web\.app' "$tmp/$file"; then echo "::error::Alias Firebase web.app presente in $file"; exit 1; fi
-            bad="$(grep -oE '<loc>[^<]+</loc>' "$tmp/$file" | sed -E 's#</?loc>##g' | grep -Ev '^https://calabriavera\.com(?:/|$)' || true)"
+            bad="$(grep -oE '<loc>[^<]+</loc>' "$tmp/$file" | sed -E 's#</?loc>##g' | grep -Ev '^https://calabriavera\.com(/|$)' || true)"
             test -z "$bad" || { echo "::error::URL non canonici in $file"; printf '%s\n' "$bad"; exit 1; }
           done < <(jq -r '.files[]' "$tmp/manifest.json")
 
