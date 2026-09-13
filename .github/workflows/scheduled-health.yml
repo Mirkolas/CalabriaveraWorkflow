@@ -54,7 +54,7 @@ jobs:
 
             if [ -n "$reason" ]; then
               echo "::warning::${label}: ${reason}; avvio recupero workflow_dispatch"
-              gh workflow run "$workflow" --ref main
+              gh workflow run "$workflow" --repo "$GITHUB_REPOSITORY" --ref main
               echo "RECOVERY ${label}: dispatch accettato"
             else
               echo "OK ${label}"
