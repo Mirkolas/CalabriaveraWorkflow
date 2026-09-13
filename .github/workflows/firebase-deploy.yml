@@ -103,20 +103,17 @@ jobs:
             sleep 6
           done
           test "$live" = "$expected"
-          html="$(curl --fail --silent --show-error --location -H 'Cache-Control: no-cache' "https://calabriavera.com/?run=$GITHUB_RUN_ID")"
-          printf '%s' "$html" | node -e '
-            let html = "";
-            process.stdin.setEncoding("utf8");
-            process.stdin.on("data", chunk => html += chunk);
-            process.stdin.on("end", () => {
-              const tags = html.match(/<meta\b[^>]*>/gi) || [];
-              const ok = tags.some(tag => /\bname=["'"']robots["'"']/i.test(tag) && /\bcontent=["'"']index,follow["'"']/i.test(tag));
-              if (!ok) {
-                console.error("Meta robots index,follow non trovato");
-                process.exit(1);
-              }
-            });
-          '
+          curl --fail --silent --show-error --location -H 'Cache-Control: no-cache' "https://calabriavera.com/?run=$GITHUB_RUN_ID" -o live-home.html
+          node <<'NODE'
+          const fs = require('fs');
+          const html = fs.readFileSync('live-home.html', 'utf8');
+          const tags = html.match(/<meta\b[^>]*>/gi) || [];
+          const ok = tags.some(tag => /\bname=["']robots["']/i.test(tag) && /\bcontent=["']index,follow["']/i.test(tag));
+          if (!ok) {
+            console.error('Meta robots index,follow non trovato');
+            process.exit(1);
+          }
+          NODE
           curl --fail --silent --show-error --location -o /dev/null "https://calabriavera.com/__/auth/handler?health=$GITHUB_RUN_ID"
           curl --fail --silent --show-error --location -o /dev/null "https://calabriavera.com/__/firebase/init.json?health=$GITHUB_RUN_ID"
           echo "React produzione verificato: $live"
