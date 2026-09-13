@@ -1,6 +1,8 @@
 name: Firebase - Backup cifrato incrementale
 
 on:
+  # Trigger temporaneo: questa modifica attiva una sola baseline v1.
+  # Verrà rimosso dopo la prima baseline verificata.
   push:
     branches: [main]
     paths:
@@ -33,7 +35,7 @@ jobs:
   backup:
     if: vars.BACKUPS_ENABLED == 'true' && github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    timeout-minutes: 60
     env:
       PRIVATE_REPO: ${{ secrets.PRIVATE_REPO }}
       PRIVATE_REPO_PAT: ${{ secrets.PRIVATE_REPO_PAT || secrets.PERSONAL_ACCESS_TOKEN || secrets.PAT || secrets.GH_PAT || secrets.GITHUB_PAT }}
@@ -54,6 +56,13 @@ jobs:
           path: source
           fetch-depth: 0
           persist-credentials: false
+
+      - name: Recupera checkpoint cifrato da un eventuale rerun
+        uses: actions/download-artifact@v4
+        continue-on-error: true
+        with:
+          name: backup-checkpoint
+          path: source/backup-output
 
       - uses: actions/setup-node@v7
         with:
@@ -123,41 +132,8 @@ jobs:
           FIREBASE_PROJECT_ID: calabriavera-e08d4
         run: node tools/backup/prepare-hosting-dist.mjs
 
-      - name: Compatibilità backup con alias Firebase reindirizzato
-        if: steps.preflight.outputs.ready == 'true'
-        shell: bash
-        run: |
-          cat > /tmp/cv-backup-fetch-compat.mjs <<'EOF'
-          import { readFileSync } from 'node:fs';
-          import { resolve } from 'node:path';
-          const nativeFetch = globalThis.fetch;
-          const responseWithOriginalUrl = (response, original) => new Proxy(response, {
-            get(targetResponse, prop) {
-              if (prop === 'url') return original.href;
-              const value = Reflect.get(targetResponse, prop, targetResponse);
-              return typeof value === 'function' ? value.bind(targetResponse) : value;
-            }
-          });
-          globalThis.fetch = async function cvBackupFetch(input, init) {
-            const raw = typeof input === 'string' || input instanceof URL ? String(input) : String(input?.url || '');
-            let original;
-            try { original = new URL(raw); } catch { return nativeFetch(input, init); }
-            if (original.hostname === 'calabriavera-e08d4.web.app') {
-              const generated = original.pathname === '/__/firebase/init.js' || original.pathname === '/__/firebase/init.json';
-              if (generated) {
-                const target = new URL(original.pathname + original.search, 'https://calabriavera.com');
-                return responseWithOriginalUrl(await nativeFetch(target, init), original);
-              }
-              if (original.pathname === '/index.html') {
-                const bytes = readFileSync(resolve(process.cwd(), 'legacy-host/index.html'));
-                return responseWithOriginalUrl(new Response(bytes, { status: 200, headers: { 'content-type': 'text/html; charset=utf-8' } }), original);
-              }
-            }
-            return nativeFetch(input, init);
-          };
-          EOF
-
-      - name: Backup cifrato, verifica remota e rotazione
+      - name: Backup cifrato, checkpoint e retry immediati
+        id: run_backup
         if: steps.preflight.outputs.ready == 'true'
         working-directory: source
         env:
@@ -168,7 +144,8 @@ jobs:
           CALABRIAVERA_BACKUP_ENCRYPTION_KEY: ${{ secrets.CALABRIAVERA_BACKUP_ENCRYPTION_KEY }}
           FIREBASE_AUTH_HASH_CONFIG: ${{ secrets.FIREBASE_AUTH_HASH_CONFIG }}
           BACKUP_MODE: ${{ steps.preflight.outputs.mode }}
-          NODE_OPTIONS: --import=/tmp/cv-backup-fetch-compat.mjs
+          CV_BACKUP_CHECKPOINT_PATH: backup-output/resume.cvcheckpoint
+          CV_BACKUP_RETRY_DELAYS_MS: 30000,120000,300000
         shell: bash
         run: |
           set -euo pipefail
@@ -178,3 +155,13 @@ jobs:
             baseline-v1) node tools/backup/run.mjs --baseline-v1 ;;
             *) echo "::error::Modalità inattesa $BACKUP_MODE"; exit 1 ;;
           esac
+
+      - name: Conserva checkpoint cifrato se tutti i retry falliscono
+        if: failure() && steps.preflight.outputs.ready == 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: backup-checkpoint
+          path: source/backup-output/resume.cvcheckpoint
+          if-no-files-found: ignore
+          retention-days: 2
+          overwrite: true
