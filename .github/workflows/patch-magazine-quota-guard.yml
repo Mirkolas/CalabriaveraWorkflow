@@ -1,0 +1,191 @@
+name: One-time patch Magazine quota guard
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/patch-magazine-quota-guard.yml'
+
+permissions:
+  contents: write
+
+jobs:
+  patch:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 1
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version: '22'
+
+      - name: Applica guard quota Firestore
+        shell: bash
+        run: |
+          set -euo pipefail
+          node <<'NODE'
+          const fs = require('node:fs');
+          const file = '.github/workflows/magazine-sync.yml';
+          let s = fs.readFileSync(file, 'utf8');
+
+          s = s.replace("- cron: '17 */6 * * *'", "- cron: '17 2,8,14,20 * * *'");
+          s = s.replace('[ "$(date -u +%H)" != "06" ]', '[ "$(date -u +%H)" != "08" ]');
+
+          function replaceBetween(startName, nextName, replacement) {
+            const start = `      - name: ${startName}\n`;
+            const next = `      - name: ${nextName}\n`;
+            const a = s.indexOf(start);
+            const b = s.indexOf(next, a + start.length);
+            if (a < 0 || b < 0) throw new Error(`Step non trovato: ${startName} -> ${nextName}`);
+            s = s.slice(0, a) + replacement + '\n' + s.slice(b);
+          }
+
+          replaceBetween('Controlla tutte le fonti e pubblica i nuovi contenuti', 'Pubblica la coppia Social se dovuta', `      - name: Controlla tutte le fonti e pubblica i nuovi contenuti
+        id: magazine
+        if: github.event_name == 'schedule' || github.event_name == 'repository_dispatch' || (github.event_name == 'workflow_dispatch' && inputs.mode == 'blog')
+        working-directory: source
+        env:
+          NODE_OPTIONS: --import=./tools/source-fetch-compat.mjs
+          AUTOMATION_INTERVAL_MINUTES: '360'
+          AUTOMATION_LOCK_MINUTES: '35'
+          AUTOMATION_FORCE: \${{ (github.event_name == 'workflow_dispatch' && inputs.mode == 'blog') || (github.event_name == 'repository_dispatch' && github.event.client_payload.magazine_force == true) }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          log="$(mktemp)"
+          set +e
+          node tools/automation-cadence-runner.mjs magazine-site -- bash -lc '
+            set -euo pipefail
+            export MAGAZINE_CYCLE_STARTED_AT_MS=$(date +%s%3N)
+            node tools/enforce-source-rights.mjs
+            export SOURCE_REGISTRY_ENFORCED=true
+            node tools/cleanup-ingv-magnitude.mjs
+            set +e
+            node tools/sync-magazine-v2.mjs; rss_code=$?
+            node tools/sync-tourism-opendata.mjs; tourism_code=$?
+            node tools/sync-regional-opendata.mjs; regional_code=$?
+            set -e
+            node tools/queue-new-magazine-items.mjs
+            if [ "$(date -u +%H)" = "01" ]; then
+              node tools/reconcile-magazine.mjs
+              node tools/enforce-positive-magazine.mjs
+              node tools/backfill-blog-covers.mjs
+            fi
+            node tools/publish-magazine-batch.mjs
+            if [ "$rss_code" -ne 0 ] && [ "$tourism_code" -ne 0 ] && [ "$regional_code" -ne 0 ]; then exit 1; fi
+          ' >"$log" 2>&1
+          code=$?
+          set -e
+          cat "$log"
+          if [ "$code" -eq 0 ]; then
+            echo 'quota_exhausted=false' >> "$GITHUB_OUTPUT"
+            rm -f "$log"
+            exit 0
+          fi
+          if grep -Eqi 'RESOURCE_EXHAUSTED|Quota exceeded|FIRESTORE_429|(^|[^0-9])429([^0-9]|$)' "$log"; then
+            echo 'quota_exhausted=true' >> "$GITHUB_OUTPUT"
+            echo '::warning::Magazine rinviato: quota Firestore temporaneamente esaurita. Social e Story non verranno avviati in questa run.'
+            rm -f "$log"
+            exit 0
+          fi
+          rm -f "$log"
+          exit "$code"
+`);
+
+          replaceBetween('Pubblica la coppia Social se dovuta', 'Pubblica Story promozionale se dovuta', `      - name: Pubblica la coppia Social se dovuta
+        id: social
+        if: steps.magazine.outputs.quota_exhausted != 'true' && (github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && (inputs.mode == 'social-watchdog' || inputs.mode == 'social-dry-run' || inputs.mode == 'social-publish')) || (github.event_name == 'repository_dispatch' && (github.event.client_payload.social_dry_run == true || github.event.client_payload.social_publish == true)))
+        working-directory: source
+        env:
+          META_GRAPH_VERSION: \${{ vars.META_GRAPH_VERSION || 'v26.0' }}
+          META_PAGE_ID: \${{ vars.META_PAGE_ID }}
+          META_IG_USER_ID: \${{ vars.META_IG_USER_ID }}
+          META_PAGE_ACCESS_TOKEN: \${{ secrets.META_PAGE_ACCESS_TOKEN }}
+          META_INSTAGRAM_ACCESS_TOKEN: \${{ secrets.META_INSTAGRAM_ACCESS_TOKEN }}
+          SOCIAL_FACEBOOK_ENABLED: \${{ vars.SOCIAL_FACEBOOK_ENABLED }}
+          SOCIAL_INSTAGRAM_ENABLED: \${{ vars.SOCIAL_INSTAGRAM_ENABLED }}
+          SOCIAL_FACEBOOK_STORY_ENABLED: 'false'
+          SOCIAL_INSTAGRAM_STORY_ENABLED: 'false'
+          SOCIAL_MAX_POST_AGE_HOURS: '8760'
+          SOCIAL_MAX_DESTINATION_ATTEMPTS: \${{ vars.SOCIAL_MAX_DESTINATION_ATTEMPTS || '3' }}
+          SOCIAL_FORCE_INSTAGRAM_REPUBLISH: \${{ github.event_name == 'repository_dispatch' && github.event.client_payload.social_republish_instagram == true }}
+          SOCIAL_FORCE_POST_ID: \${{ github.event_name == 'repository_dispatch' && github.event.client_payload.social_republish_ricadi == true && 'ext-b531af8d21e352c377ddff4c712d' || '' }}
+          SOCIAL_DRY_RUN: \${{ (github.event_name == 'workflow_dispatch' && inputs.mode == 'social-dry-run') || (github.event_name == 'repository_dispatch' && github.event.client_payload.social_dry_run == true) }}
+          AUTOMATION_INTERVAL_MINUTES: '360'
+          AUTOMATION_LOCK_MINUTES: '35'
+          AUTOMATION_ADVANCE_ON_FAILURE: 'true'
+          AUTOMATION_FORCE: \${{ (github.event_name == 'workflow_dispatch' && inputs.mode == 'social-publish') || (github.event_name == 'repository_dispatch' && github.event.client_payload.social_publish == true) }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          log="$(mktemp)"
+          set +e
+          if [ "$SOCIAL_DRY_RUN" = "true" ]; then
+            bash -lc 'set -euo pipefail; node tools/check-meta-config.mjs; node tools/publish-social-pair.mjs' >"$log" 2>&1
+          else
+            node tools/automation-cadence-runner.mjs social-feed -- bash -lc '
+              node tools/check-meta-config.mjs
+              node tools/publish-social-pair.mjs
+            ' >"$log" 2>&1
+          fi
+          code=$?
+          set -e
+          cat "$log"
+          if [ "$code" -eq 0 ]; then
+            echo 'quota_exhausted=false' >> "$GITHUB_OUTPUT"
+            rm -f "$log"
+            exit 0
+          fi
+          if grep -Eqi 'RESOURCE_EXHAUSTED|Quota exceeded|FIRESTORE_429|(^|[^0-9])429([^0-9]|$)' "$log"; then
+            echo 'quota_exhausted=true' >> "$GITHUB_OUTPUT"
+            echo '::warning::Social rinviato: quota Firestore temporaneamente esaurita. Story non verrà avviata in questa run.'
+            rm -f "$log"
+            exit 0
+          fi
+          rm -f "$log"
+          exit "$code"
+`);
+
+          const storyStart = '      - name: Pubblica Story promozionale se dovuta\n';
+          const storyIndex = s.indexOf(storyStart);
+          if (storyIndex < 0) throw new Error('Step Story non trovato');
+          const oldStory = s.slice(storyIndex);
+          const guardedStory = oldStory
+            .replace("        if: github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && (inputs.mode == 'promo-story-watchdog' || inputs.mode == 'promo-story-publish'))", "        if: steps.magazine.outputs.quota_exhausted != 'true' && steps.social.outputs.quota_exhausted != 'true' && (github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && (inputs.mode == 'promo-story-watchdog' || inputs.mode == 'promo-story-publish')))")
+            .replace("        run: |\n          set -euo pipefail\n          private_version=", "        run: |\n          set -euo pipefail\n          log=\"$(mktemp)\"\n          private_version=")
+            .replace("          node tools/automation-cadence-runner.mjs promo-story -- bash -lc '", "          set +e\n          node tools/automation-cadence-runner.mjs promo-story -- bash -lc '")
+            .replace("          '\n", "          ' >\"$log\" 2>&1\n          code=$?\n          set -e\n          cat \"$log\"\n          if [ \"$code\" -eq 0 ]; then rm -f \"$log\"; exit 0; fi\n          if grep -Eqi 'RESOURCE_EXHAUSTED|Quota exceeded|FIRESTORE_429|(^|[^0-9])429([^0-9]|$)' \"$log\"; then\n            echo '::warning::Story rinviata: quota Firestore temporaneamente esaurita.'\n            rm -f \"$log\"\n            exit 0\n          fi\n          rm -f \"$log\"\n          exit \"$code\"\n");
+          s = s.slice(0, storyIndex) + guardedStory;
+
+          const required = [
+            "cron: '17 2,8,14,20 * * *'",
+            'id: magazine',
+            'id: social',
+            "steps.magazine.outputs.quota_exhausted != 'true'",
+            "steps.social.outputs.quota_exhausted != 'true'",
+            'Magazine rinviato: quota Firestore temporaneamente esaurita',
+            'Social rinviato: quota Firestore temporaneamente esaurita',
+            'Story rinviata: quota Firestore temporaneamente esaurita'
+          ];
+          for (const marker of required) if (!s.includes(marker)) throw new Error(`Marker mancante: ${marker}`);
+          fs.writeFileSync(file, s);
+          NODE
+
+          git diff --check -- .github/workflows/magazine-sync.yml
+          grep -Fq "cron: '17 2,8,14,20 * * *'" .github/workflows/magazine-sync.yml
+          grep -Fq "steps.magazine.outputs.quota_exhausted != 'true'" .github/workflows/magazine-sync.yml
+          grep -Fq 'RESOURCE_EXHAUSTED' .github/workflows/magazine-sync.yml
+
+      - name: Commit patch e rimuovi workflow monouso
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name 'CalabriaVera Workflow Maintenance'
+          git config user.email 'actions@users.noreply.github.com'
+          git rm .github/workflows/patch-magazine-quota-guard.yml
+          git add .github/workflows/magazine-sync.yml
+          git commit -m 'fix: make Magazine Firestore quota-safe'
+          git push origin HEAD:main
