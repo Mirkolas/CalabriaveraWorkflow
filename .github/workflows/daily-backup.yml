@@ -128,22 +128,30 @@ jobs:
         shell: bash
         run: |
           cat > /tmp/cv-backup-fetch-compat.mjs <<'EOF'
+          import { readFileSync } from 'node:fs';
+          import { resolve } from 'node:path';
           const nativeFetch = globalThis.fetch;
+          const responseWithOriginalUrl = (response, original) => new Proxy(response, {
+            get(targetResponse, prop) {
+              if (prop === 'url') return original.href;
+              const value = Reflect.get(targetResponse, prop, targetResponse);
+              return typeof value === 'function' ? value.bind(targetResponse) : value;
+            }
+          });
           globalThis.fetch = async function cvBackupFetch(input, init) {
             const raw = typeof input === 'string' || input instanceof URL ? String(input) : String(input?.url || '');
             let original;
             try { original = new URL(raw); } catch { return nativeFetch(input, init); }
-            const generated = original.pathname === '/__/firebase/init.js' || original.pathname === '/__/firebase/init.json';
-            if (generated && original.hostname === 'calabriavera-e08d4.web.app') {
-              const target = new URL(original.pathname + original.search, 'https://calabriavera.com');
-              const response = await nativeFetch(target, init);
-              return new Proxy(response, {
-                get(targetResponse, prop) {
-                  if (prop === 'url') return original.href;
-                  const value = Reflect.get(targetResponse, prop, targetResponse);
-                  return typeof value === 'function' ? value.bind(targetResponse) : value;
-                }
-              });
+            if (original.hostname === 'calabriavera-e08d4.web.app') {
+              const generated = original.pathname === '/__/firebase/init.js' || original.pathname === '/__/firebase/init.json';
+              if (generated) {
+                const target = new URL(original.pathname + original.search, 'https://calabriavera.com');
+                return responseWithOriginalUrl(await nativeFetch(target, init), original);
+              }
+              if (original.pathname === '/index.html') {
+                const bytes = readFileSync(resolve(process.cwd(), 'legacy-host/index.html'));
+                return responseWithOriginalUrl(new Response(bytes, { status: 200, headers: { 'content-type': 'text/html; charset=utf-8' } }), original);
+              }
             }
             return nativeFetch(input, init);
           };
