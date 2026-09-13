@@ -19,6 +19,67 @@ function criticalAsset(url) {
   try { return criticalOrigins.has(new URL(url).origin); } catch { return false; }
 }
 
+async function auditCanonicalAssets(page, label, routeFailures) {
+  const check = (condition, message) => { if (!condition) routeFailures.push(message); };
+  const assetState = await page.evaluate(() => {
+    const primary = [...document.querySelectorAll('.primary-nav a')]
+      .filter(node => getComputedStyle(node).display !== 'none')
+      .map(node => ({ text: (node.textContent || '').trim(), href: node.getAttribute('href') || '' }));
+    const logo = document.querySelector('.brand-logo');
+    const icons = [...document.querySelectorAll('link[rel~="icon"], link[rel="apple-touch-icon"]')].map(node => node.getAttribute('href') || '');
+    return {
+      primary,
+      logoSrc: logo?.getAttribute('src') || '',
+      logoNaturalWidth: logo instanceof HTMLImageElement ? logo.naturalWidth : 0,
+      icons,
+    };
+  });
+  check(assetState.primary.length === 1, `${label} Home: navigazione primaria deve contenere solo Home, trovate ${assetState.primary.length} voci`);
+  check(assetState.primary[0]?.text.trim().toLowerCase() === 'home', `${label} Home: unica voce primaria non è Home`);
+  check(assetState.logoSrc === '/assets/Logo.webp', `${label} Home: logo header non usa /assets/Logo.webp (${assetState.logoSrc})`);
+  check(assetState.logoNaturalWidth > 0, `${label} Home: logo header non caricato`);
+  check(assetState.icons.some(href => href.startsWith('/assets/favicon.ico?v=')), `${label} Home: favicon.ico canonico assente`);
+  check(assetState.icons.some(href => href.startsWith('/assets/favicon-32x32.png?v=')), `${label} Home: favicon 32x32 canonico assente`);
+  check(assetState.icons.some(href => href.startsWith('/assets/apple-touch-icon.png?v=')), `${label} Home: apple-touch-icon canonico assente`);
+
+  const language = page.locator('details.header-language');
+  try {
+    await language.locator('summary').click();
+    const flags = page.locator('.cv-language-list .cv-language-flag');
+    check(await flags.count() === 5, `${label} Home: attese 5 bandiere lingua`);
+    for (let i = 0; i < await flags.count(); i += 1) {
+      const background = await flags.nth(i).evaluate(node => getComputedStyle(node).backgroundImage);
+      check(background.includes('/assets/flags/'), `${label} Home: bandiera ${i + 1} non usa /assets/flags (${background})`);
+      check(background !== 'none', `${label} Home: bandiera ${i + 1} senza background`);
+    }
+    await language.locator('summary').click().catch(() => undefined);
+  } catch (error) {
+    routeFailures.push(`${label} Home: selettore lingue non verificabile (${error?.message || error})`);
+  }
+
+  for (const asset of [
+    '/assets/Logo.webp',
+    '/assets/favicon.ico',
+    '/assets/favicon-32x32.png',
+    '/assets/apple-touch-icon.png',
+    '/assets/flags/it.svg',
+    '/assets/flags/en.svg',
+    '/assets/flags/fr.svg',
+    '/assets/flags/de.svg',
+    '/assets/flags/es.svg',
+    '/assets/Story-Promo_instagram-facebook.png',
+    '/assets/images/blog-default-events.png',
+    '/assets/images/blog-default-news.png',
+  ]) {
+    try {
+      const response = await page.request.get(`${baseUrl}${asset}?cv_asset_audit=${Date.now()}`);
+      check(response.ok(), `${label} asset ${asset}: HTTP ${response.status()}`);
+    } catch (error) {
+      routeFailures.push(`${label} asset ${asset}: ${error?.message || error}`);
+    }
+  }
+}
+
 async function auditViewport(browser, label, viewport) {
   const context = await browser.newContext({ locale: 'it-IT', viewport, serviceWorkers: 'block' });
   const page = await context.newPage();
@@ -66,6 +127,11 @@ async function auditViewport(browser, label, viewport) {
       for (const selector of route.selectors) {
         try { await page.locator(selector).first().waitFor({ state: 'visible', timeout: 12000 }); }
         catch { routeFailures.push(`${label} ${route.path}: elemento non visibile ${selector}`); }
+      }
+
+      if (route.name === 'home') {
+        await page.locator('.brand-logo').waitFor({ state: 'visible', timeout: 5000 }).catch(() => undefined);
+        await auditCanonicalAssets(page, label, routeFailures);
       }
 
       if (route.name === 'blog') {
