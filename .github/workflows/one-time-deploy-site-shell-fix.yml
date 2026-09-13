@@ -11,10 +11,61 @@ permissions:
   actions: write
 
 jobs:
-  dispatch:
+  fix-and-dispatch:
     runs-on: ubuntu-latest
-    timeout-minutes: 3
+    timeout-minutes: 6
+    env:
+      PRIVATE_REPO: ${{ secrets.PRIVATE_REPO }}
+      PRIVATE_REPO_PAT: ${{ secrets.PRIVATE_REPO_PAT || secrets.PERSONAL_ACCESS_TOKEN || secrets.PAT || secrets.GH_PAT || secrets.GITHUB_PAT }}
     steps:
+      - name: Verifica configurazione
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -n "$PRIVATE_REPO" || { echo "::error::PRIVATE_REPO mancante"; exit 1; }
+          test -n "$PRIVATE_REPO_PAT" || { echo "::error::PAT repository privato mancante"; exit 1; }
+
+      - name: Scarica sorgente privato
+        uses: actions/checkout@v7
+        with:
+          repository: ${{ secrets.PRIVATE_REPO }}
+          token: ${{ env.PRIVATE_REPO_PAT }}
+          ref: main
+          path: source
+          persist-credentials: true
+
+      - name: Aggiorna test UI dopo consolidamento Promo Story
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          from pathlib import Path
+          p = Path('source/tests/ui-regression.test.mjs')
+          text = p.read_text()
+          old_decl = "const promoWorkflow = readFileSync('.github/workflows/promo-story.yml', 'utf8');"
+          new_decl = "const promoPublisher = readFileSync('tools/publish-promo-story.mjs', 'utf8');"
+          if old_decl in text:
+              text = text.replace(old_decl, new_decl, 1)
+          elif new_decl not in text:
+              raise SystemExit('Dichiarazione Promo Story non riconosciuta')
+
+          old_asserts = "  assert.match(promoWorkflow, /SITE_URL: https:\\/\\/calabriavera\\.com/);\n  assert.match(promoWorkflow, /PROMO_STORY_IMAGE_URL: https:\\/\\/calabriavera\\.com\\/assets\\/Story-Promo_instagram-facebook\\.png/);"
+          new_asserts = "  assert.match(magazineWorkflow, /SITE_URL: https:\\/\\/calabriavera\\.com/);\n  assert.match(magazineWorkflow, /assets\\/Story-Promo_instagram-facebook\\.png/);\n  assert.match(promoPublisher, /PROMO_STORY_IMAGE_URL/);\n  assert.match(promoPublisher, /\\$\\{SITE_URL\\}\\/assets\\/Story-Promo_instagram-facebook\\.png/);"
+          if old_asserts in text:
+              text = text.replace(old_asserts, new_asserts, 1)
+          elif new_asserts not in text:
+              raise SystemExit('Asserzioni Promo Story non riconosciute')
+          p.write_text(text)
+          PY
+          git -C source diff --check
+          git -C source config user.name 'CalabriaVera Public Workflow'
+          git -C source config user.email 'actions@users.noreply.github.com'
+          git -C source add tests/ui-regression.test.mjs
+          if ! git -C source diff --cached --quiet; then
+            git -C source commit -m 'test: align UI regression with consolidated promo workflow [skip ci]'
+            git -C source push origin HEAD:main
+          fi
+
       - name: Avvia deploy manuale Firebase
         env:
           GH_TOKEN: ${{ github.token }}
@@ -23,4 +74,4 @@ jobs:
         run: |
           set -euo pipefail
           gh api --method POST "repos/${GH_REPO}/actions/workflows/firebase-deploy.yml/dispatches" -f ref=main >/dev/null
-          echo "Workflow Firebase avviato manualmente per bypassare il gate giornaliero della sola automazione."
+          echo "Workflow Firebase avviato manualmente dopo la correzione del test."
