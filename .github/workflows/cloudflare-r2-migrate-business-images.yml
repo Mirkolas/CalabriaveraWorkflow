@@ -66,7 +66,31 @@ jobs:
           token: ${{ env.PRIVATE_REPO_PAT }}
           ref: main
           path: source
-          persist-credentials: false
+          persist-credentials: true
+
+      - name: Correggi conversione WebP legacy nel sorgente
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          from pathlib import Path
+          p = Path('source/tools/admin/migrate-business-images-r2.mjs')
+          text = p.read_text()
+          old = "const output = path.join(tempRoot, `${label}.webp`);"
+          new = "const output = path.join(tempRoot, `${label}-converted.webp`);"
+          if old not in text and new not in text:
+              raise SystemExit('Pattern conversione WebP non trovato')
+          if old in text:
+              p.write_text(text.replace(old, new, 1))
+          PY
+          git -C source diff --check
+          git -C source config user.name 'CalabriaVera Public Workflow'
+          git -C source config user.email 'actions@users.noreply.github.com'
+          git -C source add tools/admin/migrate-business-images-r2.mjs
+          if ! git -C source diff --cached --quiet; then
+            git -C source commit -m 'fix: avoid in-place WebP conversion during R2 migration [skip ci]'
+            git -C source push origin HEAD:main
+          fi
 
       - name: Installa dipendenze amministrative
         run: npm --prefix source/tools ci --no-audit --no-fund
