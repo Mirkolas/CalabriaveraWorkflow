@@ -52,7 +52,7 @@ jobs:
           test -n "$PRIVATE_REPO_PAT" || { echo "::error::PAT per repository privato mancante"; exit 1; }
 
       - name: Scarica sorgente privato
-        uses: actions/checkout@v5
+        uses: actions/checkout@v7
         with:
           repository: ${{ secrets.PRIVATE_REPO }}
           token: ${{ secrets.PRIVATE_REPO_PAT }}
