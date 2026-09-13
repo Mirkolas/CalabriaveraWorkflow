@@ -34,7 +34,7 @@ jobs:
             local workflow="$1"
             local max_age_minutes="$2"
             local label="$3"
-            local payload latest conclusion created now created_epoch age
+            local payload latest conclusion created run_url now created_epoch age
 
             payload="$(gh api "repos/${GITHUB_REPOSITORY}/actions/workflows/${workflow}/runs?event=schedule&branch=main&per_page=10")"
             latest="$(printf '%s' "$payload" | jq -c '.workflow_runs | map(select(.status == "completed")) | .[0] // empty')"
@@ -42,6 +42,8 @@ jobs:
 
             conclusion="$(printf '%s' "$latest" | jq -r '.conclusion // ""')"
             created="$(printf '%s' "$latest" | jq -r '.created_at // ""')"
+            run_url="$(printf '%s' "$latest" | jq -r '.html_url // ""')"
+            echo "${label}: ${run_url:-run-non-disponibile} (${created:-data-sconosciuta}, ${conclusion:-stato-sconosciuto})"
             test "$conclusion" = "success" || { echo "::error::${label}: ultimo ciclo concluso con ${conclusion:-stato-sconosciuto}"; return 1; }
 
             now="$(date -u +%s)"
@@ -54,13 +56,15 @@ jobs:
             echo "OK ${label}: success, ${age} minuti fa"
           }
 
+          failures=0
           # Soglie volutamente più larghe della cadenza per tollerare ritardi GitHub Actions.
-          check_workflow seo-sync.yml 45 "SEO/sitemap (ogni 5 min)"
-          check_workflow magazine-sync.yml 75 "Magazine/social (ogni 15 min)"
-          check_workflow source-watch.yml 180 "Source watch (ogni ora)"
-          check_workflow daily-backup.yml 2160 "Backup giornaliero"
-          check_workflow firebase-deploy.yml 2160 "Manutenzione Firebase giornaliera"
-          check_workflow smoke-browser.yml 2160 "Smoke browser giornaliero"
+          check_workflow seo-sync.yml 45 "SEO/sitemap (ogni 5 min)" || failures=$((failures + 1))
+          check_workflow magazine-sync.yml 75 "Magazine/social (ogni 15 min)" || failures=$((failures + 1))
+          check_workflow source-watch.yml 180 "Source watch (ogni ora)" || failures=$((failures + 1))
+          check_workflow daily-backup.yml 2160 "Backup giornaliero" || failures=$((failures + 1))
+          check_workflow firebase-deploy.yml 2160 "Manutenzione Firebase giornaliera" || failures=$((failures + 1))
+          check_workflow smoke-browser.yml 2160 "Smoke browser giornaliero" || failures=$((failures + 1))
+          test "$failures" -eq 0 || { echo "::error::${failures} workflow schedulati richiedono intervento"; exit 1; }
 
       - name: Verifica dominio canonico, sitemap e cinque lingue
         shell: bash
