@@ -1,0 +1,71 @@
+name: One-time deploy Magazine freshness fix
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/one-time-deploy-magazine-live-feed.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  id-token: write
+
+concurrency:
+  group: firebase-production
+  cancel-in-progress: false
+
+env:
+  PRIVATE_REPO: ${{ secrets.PRIVATE_REPO }}
+  PRIVATE_REPO_PAT: ${{ secrets.PRIVATE_REPO_PAT || secrets.PERSONAL_ACCESS_TOKEN || secrets.PAT || secrets.GH_PAT || secrets.GITHUB_PAT }}
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Checkout private source
+        uses: actions/checkout@v7
+        with:
+          repository: ${{ secrets.PRIVATE_REPO }}
+          token: ${{ env.PRIVATE_REPO_PAT }}
+          ref: main
+          path: source
+          persist-credentials: false
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version: '22'
+
+      - name: Suite completa
+        working-directory: source
+        run: |
+          npm ci --no-audit --no-fund
+          npm test
+
+      - name: Build React produzione
+        working-directory: source/frontend-react
+        env:
+          CV_PRERENDER_OFFLINE: '1'
+        run: |
+          npm ci --no-audit --no-fund
+          npm run build
+
+      - uses: google-github-actions/auth@v3
+        with:
+          workload_identity_provider: ${{ vars.FIREBASE_WIF_PROVIDER }}
+          service_account: ${{ vars.FIREBASE_DEPLOY_SERVICE_ACCOUNT }}
+
+      - name: Deploy React Hosting
+        working-directory: source/frontend-react
+        run: npx --yes firebase-tools@15.22.1 deploy --project calabriavera-e08d4 --config firebase.react.json --only hosting
+
+      - name: Verifica SHA live
+        working-directory: source
+        shell: bash
+        run: |
+          set -euo pipefail
+          expected="$(git rev-parse HEAD)"
+          live="$(curl --fail --silent --show-error --location --retry 8 --retry-delay 3 -H 'Cache-Control: no-cache' "https://calabriavera.com/build-version.txt?run=$GITHUB_RUN_ID" | tr -d '\r\n')"
+          test "$live" = "$expected"
+          echo "React produzione verificato: $live"
