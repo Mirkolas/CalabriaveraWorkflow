@@ -34,7 +34,7 @@ jobs:
           path: source
           persist-credentials: true
 
-      - name: Aggiorna test UI dopo consolidamento Promo Story
+      - name: Allinea test UI ai manifest privati
         shell: bash
         run: |
           set -euo pipefail
@@ -42,19 +42,69 @@ jobs:
           from pathlib import Path
           p = Path('source/tests/ui-regression.test.mjs')
           text = p.read_text()
-          old_decl = "const promoWorkflow = readFileSync('.github/workflows/promo-story.yml', 'utf8');"
-          new_decl = "const promoPublisher = readFileSync('tools/publish-promo-story.mjs', 'utf8');"
-          if old_decl in text:
-              text = text.replace(old_decl, new_decl, 1)
-          elif new_decl not in text:
-              raise SystemExit('Dichiarazione Promo Story non riconosciuta')
 
-          old_asserts = "  assert.match(promoWorkflow, /SITE_URL: https:\\/\\/calabriavera\\.com/);\n  assert.match(promoWorkflow, /PROMO_STORY_IMAGE_URL: https:\\/\\/calabriavera\\.com\\/assets\\/Story-Promo_instagram-facebook\\.png/);"
-          new_asserts = "  assert.match(magazineWorkflow, /SITE_URL: https:\\/\\/calabriavera\\.com/);\n  assert.match(magazineWorkflow, /assets\\/Story-Promo_instagram-facebook\\.png/);\n  assert.match(promoPublisher, /PROMO_STORY_IMAGE_URL/);\n  assert.match(promoPublisher, /\\$\\{SITE_URL\\}\\/assets\\/Story-Promo_instagram-facebook\\.png/);"
-          if old_asserts in text:
-              text = text.replace(old_asserts, new_asserts, 1)
-          elif new_asserts not in text:
-              raise SystemExit('Asserzioni Promo Story non riconosciute')
+          old_seo = '''test('l automazione SEO controlla Firestore ogni sei ore e avvia il deploy solo quando serve', () => {
+            assert.match(seoWorkflow, /cron: '27 \\*\\/6 \\* \\* \\*'/);
+            assert.match(seoWorkflow, /node tools\\/check-seo-sync\\.mjs/);
+            assert.match(seoWorkflow, /steps\\.changes\\.outputs\\.needs_sync == 'true'/);
+            assert.match(seoWorkflow, /gh workflow run firebase-deploy\\.yml --ref main/);
+            assert.match(seoWorkflow, /GH_TOKEN: \\$\\{\\{ github\\.token \\}\\}/);
+            assert.match(seoWatcher, /readPublicCollection/);
+            assert.match(seoWatcher, /businessFingerprint/);
+            assert.match(seoWatcher, /firebase-deploy\\.yml\\/runs/);
+            assert.match(publicData, /documents:runQuery/);
+            assert.match(publicData, /stringValue:'approved'/);
+            assert.doesNotMatch(seoWorkflow, /google-github-actions\\/auth@v3/);
+            assert.doesNotMatch(seoWorkflow, /workload_identity_provider|service_account|token_format/);
+            assert.doesNotMatch(seoWorkflow, /secrets\\.[A-Z0-9_]*(?:PAT|PERSONAL_ACCESS_TOKEN)/i);
+            assert.doesNotMatch(seoWorkflow, /personal access token/i);
+          });'''.replace('          ', '')
+
+          new_seo = '''test('il manifest SEO delega il runner pubblico e il watcher mantiene la logica di sincronizzazione', () => {
+            assert.match(seoWorkflow, /name: Trigger manifest - SEO/);
+            assert.match(seoWorkflow, /tools\\/check-seo-sync\\.mjs/);
+            assert.match(seoWorkflow, /tools\\/lib\\/seo-snapshot\\.mjs/);
+            assert.match(seoWorkflow, /if: \\$\\{\\{ false \\}\\}/);
+            assert.match(seoWatcher, /readPublicCollection/);
+            assert.match(seoWatcher, /businessFingerprint/);
+            assert.match(seoWatcher, /firebase-deploy\\.yml\\/runs/);
+            assert.match(publicData, /documents:runQuery/);
+            assert.match(publicData, /stringValue:'approved'/);
+            assert.doesNotMatch(seoWorkflow, /google-github-actions\\/auth@v3/);
+            assert.doesNotMatch(seoWorkflow, /workload_identity_provider|service_account|token_format/);
+            assert.doesNotMatch(seoWorkflow, /secrets\\.[A-Z0-9_]*(?:PAT|PERSONAL_ACCESS_TOKEN)/i);
+          });'''.replace('          ', '')
+
+          if old_seo in text:
+              text = text.replace(old_seo, new_seo, 1)
+          elif new_seo not in text:
+              raise SystemExit('Blocco test SEO non riconosciuto')
+
+          old_apps = '''test('automazioni social e Apps Script pubblicano link sul dominio ufficiale', () => {
+            assert.match(magazineWorkflow, /SITE_URL: https:\\/\\/calabriavera\\.com/);
+            assert.match(magazineWorkflow, /assets\\/Story-Promo_instagram-facebook\\.png/);
+            assert.match(promoPublisher, /PROMO_STORY_IMAGE_URL/);
+            assert.match(promoPublisher, /\\$\\{SITE_URL\\}\\/assets\\/Story-Promo_instagram-facebook\\.png/);
+            assert.match(magazineWorkflow, /SITE_URL: https:\\/\\/calabriavera\\.com/);
+            assert.match(appsScriptWorkflow, /s#https:\\/\\/calabriavera\\.web\\.app#https:\\/\\/calabriavera\\.com#g/);
+            assert.match(appsScriptWorkflow, /grep -q "https:\\/\\/calabriavera\\.com" apps-script\\/EmailAutomation\\.gs/);
+          });'''.replace('          ', '')
+
+          new_apps = '''test('i manifest Social e Apps Script delegano il runner pubblico mantenendo sorgenti e dominio condivisi', () => {
+            assert.match(magazineWorkflow, /SITE_URL: https:\\/\\/calabriavera\\.com/);
+            assert.match(magazineWorkflow, /assets\\/Story-Promo_instagram-facebook\\.png/);
+            assert.match(promoPublisher, /PROMO_STORY_IMAGE_URL/);
+            assert.match(promoPublisher, /\\$\\{SITE_URL\\}\\/assets\\/Story-Promo_instagram-facebook\\.png/);
+            assert.match(appsScriptWorkflow, /tools\\/check-apps-script\\.mjs/);
+            assert.match(appsScriptWorkflow, /if: \\$\\{\\{ false \\}\\}/);
+            assert.doesNotMatch(appsScriptWorkflow, /google-github-actions\\/auth|clasp|secrets\\./i);
+          });'''.replace('          ', '')
+
+          if old_apps in text:
+              text = text.replace(old_apps, new_apps, 1)
+          elif new_apps not in text:
+              raise SystemExit('Blocco test Apps Script non riconosciuto')
+
           p.write_text(text)
           PY
           git -C source diff --check
@@ -62,7 +112,7 @@ jobs:
           git -C source config user.email 'actions@users.noreply.github.com'
           git -C source add tests/ui-regression.test.mjs
           if ! git -C source diff --cached --quiet; then
-            git -C source commit -m 'test: align UI regression with consolidated promo workflow [skip ci]'
+            git -C source commit -m 'test: align UI workflow assertions with public runner [skip ci]'
             git -C source push origin HEAD:main
           fi
 
@@ -74,4 +124,4 @@ jobs:
         run: |
           set -euo pipefail
           gh api --method POST "repos/${GH_REPO}/actions/workflows/firebase-deploy.yml/dispatches" -f ref=main >/dev/null
-          echo "Workflow Firebase avviato manualmente dopo la correzione del test."
+          echo "Workflow Firebase avviato manualmente dopo l'allineamento dei test."
