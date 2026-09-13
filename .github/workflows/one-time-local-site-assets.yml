@@ -1,0 +1,154 @@
+name: One-time local site assets repair
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/one-time-local-site-assets.yml'
+      - 'scripts/fix-local-site-assets.py'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  id-token: write
+
+concurrency:
+  group: one-time-local-site-assets-repair
+  cancel-in-progress: false
+
+env:
+  PRIVATE_REPO: ${{ secrets.PRIVATE_REPO }}
+  PRIVATE_REPO_PAT: ${{ secrets.PRIVATE_REPO_PAT || secrets.PERSONAL_ACCESS_TOKEN || secrets.PAT || secrets.GH_PAT || secrets.GITHUB_PAT }}
+
+jobs:
+  repair-test-deploy:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Checkout public runner
+        uses: actions/checkout@v7
+        with:
+          path: runner
+          persist-credentials: false
+
+      - name: Checkout private source
+        uses: actions/checkout@v7
+        with:
+          repository: ${{ secrets.PRIVATE_REPO }}
+          token: ${{ env.PRIVATE_REPO_PAT }}
+          ref: main
+          path: source
+          persist-credentials: true
+          fetch-depth: 1
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version: '22'
+
+      - name: Apply local assets and Home-only header
+        run: |
+          set -euo pipefail
+          python runner/scripts/fix-local-site-assets.py source
+          git -C source diff --check
+
+      - name: Full private repository test suite
+        working-directory: source
+        run: |
+          set -euo pipefail
+          npm ci --no-audit --no-fund
+          npm test
+
+      - name: React build gate
+        working-directory: source/frontend-react
+        env:
+          CV_PRERENDER_OFFLINE: '1'
+        run: |
+          set -euo pipefail
+          npm ci --no-audit --no-fund
+          npm run build
+          test -s dist/assets/Logo.webp
+          test -s dist/assets/favicon.ico
+          test -s dist/assets/favicon-32x32.png
+          test -s dist/assets/apple-touch-icon.png
+          test -s dist/assets/flags/it.svg
+          test -s dist/assets/flags/en.svg
+          test -s dist/assets/flags/fr.svg
+          test -s dist/assets/flags/de.svg
+          test -s dist/assets/flags/es.svg
+          test -s dist/assets/Story-Promo_instagram-facebook.png
+          test -s dist/assets/images/blog-default-events.png
+          test -s dist/assets/images/blog-default-news.png
+          if grep -R -n -F 'https://img.calabriavera.com/static/' dist --include='*.html' --include='*.css' --include='*.js'; then
+            echo '::error::Il bundle pubblico contiene ancora riferimenti al vecchio CDN statico R2.'
+            exit 1
+          fi
+
+      - name: Commit private main without private Actions
+        working-directory: source
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name 'CalabriaVera Public Workflow'
+          git config user.email 'actions@users.noreply.github.com'
+          git add \
+            frontend-react/src/components/Layout.tsx \
+            frontend-react/src/pages/OriginalHomePage.tsx \
+            frontend-react/src/pages/MagazinePage.tsx \
+            frontend-react/index.html \
+            frontend-react/scripts/copy-legacy-assets.mjs \
+            frontend-react/scripts/prune-local-image-assets.mjs \
+            frontend-react/scripts/verify-runtime-architecture.mjs \
+            assets/css \
+            assets/site.webmanifest \
+            tests/site-stability.test.mjs
+          if ! git diff --cached --quiet; then
+            git commit -m 'fix: use canonical local site assets and simplify header [skip ci]'
+            git push origin HEAD:main
+          fi
+          echo "PRIVATE_SHA=$(git rev-parse HEAD)" >> "$GITHUB_ENV"
+
+      - name: Rebuild exact committed SHA
+        working-directory: source/frontend-react
+        env:
+          CV_PRERENDER_OFFLINE: '1'
+        run: |
+          set -euo pipefail
+          rm -rf dist dist-ssr
+          npm run build
+          test "$(cat dist/build-version.txt | tr -d '\r\n')" = "$PRIVATE_SHA"
+
+      - uses: google-github-actions/auth@v3
+        with:
+          workload_identity_provider: ${{ vars.FIREBASE_WIF_PROVIDER }}
+          service_account: ${{ vars.FIREBASE_DEPLOY_SERVICE_ACCOUNT }}
+
+      - name: Deploy React to calabriavera.com
+        working-directory: source/frontend-react
+        run: npx --yes firebase-tools@15.22.1 deploy --project calabriavera-e08d4 --config firebase.react.json --only hosting
+
+      - name: Verify live build and canonical assets
+        shell: bash
+        run: |
+          set -euo pipefail
+          base='https://calabriavera.com'
+          live="$(curl --fail --silent --show-error --location --retry 8 --retry-delay 3 -H 'Cache-Control: no-cache' "$base/build-version.txt?run=$GITHUB_RUN_ID" | tr -d '\r\n')"
+          test "$live" = "$PRIVATE_SHA"
+          html="$(curl --fail --silent --show-error --location --retry 8 --retry-delay 3 -H 'Cache-Control: no-cache' "$base/?run=$GITHUB_RUN_ID")"
+          printf '%s' "$html" | grep -Fq '/assets/favicon.ico?v=20260913-local'
+          printf '%s' "$html" | grep -Fq '/assets/Logo.webp'
+          for asset in \
+            assets/Logo.webp \
+            assets/favicon.ico \
+            assets/favicon-32x32.png \
+            assets/apple-touch-icon.png \
+            assets/flags/it.svg \
+            assets/flags/en.svg \
+            assets/flags/fr.svg \
+            assets/flags/de.svg \
+            assets/flags/es.svg \
+            assets/Story-Promo_instagram-facebook.png \
+            assets/images/blog-default-events.png \
+            assets/images/blog-default-news.png; do
+            curl --fail --silent --show-error --location --retry 5 --retry-delay 2 -o /dev/null "$base/$asset?run=$GITHUB_RUN_ID"
+          done
+          echo "Live production verified at $PRIVATE_SHA"
