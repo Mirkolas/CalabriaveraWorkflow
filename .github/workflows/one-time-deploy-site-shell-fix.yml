@@ -22,18 +22,22 @@ jobs:
           set -euo pipefail
           nonce="${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}-$(date +%s)"
           for origin in "https://calabriavera.web.app" "https://calabriavera.com"; do
+            safe="$(echo "$origin" | tr -cd 'a-zA-Z0-9')"
             echo "===== ${origin} ====="
-            curl -fsSL --retry 4 --retry-delay 2 -H 'Cache-Control: no-cache' -D "headers-$(echo "$origin" | tr -cd 'a-zA-Z0-9').txt" "${origin}/build-version.txt?verify=${nonce}" -o build.txt
-            live="$(tr -d '\r\n' < build.txt)"
+            curl -fsSL --retry 4 --retry-delay 2 -H 'Cache-Control: no-cache' -D "headers-${safe}.txt" "${origin}/build-version.txt?verify=${nonce}" -o "build-${safe}.txt"
+            live="$(tr -d '\r\n' < "build-${safe}.txt")"
             echo "build-version=${live}"
             echo "expected=${EXPECTED_BUILD}"
             echo "--- headers build-version ---"
-            cat "headers-$(echo "$origin" | tr -cd 'a-zA-Z0-9').txt"
-            html="$(curl -fsSL --retry 4 --retry-delay 2 -H 'Cache-Control: no-cache' "${origin}/?verify=${nonce}")"
-            robots="$(printf '%s' "$html" | grep -Eio '<meta[^>]+name=["'"']robots["'"'][^>]*>' | head -n 1 || true)"
-            echo "robots=${robots:-MANCANTE}"
+            cat "headers-${safe}.txt"
+            curl -fsSL --retry 4 --retry-delay 2 -H 'Cache-Control: no-cache' "${origin}/?verify=${nonce}" -o "home-${safe}.html"
+            if grep -Eqi 'name=["'\'' ]*robots' "home-${safe}.html"; then
+              echo "robots meta: PRESENTE"
+            else
+              echo "robots meta: MANCANTE"
+            fi
             for label in 'Esplora' 'Mappa' 'Eventi &amp; Blog' 'Chi siamo'; do
-              if printf '%s' "$html" | grep -Fq "$label"; then
+              if grep -Fq "$label" "home-${safe}.html"; then
                 echo "nav ${label}: OK"
               else
                 echo "nav ${label}: MANCANTE"
