@@ -49,11 +49,12 @@ jobs:
         run: |
           set -euo pipefail
 
-          # Un avvio umano esplicito resta sempre disponibile per emergenze/manutenzione.
-          if [ "$EVENT_NAME" = "workflow_dispatch" ]; then
+          # Un avvio umano o un aggiornamento esplicito del runner resta sempre disponibile
+          # per release, emergenze e manutenzione.
+          if [ "$EVENT_NAME" = "workflow_dispatch" ] || [ "$EVENT_NAME" = "push" ]; then
             echo "should_run=true" >> "$GITHUB_OUTPUT"
-            echo "campaign=manual" >> "$GITHUB_OUTPUT"
-            echo "Avvio manuale: esecuzione consentita."
+            echo "campaign=explicit" >> "$GITHUB_OUTPUT"
+            echo "Avvio esplicito: esecuzione consentita."
             exit 0
           fi
 
