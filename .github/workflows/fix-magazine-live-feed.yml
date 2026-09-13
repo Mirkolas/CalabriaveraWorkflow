@@ -1,18 +1,18 @@
-name: Fix Magazine live feed freshness
+name: Fix production page audit findings
 
 on:
   push:
     branches: [main]
     paths:
       - '.github/workflows/fix-magazine-live-feed.yml'
-      - 'scripts/fix-magazine-live-feed.py'
+      - 'scripts/fix-page-audit-round1.py'
   workflow_dispatch:
 
 permissions:
   contents: write
 
 concurrency:
-  group: fix-magazine-live-feed
+  group: fix-production-page-audit
   cancel-in-progress: true
 
 env:
@@ -44,10 +44,10 @@ jobs:
         with:
           node-version: '22'
 
-      - name: Applica live feed immediato Blog/Eventi
+      - name: Correggi asset lingua e first paint Home
         run: |
           set -euo pipefail
-          python runner/scripts/fix-magazine-live-feed.py source
+          python runner/scripts/fix-page-audit-round1.py source
           git -C source diff --check
 
       - name: Suite completa repository privato
@@ -63,6 +63,7 @@ jobs:
         run: |
           npm ci --no-audit --no-fund
           npm run build
+          for lang in it en fr de es; do test -s "dist/assets/flags/${lang}.svg"; done
 
       - name: Commit privato senza Actions private
         working-directory: source
@@ -71,18 +72,9 @@ jobs:
           set -euo pipefail
           git config user.name 'CalabriaVera Public Workflow'
           git config user.email 'actions@users.noreply.github.com'
-          git add frontend-react/src/pages/MagazinePage.tsx frontend-react/src/lib/public-data.ts frontend-react/src/lib/magazine.ts tests/site-stability.test.mjs
+          git add frontend-react/scripts/copy-static-assets.mjs frontend-react/src/pages/HomePage.tsx tests/site-stability.test.mjs
           if ! git diff --cached --quiet; then
-            git commit -m 'fix: show fresh Blog and Events immediately [skip ci]'
+            git commit -m 'fix: improve first paint and language assets [skip ci]'
             git push origin HEAD:main
           fi
-          echo "PRIVATE_SHA=$(git rev-parse HEAD)" >> "$GITHUB_ENV"
-
-      - name: Richiedi deploy Firebase dal runner pubblico
-        env:
-          GH_TOKEN: ${{ github.token }}
-        shell: bash
-        run: |
-          set -euo pipefail
-          gh api --method POST "repos/${GITHUB_REPOSITORY}/dispatches" -f event_type=source-deploy
-          echo "Deploy richiesto per ${PRIVATE_SHA}"
+          echo "Private main: $(git rev-parse HEAD)"
