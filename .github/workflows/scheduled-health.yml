@@ -31,7 +31,7 @@ jobs:
           set -euo pipefail
 
           ensure_workflow() {
-            local workflow="$1" max_age_minutes="$2" label="$3"
+            local workflow="$1" max_age_minutes="$2" label="$3" failure_cooldown_minutes="${4:-0}"
             local payload latest conclusion created run_url event now created_epoch age reason=""
             # Considera sia il cron sia un recente workflow_dispatch di recupero, così il guard
             # non rilancia all'infinito un workflow che ha appena riparato con successo.
@@ -45,13 +45,17 @@ jobs:
               run_url="$(printf '%s' "$latest" | jq -r '.html_url // ""')"
               event="$(printf '%s' "$latest" | jq -r '.event // ""')"
               echo "${label}: ${run_url:-run-non-disponibile} (${created:-data-sconosciuta}, ${event:-evento-sconosciuto}, ${conclusion:-stato-sconosciuto})"
+              now="$(date -u +%s)"
+              created_epoch="$(date -u -d "$created" +%s)"
+              age="$(( (now - created_epoch) / 60 ))"
               if [ "$conclusion" != "success" ]; then
+                if [ "$failure_cooldown_minutes" -gt 0 ] && [ "$age" -lt "$failure_cooldown_minutes" ]; then
+                  echo "::warning::${label}: ultimo ciclo ${conclusion:-senza-stato} ${age} minuti fa; recupero rinviato per ${failure_cooldown_minutes} minuti per evitare retry ravvicinati"
+                  return 0
+                fi
                 reason="ultimo ciclo ${conclusion:-senza-stato}"
-              else
-                now="$(date -u +%s)"
-                created_epoch="$(date -u -d "$created" +%s)"
-                age="$(( (now - created_epoch) / 60 ))"
-                if [ "$age" -gt "$max_age_minutes" ]; then reason="ultimo successo vecchio di ${age} minuti"; fi
+              elif [ "$age" -gt "$max_age_minutes" ]; then
+                reason="ultimo successo vecchio di ${age} minuti"
               fi
             fi
 
@@ -69,7 +73,9 @@ jobs:
           ensure_workflow seo-sync.yml 45 "SEO/sitemap (ogni 5 min)"
           ensure_workflow magazine-sync.yml 75 "Magazine/social (ogni 15 min)"
           ensure_workflow source-watch.yml 180 "Source watch (ogni ora)"
-          ensure_workflow daily-backup.yml 2160 "Backup giornaliero"
+          # Un backup fallito per quota conserva il checkpoint: evita di rilanciarlo a ogni health check.
+          # Il cron giornaliero resta attivo e un recovery torna possibile dopo il cooldown.
+          ensure_workflow daily-backup.yml 2160 "Backup giornaliero" 480
           ensure_workflow firebase-deploy.yml 2160 "Manutenzione Firebase giornaliera"
 
       - name: Verifica dominio canonico, sitemap e cinque lingue
@@ -96,7 +102,7 @@ jobs:
 
           while IFS= read -r file; do
             test -n "$file" || continue
-            case "$file" in sitemap-pages.xml|sitemap-main.xml|sitemap-[0-9]*.xml) ;; *) echo "::error::Nome sitemap non atteso: $file"; exit 1 ;; esac
+            case "$file" in sitemap-pages.xml|sitemap-main.xml|sitemap-tourism.xml|sitemap-[0-9]*.xml) ;; *) echo "::error::Nome sitemap non atteso: $file"; exit 1 ;; esac
             curl --fail --silent --show-error --location -H 'Cache-Control: no-cache' "$SITE_URL/$file?health=${GITHUB_RUN_ID}" -o "$tmp/$file"
             if grep -Eqi 'https?://[^<[:space:]]*\.web\.app' "$tmp/$file"; then echo "::error::Alias Firebase web.app presente in $file"; exit 1; fi
             bad="$(grep -oE '<loc>[^<]+</loc>' "$tmp/$file" | sed -E 's#</?loc>##g' | grep -Ev '^https://calabriavera\.com(/|$)' || true)"
