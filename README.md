@@ -52,7 +52,7 @@ Non servono i vecchi secret aggiuntivi `FIREBASE_PROJECT_ID`, `SITE_URL`, `APPS_
 
 ## Tentativi schedulati protetti
 
-Tutti i workflow che usano `schedule` hanno **cinque occasioni di esecuzione per ogni campagna logica**. Il controllo condiviso e in `.github/workflows/scheduled-retry-gate.yml`.
+Le pianificazioni correnti sono riportate sotto, in UTC. Il controllo condiviso in `.github/workflows/scheduled-retry-gate.yml` protegge i workflow che lo richiamano; non aggiunge da solo ulteriori esecuzioni cron.
 
 Il gate calcola la campagna corrente, legge tramite GitHub Actions API le run schedulate dello stesso workflow e applica queste regole:
 
@@ -65,19 +65,20 @@ Il gate calcola la campagna corrente, legge tramite GitHub Actions API le run sc
 
 Campagne attive:
 
-- `source-watch.yml`: ogni ora, 5 tentativi ai minuti 02, 12, 22, 32 e 42;
-- `seo-sync.yml`: ogni ora, 5 tentativi ai minuti 03, 13, 23, 33 e 43;
-- `magazine-sync.yml`: ogni 2 ore, 5 tentativi distribuiti nell'intera finestra per lasciare terminare un job fino a 24 minuti;
-- `firebase-deploy.yml`: manutenzione schedulata ogni 4 ore, 5 tentativi;
-- `daily-backup.yml`: una campagna giornaliera dalle 02:30 UTC, 5 tentativi;
-- `promo-story.yml`: una campagna giornaliera dalle 06:41 UTC, 5 tentativi;
-- `cleanup-old-workflow-runs.yml`: una campagna settimanale la domenica dalle 03:00 UTC, 5 tentativi.
+- `source-watch.yml`: ogni ora al minuto 02;
+- `seo-sync.yml`: ogni 5 minuti;
+- `magazine-sync.yml`: ogni 6 ore al minuto 17; include feed social e Story, con le rispettive cadenze interne;
+- `firebase-deploy.yml`: manutenzione giornaliera alle 02:17; il deploy avviene con push del workflow, dispatch manuale o dispatch dal watcher;
+- `daily-backup.yml`: backup giornaliero alle 02:41;
+- `scheduled-health.yml`: controllo e recupero dei cicli ogni ora al minuto 07.
+
+Gli orari GitHub Actions sono indicativi: il servizio può ritardare le esecuzioni. `promo-story.yml` e `cleanup-old-workflow-runs.yml` non sono workflow separati presenti in questo repository.
 
 Gli errori temporanei di quota Firestore nella sincronizzazione SEO e nella manutenzione Firebase vengono considerati retryable: il job termina senza segnare un falso successo, cosi il tentativo successivo della stessa campagna puo riprovare.
 
 ## Rilevamento sorgente privato
 
-`Private source watcher` usa una campagna oraria con cinque tentativi protetti. Appena un tentativo riesce, gli altri quattro non eseguono nuovamente il controllo. Per non perdere modifiche a causa delle run di retry saltate, il watcher prende come riferimento l'ultima run in cui il job `watch` e stato realmente eseguito con successo, non una semplice run completata dal gate.
+`Sorgente privato - Trigger automatici` usa un controllo orario. Per non perdere modifiche a causa delle run saltate, il watcher prende come riferimento l'ultima run in cui il job `watch` e stato realmente eseguito con successo, non una semplice run completata dal gate.
 
 Quando rileva modifiche applica gli equivalenti dei trigger del repository privato e avvia solo i workflow necessari.
 
@@ -87,4 +88,8 @@ I nomi delle Variables WIF sono identici al privato. Tuttavia Google Cloud vede 
 
 ## Test
 
-`Configuration test` non esegue deploy: verifica accesso al sorgente privato, installazione, test, backup test, validazione e build. I workflow applicativi usano poi direttamente le stesse Variables e Secrets del privato.
+`Verifica codice e backup` controlla il ramo principale del sorgente privato: accesso, dipendenze e audit, test, backup test, validazione, build statica e build React. Non pubblica il sito. Il rilevamento di una PR avvia questo controllo di main, non certifica il codice della PR.
+
+Il deploy Firebase esegue i test browser pubblici desktop/mobile e il percorso catalogo-scheda-mappa nello stesso job dopo la pubblicazione. Non crea account di test. `Production - Browser smoke test` permette di ripetere il controllo manualmente; attivando `authenticated` verifica anche l'accesso con un account dedicato, già verificato, configurato nei Secrets `SMOKE_TEST_EMAIL` e `SMOKE_TEST_PASSWORD`.
+
+I controlli pubblici non certificano le operazioni amministrative, l'invio email, il ripristino di un backup o la pubblicazione effettiva su Meta. I workflow applicativi usano le stesse Variables e Secrets del privato.
