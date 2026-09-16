@@ -220,20 +220,23 @@ jobs:
           private_version="$(git rev-parse HEAD | sha256sum | cut -c1-16)"
           export PROMO_STORY_IMAGE_URL="${SITE_URL}/assets/Story-Promo_instagram-facebook.png?v=${private_version}"
           export PROMO_FACEBOOK_STORY_IMAGE_URL="${SITE_URL}/assets/Story-Promo_instagram-facebook.png?v=${private_version}"
-          export PROMO_INSTAGRAM_STORY_IMAGE_URL="${SITE_URL}/assets/Story-Promo_instagram-safe.png?v=${private_version}"
+          export PROMO_INSTAGRAM_STORY_IMAGE_URL="$PROMO_STORY_IMAGE_URL"
           node tools/automation-cadence-runner.mjs promo-story -- bash -lc '
             set -euo pipefail
-            for base in "$PROMO_FACEBOOK_STORY_IMAGE_URL" "$PROMO_INSTAGRAM_STORY_IMAGE_URL"; do
+            for base in "$PROMO_STORY_IMAGE_URL"; do
               ok=0
               for attempt in $(seq 1 40); do
                 url="${base}&check=${attempt}"
-                status=$(curl -L -sS -o /tmp/story.png -w "%{http_code}" "$url" || true)
+                status=$(curl --connect-timeout 10 --max-time 30 -L -sS -o /tmp/story.png -w "%{http_code}" "$url" || true)
                 type=$(file -b --mime-type /tmp/story.png 2>/dev/null || true)
                 size=$(wc -c < /tmp/story.png 2>/dev/null || echo 0)
                 if [ "$status" = "200" ] && [ "$type" = "image/png" ] && [ "$size" -gt 25000 ]; then ok=1; break; fi
                 sleep 10
               done
-              test "$ok" = "1"
+              if [ "$ok" != "1" ]; then
+                echo "::error::Asset Story non disponibile: HTTP ${status}, tipo ${type}, dimensione ${size}."
+                exit 1
+              fi
             done
             node tools/check-meta-config.mjs
             node tools/publish-promo-story.mjs

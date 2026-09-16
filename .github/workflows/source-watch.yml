@@ -180,6 +180,7 @@ jobs:
             const files = (commit.files || []).map(file => file.filename);
             const message = commit.commit?.message || '';
             if (!files.length) continue;
+            result.verify = true;
             if (triggered(files, workflows.apps)) result.apps = true;
             if (triggered(files, workflows.deploy)) result.deploy = true;
             if (triggered(files, workflows.seo)) result.seo = true;
@@ -217,10 +218,10 @@ jobs:
           dispatch() {
             gh api --method POST "repos/${GH_REPO}/dispatches" -f event_type="$1" >/dev/null
           }
-          [ "$RUN_VERIFY" = "true" ] && dispatch source-verify || true
-          [ "$RUN_DEPLOY" = "true" ] && dispatch source-deploy || true
-          [ "$RUN_APPS" = "true" ] && dispatch source-apps-script-deploy || true
-          [ "$RUN_SEO" = "true" ] && dispatch source-seo-push || true
+          if [ "$RUN_VERIFY" = "true" ]; then dispatch source-verify; fi
+          if [ "$RUN_DEPLOY" = "true" ]; then dispatch source-deploy; fi
+          if [ "$RUN_APPS" = "true" ]; then dispatch source-apps-script-deploy; fi
+          if [ "$RUN_SEO" = "true" ]; then dispatch source-seo-push; fi
 
           if [ "$RUN_MAGAZINE" = "true" ]; then
             gh api --method POST "repos/${GH_REPO}/dispatches" \

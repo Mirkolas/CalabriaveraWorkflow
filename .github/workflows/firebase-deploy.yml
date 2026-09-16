@@ -37,7 +37,7 @@ jobs:
       group: firebase-production
       cancel-in-progress: false
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    timeout-minutes: 30
     env:
       PRIVATE_REPO: ${{ secrets.PRIVATE_REPO }}
       PRIVATE_REPO_PAT: ${{ secrets.PRIVATE_REPO_PAT || secrets.PERSONAL_ACCESS_TOKEN || secrets.PAT || secrets.GH_PAT || secrets.GITHUB_PAT }}
@@ -150,6 +150,23 @@ jobs:
         env:
           SITE_URL: https://calabriavera.com
         run: node ../tools/verify-seo-deploy.mjs
+
+      # Keep this check in the deploy job: dispatches issued with GITHUB_TOKEN
+      # must not depend on a second workflow_run being emitted.
+      - name: Installa browser per verifica produzione
+        run: |
+          npm install --prefix /tmp/cv-smoke --no-package-lock --no-save playwright@1.62.1
+          /tmp/cv-smoke/node_modules/.bin/playwright install --with-deps chromium
+
+      - name: Verifica browser pubblico desktop e mobile dopo il deploy
+        working-directory: source
+        env:
+          PLAYWRIGHT_MODULE: /tmp/cv-smoke/node_modules/playwright
+          SMOKE_BASE_URL: https://calabriavera.com
+          SMOKE_PUBLIC_ONLY: 'true'
+        run: |
+          node tests/smoke-browser.cjs
+          node tests/smoke-activity-routing.cjs
 
   admin-maintenance:
     needs: retry_gate
