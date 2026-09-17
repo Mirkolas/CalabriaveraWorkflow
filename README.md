@@ -4,6 +4,18 @@ Questo repository pubblico esegue i workflow usando il sorgente del repository p
 
 ## Regola di configurazione
 
+### Sitemap e Google Search Console
+
+`seo-sync.yml` confronta i dati pubblici con il manifest pubblicato e avvia il deploy quando serve. Le modifiche arrivate durante la build sono confrontate con l'istante di lettura dei dati. Il cron è richiesto ogni 5 minuti, ma GitHub può ritardare l'esecuzione.
+
+Il deploy controlla gli HTML generati, pubblica il sito, verifica sitemap, lingue e `noindex` delle aree personali, quindi invia `sitemap.xml` tramite la Search Console API ufficiale. Non usa Google Indexing API, riservata a tipi di contenuto non pertinenti a questo sito. L'invio è una segnalazione a Google e non garantisce l'indicizzazione.
+
+Per abilitare l'invio, attivare **Search Console API** nel progetto Google Cloud e aggiungere l'indirizzo già configurato in `FIREBASE_DEPLOY_SERVICE_ACCOUNT` come **utente completo** della proprietà Search Console. Non occorrono chiavi JSON aggiuntive: viene usata l'identità federata esistente. La variabile facoltativa `SEARCH_CONSOLE_SITE` permette di usare la proprietà dominio `sc-domain:calabriavera.com`; in assenza si usa `https://calabriavera.com/`.
+
+Il riepilogo del deploy distingue `submitted` da `access-required` (HTTP 403). Un problema di accesso a Search Console viene segnalato esplicitamente senza annullare la pubblicazione del sito già verificata; altri errori API fanno fallire lo step.
+
+La verifica manuale `verify.yml` accetta `source_ref`, un branch o SHA nel repository privato già configurato. Consente di verificare una correzione prima del merge senza pubblicarla.
+
 Le configurazioni applicative mantengono **gli stessi nomi e lo stesso tipo** del repository privato:
 
 - cio che nel privato e una **Repository Variable** viene letto con `vars.*` anche qui;
