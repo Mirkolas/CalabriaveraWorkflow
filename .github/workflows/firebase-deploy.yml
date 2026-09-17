@@ -151,6 +151,16 @@ jobs:
           SITE_URL: https://calabriavera.com
         run: node ../tools/verify-seo-deploy.mjs
 
+      - name: Installa strumenti Search Console
+        working-directory: source
+        run: npm --prefix tools ci --no-audit --no-fund
+
+      - name: Invia la sitemap verificata a Google Search Console
+        working-directory: source
+        env:
+          SEARCH_CONSOLE_SITE: ${{ vars.SEARCH_CONSOLE_SITE || 'https://calabriavera.com/' }}
+        run: node tools/submit-search-console-sitemap.mjs
+
       # Keep this check in the deploy job: dispatches issued with GITHUB_TOKEN
       # must not depend on a second workflow_run being emitted.
       - name: Installa browser per verifica produzione
