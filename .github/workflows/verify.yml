@@ -91,6 +91,11 @@ jobs:
       - working-directory: source
         run: npm test && npm run test:backup && npm run validate && npm run build
 
+      - uses: actions/setup-java@v6
+        with:
+          distribution: temurin
+          java-version: '21'
+
       - name: Verifica regole Firestore negli emulatori
         working-directory: source
         run: npm run test:emulators
