@@ -91,6 +91,10 @@ jobs:
       - working-directory: source
         run: npm test && npm run test:backup && npm run validate && npm run build
 
+      - name: Verifica regole Firestore negli emulatori
+        working-directory: source
+        run: npm run test:emulators
+
       - name: Installa e compila il frontend React pubblicato
         working-directory: source/frontend-react
         env:
