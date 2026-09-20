@@ -57,6 +57,7 @@ jobs:
               requestType:"PASSWORD_RESET",
               email:$email,
               continueUrl:"https://calabriavera.com/login?reset=1",
+              canHandleCodeInApp:true,
               returnOobLink:true,
               targetProjectId:$project,
               linkDomain:$domain
