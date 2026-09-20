@@ -21,6 +21,8 @@ jobs:
     timeout-minutes: 8
     env:
       PROJECT_ID: calabriavera-e08d4
+      LINK_DOMAIN: calabriavera.com
+      TEST_EMAIL: ${{ secrets.SMOKE_TEST_EMAIL }}
 
     steps:
       - id: gcp-auth
@@ -38,20 +40,41 @@ jobs:
           set -euo pipefail
           api="https://identitytoolkit.googleapis.com/admin/v2/projects/${PROJECT_ID}/config"
           code="$(curl --silent --show-error --output /tmp/auth.json --write-out '%{http_code}'             -H "Authorization: Bearer ${ACCESS_TOKEN}"             -H "X-Goog-User-Project: ${PROJECT_ID}"             "${api}")"
+          test "$code" = "200"
+          callback="$(jq -r '.notification.sendEmail.callbackUri // ""' /tmp/auth.json)"
+          auth_domain="$(jq -r 'if (.authorizedDomains // []) | index("calabriavera.com") then "OK" else "MISSING" end' /tmp/auth.json)"
+          echo "Email action callback console: ${callback:-non configurato}"
+          echo "Authorized domain calabriavera.com: ${auth_domain}"
+
+      - name: Verifica linkDomain custom senza inviare email
+        env:
+          ACCESS_TOKEN: ${{ steps.gcp-auth.outputs.access_token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -n "${TEST_EMAIL}" || { echo "::error::SMOKE_TEST_EMAIL mancante"; exit 1; }
+          body="$(jq -n             --arg email "${TEST_EMAIL}"             --arg project "${PROJECT_ID}"             --arg domain "${LINK_DOMAIN}"             '{
+              requestType:"PASSWORD_RESET",
+              email:$email,
+              continueUrl:"https://calabriavera.com/login?reset=1",
+              returnOobLink:true,
+              targetProjectId:$project,
+              linkDomain:$domain
+            }')"
+          code="$(curl --silent --show-error --output /tmp/oob.json --write-out '%{http_code}' -X POST             -H "Authorization: Bearer ${ACCESS_TOKEN}"             -H "X-Goog-User-Project: ${PROJECT_ID}"             -H "Content-Type: application/json"             --data-binary "$body"             "https://identitytoolkit.googleapis.com/v1/accounts:sendOobCode")"
           if [ "$code" != "200" ]; then
-            echo "::error::Identity Toolkit GET: HTTP $code - $(jq -r '.error.message // "errore sconosciuto"' /tmp/auth.json)"
+            echo "::error::sendOobCode HTTP $code - $(jq -r '.error.message // "errore sconosciuto"' /tmp/oob.json)"
             exit 1
           fi
-
-          callback="$(jq -r '.notification.sendEmail.callbackUri // ""' /tmp/auth.json)"
-          sender_domain="$(jq -r '.notification.sendEmail.dnsInfo.customDomain // ""' /tmp/auth.json)"
-          sender_state="$(jq -r '.notification.sendEmail.dnsInfo.customDomainState // "NOT_CONFIGURED"' /tmp/auth.json)"
-          auth_domain="$(jq -r 'if (.authorizedDomains // []) | index("calabriavera.com") then "OK" else "MISSING" end' /tmp/auth.json)"
-
-          echo "Email action callback: ${callback:-non configurato}"
-          echo "Authorized domain calabriavera.com: ${auth_domain}"
-          echo "Custom sender domain: ${sender_domain:-non configurato}"
-          echo "Custom sender domain state: ${sender_state}"
+          node <<'NODE'
+          const fs=require('node:fs');
+          const result=JSON.parse(fs.readFileSync('/tmp/oob.json','utf8'));
+          const u=new URL(result.oobLink);
+          console.log('OOB link host:',u.hostname);
+          console.log('OOB link path:',u.pathname);
+          if(u.hostname!=='calabriavera.com') throw new Error('Firebase non ha usato il custom linkDomain');
+          NODE
+          rm -f /tmp/oob.json
 
       - name: Verifica handler Auth sul dominio pubblico
         shell: bash
