@@ -21,6 +21,7 @@ jobs:
     timeout-minutes: 8
     env:
       PROJECT_ID: calabriavera-e08d4
+      PROJECT_NUMBER: '353864792719'
       CALLBACK_URI: https://calabriavera.com/__/auth/action
 
     steps:
@@ -37,16 +38,39 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          api="https://identitytoolkit.googleapis.com/admin/v2/projects/${PROJECT_ID}/config"
 
-          curl --fail --silent --show-error             -H "Authorization: Bearer ${ACCESS_TOKEN}"             -H "X-Goog-User-Project: ${PROJECT_ID}"             "${api}" > /tmp/auth-before.json
+          fetch_config() {
+            local project="$1"
+            local out="$2"
+            local api="https://identitytoolkit.googleapis.com/admin/v2/projects/${project}/config"
+            curl --silent --show-error --output "$out" --write-out '%{http_code}'               -H "Authorization: Bearer ${ACCESS_TOKEN}"               -H "X-Goog-User-Project: ${PROJECT_ID}"               "${api}"
+          }
+
+          project_ref="${PROJECT_ID}"
+          code="$(fetch_config "${project_ref}" /tmp/auth-before.json)"
+          if [ "$code" != "200" ]; then
+            echo "Identity Toolkit GET con projectId: HTTP $code - $(jq -r '.error.message // "errore sconosciuto"' /tmp/auth-before.json)"
+            project_ref="${PROJECT_NUMBER}"
+            code="$(fetch_config "${project_ref}" /tmp/auth-before.json)"
+          fi
+          if [ "$code" != "200" ]; then
+            echo "::error::Identity Toolkit GET: HTTP $code - $(jq -r '.error.message // "errore sconosciuto"' /tmp/auth-before.json)"
+            exit 1
+          fi
+
+          api="https://identitytoolkit.googleapis.com/admin/v2/projects/${project_ref}/config"
 
           jq -n             --arg callback "${CALLBACK_URI}"             --slurpfile cfg /tmp/auth-before.json             '{
               notification: {sendEmail: {callbackUri: $callback}},
               authorizedDomains: (($cfg[0].authorizedDomains // []) + ["calabriavera.com"] | unique)
             }' > /tmp/auth-patch.json
 
-          curl --fail --silent --show-error -X PATCH             -H "Authorization: Bearer ${ACCESS_TOKEN}"             -H "X-Goog-User-Project: ${PROJECT_ID}"             -H "Content-Type: application/json"             --data-binary @/tmp/auth-patch.json             "${api}?updateMask=notification.sendEmail.callbackUri,authorizedDomains"             > /tmp/auth-updated.json
+          patch_code="$(curl --silent --show-error --output /tmp/auth-updated.json --write-out '%{http_code}' -X PATCH             -H "Authorization: Bearer ${ACCESS_TOKEN}"             -H "X-Goog-User-Project: ${PROJECT_ID}"             -H "Content-Type: application/json"             --data-binary @/tmp/auth-patch.json             "${api}?updateMask=notification.sendEmail.callbackUri,authorizedDomains")"
+
+          if [ "$patch_code" != "200" ]; then
+            echo "::error::Identity Toolkit PATCH: HTTP $patch_code - $(jq -r '.error.message // "errore sconosciuto"' /tmp/auth-updated.json)"
+            exit 1
+          fi
 
           test "$(jq -r '.notification.sendEmail.callbackUri // ""' /tmp/auth-updated.json)" = "${CALLBACK_URI}"
           jq -e '.authorizedDomains | index("calabriavera.com") != null' /tmp/auth-updated.json >/dev/null
