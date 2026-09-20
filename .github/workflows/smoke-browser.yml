@@ -1,5 +1,5 @@
 # Controllo manuale. Il deploy esegue già il test pubblico nello stesso job.
-# Authenticated QA marker: 8ee637fed5e3d417c0d472be6a91615ef3c530d7
+# Authenticated QA marker: 1f97a612a48bcd2424b30677273b006a40d01505
 name: Production - Browser smoke test
 
 on:
