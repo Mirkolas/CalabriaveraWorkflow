@@ -1,5 +1,5 @@
 name: Verifica codice e backup
-# QA verification marker: 59fc9639124102b57cd8006414ab145a3b3bb92f
+# QA verification marker: 8763bef4d421e844ec7bdd9282017f31addfd81b
 
 on:
   push:
