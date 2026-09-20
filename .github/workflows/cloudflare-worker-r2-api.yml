@@ -1,6 +1,11 @@
 name: Cloudflare Worker - R2 API
+# Source Worker marker: 6a4f9f7b33396042e6d5c4f3b04cac0d973d8172
 
 on:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/cloudflare-worker-r2-api.yml'
   workflow_dispatch:
   repository_dispatch:
     types: [source-deploy]
