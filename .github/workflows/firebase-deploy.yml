@@ -1,5 +1,5 @@
 name: Firebase - Deploy CalabriaVera
-# Source deploy marker: 1498d6163840506da4fb159dfb2597a504d99c76
+# Source deploy marker: 9b2789729ab6ab227879e980ad2ecef3fa532a4e
 
 on:
   push:
