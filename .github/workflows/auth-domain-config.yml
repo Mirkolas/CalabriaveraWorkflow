@@ -51,6 +51,49 @@ jobs:
           service_account: ${{ vars.FIREBASE_DEPLOY_SERVICE_ACCOUNT }}
           token_format: access_token
 
+      - name: Diagnostica stato account e consegne verifica
+        env:
+          ACCESS_TOKEN: ${{ steps.gcp-auth.outputs.access_token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          lookup="$(jq -n --arg email "${TEST_EMAIL}" '{email:[$email]}')"
+          curl --fail --silent --show-error -X POST             -H "Authorization: Bearer ${ACCESS_TOKEN}"             -H "X-Goog-User-Project: ${PROJECT_ID}"             -H "Content-Type: application/json"             --data-binary "$lookup"             "https://identitytoolkit.googleapis.com/v1/projects/${PROJECT_ID}/accounts:lookup" > /tmp/account.json
+          node <<'NODE'
+          const fs=require('node:fs');
+          const data=JSON.parse(fs.readFileSync('/tmp/account.json','utf8'));
+          const user=(data.users||[])[0]||{};
+          console.log(JSON.stringify({
+            accountFound:Boolean(user.localId),
+            emailVerified:user.emailVerified===true,
+            disabled:user.disabled===true,
+            providers:(user.providerUserInfo||[]).map(x=>x.providerId)
+          }));
+          NODE
+
+          query="$(jq -n --arg email "${TEST_EMAIL}" '{
+            structuredQuery:{
+              from:[{collectionId:"_mailDeliveries"}],
+              where:{fieldFilter:{field:{fieldPath:"to"},op:"EQUAL",value:{stringValue:$email}}},
+              limit:50
+            }
+          }')"
+          curl --fail --silent --show-error -X POST             -H "Authorization: Bearer ${ACCESS_TOKEN}"             -H "X-Goog-User-Project: ${PROJECT_ID}"             -H "Content-Type: application/json"             --data-binary "$query"             "https://firestore.googleapis.com/v1/projects/${PROJECT_ID}/databases/(default)/documents:runQuery" > /tmp/mail-diagnostic.json
+          node <<'NODE'
+          const fs=require('node:fs');
+          const rows=JSON.parse(fs.readFileSync('/tmp/mail-diagnostic.json','utf8'));
+          const out=rows.map(r=>r.document?.fields).filter(Boolean).map(f=>({
+            type:f.type?.stringValue||'',
+            status:f.status?.stringValue||'',
+            actionHost:f.actionHost?.stringValue||'',
+            attempts:Number(f.attempts?.integerValue||0),
+            sentAt:f.sentAt?.timestampValue||f.sentAt?.stringValue||'',
+            updatedAt:f.updatedAt?.timestampValue||f.updatedAt?.stringValue||''
+          })).filter(x=>x.type==='email.verification'||x.type==='password.reset');
+          out.sort((a,b)=>String(b.updatedAt).localeCompare(String(a.updatedAt)));
+          console.log(JSON.stringify({authDeliveries:out.slice(0,10)}));
+          NODE
+
       - name: Verifica host salvato senza leggere il link
         env:
           ACCESS_TOKEN: ${{ steps.gcp-auth.outputs.access_token }}
