@@ -1,0 +1,63 @@
+name: Auth - Canonical email action domain
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/auth-domain-config.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  id-token: write
+
+concurrency:
+  group: auth-domain-config
+  cancel-in-progress: true
+
+jobs:
+  configure:
+    runs-on: ubuntu-latest
+    timeout-minutes: 8
+    env:
+      PROJECT_ID: calabriavera-e08d4
+      CALLBACK_URI: https://calabriavera.com/__/auth/action
+
+    steps:
+      - id: gcp-auth
+        uses: google-github-actions/auth@v3
+        with:
+          workload_identity_provider: ${{ vars.FIREBASE_WIF_PROVIDER }}
+          service_account: ${{ vars.FIREBASE_DEPLOY_SERVICE_ACCOUNT }}
+          token_format: access_token
+
+      - name: Imposta dominio canonico per le email Firebase Auth
+        env:
+          ACCESS_TOKEN: ${{ steps.gcp-auth.outputs.access_token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          api="https://identitytoolkit.googleapis.com/admin/v2/projects/${PROJECT_ID}/config"
+
+          curl --fail --silent --show-error             -H "Authorization: Bearer ${ACCESS_TOKEN}"             -H "X-Goog-User-Project: ${PROJECT_ID}"             "${api}" > /tmp/auth-before.json
+
+          jq -n             --arg callback "${CALLBACK_URI}"             --slurpfile cfg /tmp/auth-before.json             '{
+              notification: {sendEmail: {callbackUri: $callback}},
+              authorizedDomains: (($cfg[0].authorizedDomains // []) + ["calabriavera.com"] | unique)
+            }' > /tmp/auth-patch.json
+
+          curl --fail --silent --show-error -X PATCH             -H "Authorization: Bearer ${ACCESS_TOKEN}"             -H "X-Goog-User-Project: ${PROJECT_ID}"             -H "Content-Type: application/json"             --data-binary @/tmp/auth-patch.json             "${api}?updateMask=notification.sendEmail.callbackUri,authorizedDomains"             > /tmp/auth-updated.json
+
+          test "$(jq -r '.notification.sendEmail.callbackUri // ""' /tmp/auth-updated.json)" = "${CALLBACK_URI}"
+          jq -e '.authorizedDomains | index("calabriavera.com") != null' /tmp/auth-updated.json >/dev/null
+
+          echo "Firebase Auth email action URL: $(jq -r '.notification.sendEmail.callbackUri' /tmp/auth-updated.json)"
+          echo "Dominio autorizzato calabriavera.com: OK"
+
+      - name: Verifica handler Auth sul dominio pubblico
+        shell: bash
+        run: |
+          set -euo pipefail
+          code="$(curl --silent --show-error --output /tmp/action.html --write-out '%{http_code}'             "https://calabriavera.com/__/auth/action?mode=verifyEmail&oobCode=invalid-test-code&apiKey=AIzaSyAMV0D5F3jLzttrivErEX_PSnONq1SIZ2A&continueUrl=https%3A%2F%2Fcalabriavera.com%2Fprofilo")"
+          test "$code" -lt 500
+          echo "Handler Auth custom domain raggiungibile: HTTP $code"
