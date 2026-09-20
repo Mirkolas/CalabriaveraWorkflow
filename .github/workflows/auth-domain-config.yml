@@ -1,4 +1,4 @@
-name: Auth - Canonical email action domain
+name: Auth - Verify canonical email domain
 
 on:
   push:
@@ -16,13 +16,11 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  configure:
+  verify:
     runs-on: ubuntu-latest
     timeout-minutes: 8
     env:
       PROJECT_ID: calabriavera-e08d4
-      PROJECT_NUMBER: '353864792719'
-      CALLBACK_URI: https://calabriavera.com/__/auth/action
 
     steps:
       - id: gcp-auth
@@ -32,51 +30,28 @@ jobs:
           service_account: ${{ vars.FIREBASE_DEPLOY_SERVICE_ACCOUNT }}
           token_format: access_token
 
-      - name: Imposta dominio canonico per le email Firebase Auth
+      - name: Leggi configurazione Firebase Auth
         env:
           ACCESS_TOKEN: ${{ steps.gcp-auth.outputs.access_token }}
         shell: bash
         run: |
           set -euo pipefail
-
-          fetch_config() {
-            local project="$1"
-            local out="$2"
-            local api="https://identitytoolkit.googleapis.com/admin/v2/projects/${project}/config"
-            curl --silent --show-error --output "$out" --write-out '%{http_code}'               -H "Authorization: Bearer ${ACCESS_TOKEN}"               -H "X-Goog-User-Project: ${PROJECT_ID}"               "${api}"
-          }
-
-          project_ref="${PROJECT_ID}"
-          code="$(fetch_config "${project_ref}" /tmp/auth-before.json)"
+          api="https://identitytoolkit.googleapis.com/admin/v2/projects/${PROJECT_ID}/config"
+          code="$(curl --silent --show-error --output /tmp/auth.json --write-out '%{http_code}'             -H "Authorization: Bearer ${ACCESS_TOKEN}"             -H "X-Goog-User-Project: ${PROJECT_ID}"             "${api}")"
           if [ "$code" != "200" ]; then
-            echo "Identity Toolkit GET con projectId: HTTP $code - $(jq -r '.error.message // "errore sconosciuto"' /tmp/auth-before.json)"
-            project_ref="${PROJECT_NUMBER}"
-            code="$(fetch_config "${project_ref}" /tmp/auth-before.json)"
-          fi
-          if [ "$code" != "200" ]; then
-            echo "::error::Identity Toolkit GET: HTTP $code - $(jq -r '.error.message // "errore sconosciuto"' /tmp/auth-before.json)"
+            echo "::error::Identity Toolkit GET: HTTP $code - $(jq -r '.error.message // "errore sconosciuto"' /tmp/auth.json)"
             exit 1
           fi
 
-          api="https://identitytoolkit.googleapis.com/admin/v2/projects/${project_ref}/config"
+          callback="$(jq -r '.notification.sendEmail.callbackUri // ""' /tmp/auth.json)"
+          sender_domain="$(jq -r '.notification.sendEmail.dnsInfo.customDomain // ""' /tmp/auth.json)"
+          sender_state="$(jq -r '.notification.sendEmail.dnsInfo.customDomainState // "NOT_CONFIGURED"' /tmp/auth.json)"
+          auth_domain="$(jq -r 'if (.authorizedDomains // []) | index("calabriavera.com") then "OK" else "MISSING" end' /tmp/auth.json)"
 
-          jq -n             --arg callback "${CALLBACK_URI}"             --slurpfile cfg /tmp/auth-before.json             '{
-              notification: {sendEmail: {callbackUri: $callback}},
-              authorizedDomains: (($cfg[0].authorizedDomains // []) + ["calabriavera.com"] | unique)
-            }' > /tmp/auth-patch.json
-
-          patch_code="$(curl --silent --show-error --output /tmp/auth-updated.json --write-out '%{http_code}' -X PATCH             -H "Authorization: Bearer ${ACCESS_TOKEN}"             -H "X-Goog-User-Project: ${PROJECT_ID}"             -H "Content-Type: application/json"             --data-binary @/tmp/auth-patch.json             "${api}?updateMask=notification.sendEmail.callbackUri,authorizedDomains")"
-
-          if [ "$patch_code" != "200" ]; then
-            echo "::error::Identity Toolkit PATCH: HTTP $patch_code - $(jq -r '.error.message // "errore sconosciuto"' /tmp/auth-updated.json)"
-            exit 1
-          fi
-
-          test "$(jq -r '.notification.sendEmail.callbackUri // ""' /tmp/auth-updated.json)" = "${CALLBACK_URI}"
-          jq -e '.authorizedDomains | index("calabriavera.com") != null' /tmp/auth-updated.json >/dev/null
-
-          echo "Firebase Auth email action URL: $(jq -r '.notification.sendEmail.callbackUri' /tmp/auth-updated.json)"
-          echo "Dominio autorizzato calabriavera.com: OK"
+          echo "Email action callback: ${callback:-non configurato}"
+          echo "Authorized domain calabriavera.com: ${auth_domain}"
+          echo "Custom sender domain: ${sender_domain:-non configurato}"
+          echo "Custom sender domain state: ${sender_state}"
 
       - name: Verifica handler Auth sul dominio pubblico
         shell: bash
