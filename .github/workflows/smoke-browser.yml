@@ -2,10 +2,6 @@
 name: Production - Browser smoke test
 
 on:
-  push:
-    branches: [main]
-    paths:
-      - '.github/workflows/smoke-browser.yml'
   workflow_dispatch:
     inputs:
       authenticated:
@@ -61,7 +57,7 @@ jobs:
         env:
           PLAYWRIGHT_MODULE: /tmp/cv-smoke/node_modules/playwright
           SMOKE_BASE_URL: https://calabriavera.com
-          SMOKE_PUBLIC_ONLY: ${{ github.event_name == 'workflow_dispatch' && inputs.authenticated != true }}
+          SMOKE_PUBLIC_ONLY: ${{ inputs.authenticated != true }}
           SMOKE_TEST_EMAIL: ${{ secrets.SMOKE_TEST_EMAIL }}
           SMOKE_TEST_PASSWORD: ${{ secrets.SMOKE_TEST_PASSWORD }}
         run: |
