@@ -86,6 +86,15 @@ jobs:
         run: |
           set -euo pipefail
           expected="$(git rev-parse HEAD)"
-          live="$(curl --fail --silent --show-error --location --retry 5 --retry-delay 2 -H 'Cache-Control: no-cache' "https://calabriavera.sonotacamirko.workers.dev/build-version.txt?run=$GITHUB_RUN_ID" | tr -d '\r\n')"
-          test "$live" = "$expected"
-          echo "Worker R2/API aggiornato: $live"
+          live=""
+          for attempt in $(seq 1 20); do
+            live="$(curl --fail --silent --show-error --location -H 'Cache-Control: no-cache' "https://calabriavera.sonotacamirko.workers.dev/build-version.txt?run=$GITHUB_RUN_ID&attempt=$attempt" | tr -d '\r\n' || true)"
+            if [ "$live" = "$expected" ]; then
+              echo "Worker R2/API aggiornato al tentativo $attempt: $live"
+              exit 0
+            fi
+            echo "Attendo propagazione Worker ($attempt/20): live=${live:-non-disponibile}, expected=$expected"
+            sleep 3
+          done
+          echo "::error::Worker non allineato dopo la finestra di propagazione: live=${live:-non-disponibile}, expected=$expected"
+          exit 1
