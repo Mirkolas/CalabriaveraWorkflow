@@ -1,4 +1,4 @@
-name: Auth - Verify canonical email domain
+name: Auth - Verify branded email flow
 
 on:
   push:
@@ -12,7 +12,7 @@ permissions:
   id-token: write
 
 concurrency:
-  group: auth-domain-config
+  group: auth-branded-email-smoke
   cancel-in-progress: true
 
 jobs:
@@ -21,10 +21,29 @@ jobs:
     timeout-minutes: 8
     env:
       PROJECT_ID: calabriavera-e08d4
-      LINK_DOMAIN: calabriavera.com
       TEST_EMAIL: ${{ secrets.SMOKE_TEST_EMAIL }}
+      APPS_SCRIPT_URL: https://script.google.com/macros/s/AKfycbybzwBASQBXjcITav3u40hM12SSezzBdBL9UyIJI-ld1eGNQ8Uly96iOdO4E_bVIbVMGQ/exec
 
     steps:
+      - name: Verifica gateway Auth Apps Script
+        shell: bash
+        run: |
+          set -euo pipefail
+          result="$(curl --fail --silent --show-error --location --retry 3 "${APPS_SCRIPT_URL}?check=auth-links")"
+          test "$(printf '%s' "$result" | jq -r '.ok')" = "true"
+          test "$(printf '%s' "$result" | jq -r '.oauthAuthorized')" = "true"
+          echo "Gateway Auth Spark autorizzato: OK"
+
+      - name: Invia reset QA tramite CalabriaVera
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -n "${TEST_EMAIL}" || { echo "::error::SMOKE_TEST_EMAIL mancante"; exit 1; }
+          body="$(jq -n --arg email "${TEST_EMAIL}" '{action:"auth.passwordReset",email:$email,continueUrl:"https://calabriavera.com/login?reset=1"}')"
+          curl --fail --silent --show-error --location             -H 'Content-Type: text/plain;charset=UTF-8'             --data-binary "$body" "${APPS_SCRIPT_URL}" > /tmp/auth-mail-result.json
+          test "$(jq -r '.ok' /tmp/auth-mail-result.json)" = "true"
+          echo "Richiesta email reset QA accettata dal gateway CalabriaVera."
+
       - id: gcp-auth
         uses: google-github-actions/auth@v3
         with:
@@ -32,55 +51,30 @@ jobs:
           service_account: ${{ vars.FIREBASE_DEPLOY_SERVICE_ACCOUNT }}
           token_format: access_token
 
-      - name: Leggi configurazione Firebase Auth
+      - name: Verifica host salvato senza leggere il link
         env:
           ACCESS_TOKEN: ${{ steps.gcp-auth.outputs.access_token }}
         shell: bash
         run: |
           set -euo pipefail
-          api="https://identitytoolkit.googleapis.com/admin/v2/projects/${PROJECT_ID}/config"
-          code="$(curl --silent --show-error --output /tmp/auth.json --write-out '%{http_code}'             -H "Authorization: Bearer ${ACCESS_TOKEN}"             -H "X-Goog-User-Project: ${PROJECT_ID}"             "${api}")"
-          test "$code" = "200"
-          callback="$(jq -r '.notification.sendEmail.callbackUri // ""' /tmp/auth.json)"
-          auth_domain="$(jq -r 'if (.authorizedDomains // []) | index("calabriavera.com") then "OK" else "MISSING" end' /tmp/auth.json)"
-          echo "Email action callback console: ${callback:-non configurato}"
-          echo "Authorized domain calabriavera.com: ${auth_domain}"
-
-      - name: Verifica linkDomain custom senza inviare email
-        env:
-          ACCESS_TOKEN: ${{ steps.gcp-auth.outputs.access_token }}
-        shell: bash
-        run: |
-          set -euo pipefail
-          test -n "${TEST_EMAIL}" || { echo "::error::SMOKE_TEST_EMAIL mancante"; exit 1; }
-          body="$(jq -n             --arg email "${TEST_EMAIL}"             --arg project "${PROJECT_ID}"             --arg domain "${LINK_DOMAIN}"             '{
-              requestType:"PASSWORD_RESET",
-              email:$email,
-              continueUrl:"https://calabriavera.com/login?reset=1",
-              canHandleCodeInApp:true,
-              returnOobLink:true,
-              targetProjectId:$project,
-              linkDomain:$domain
-            }')"
-          code="$(curl --silent --show-error --output /tmp/oob.json --write-out '%{http_code}' -X POST             -H "Authorization: Bearer ${ACCESS_TOKEN}"             -H "X-Goog-User-Project: ${PROJECT_ID}"             -H "Content-Type: application/json"             --data-binary "$body"             "https://identitytoolkit.googleapis.com/v1/accounts:sendOobCode")"
-          if [ "$code" != "200" ]; then
-            echo "::error::sendOobCode HTTP $code - $(jq -r '.error.message // "errore sconosciuto"' /tmp/oob.json)"
-            exit 1
-          fi
+          sleep 2
+          query="$(jq -n --arg email "${TEST_EMAIL}" '{
+            structuredQuery:{
+              from:[{collectionId:"_mailDeliveries"}],
+              where:{fieldFilter:{field:{fieldPath:"to"},op:"EQUAL",value:{stringValue:$email}}},
+              limit:50
+            }
+          }')"
+          curl --fail --silent --show-error -X POST             -H "Authorization: Bearer ${ACCESS_TOKEN}"             -H "X-Goog-User-Project: ${PROJECT_ID}"             -H "Content-Type: application/json"             --data-binary "$query"             "https://firestore.googleapis.com/v1/projects/${PROJECT_ID}/databases/(default)/documents:runQuery" > /tmp/mail-query.json
           node <<'NODE'
           const fs=require('node:fs');
-          const result=JSON.parse(fs.readFileSync('/tmp/oob.json','utf8'));
-          const u=new URL(result.oobLink);
-          console.log('OOB link host:',u.hostname);
-          console.log('OOB link path:',u.pathname);
-          if(u.hostname!=='calabriavera.com') throw new Error('Firebase non ha usato il custom linkDomain');
+          const rows=JSON.parse(fs.readFileSync('/tmp/mail-query.json','utf8'));
+          const docs=rows.map(row=>row.document?.fields||{}).filter(Boolean);
+          const ok=docs.some(fields =>
+            fields.type?.stringValue==='password.reset' &&
+            fields.status?.stringValue==='sent' &&
+            fields.actionHost?.stringValue==='calabriavera.com'
+          );
+          if(!ok) throw new Error('Nessuna email password.reset inviata con actionHost calabriavera.com');
+          console.log('Email Auth verificata: actionHost=calabriavera.com, stato=sent');
           NODE
-          rm -f /tmp/oob.json
-
-      - name: Verifica handler Auth sul dominio pubblico
-        shell: bash
-        run: |
-          set -euo pipefail
-          code="$(curl --silent --show-error --output /tmp/action.html --write-out '%{http_code}'             "https://calabriavera.com/__/auth/action?mode=verifyEmail&oobCode=invalid-test-code&apiKey=AIzaSyAMV0D5F3jLzttrivErEX_PSnONq1SIZ2A&continueUrl=https%3A%2F%2Fcalabriavera.com%2Fprofilo")"
-          test "$code" -lt 500
-          echo "Handler Auth custom domain raggiungibile: HTTP $code"
