@@ -178,6 +178,21 @@ jobs:
           node tests/smoke-browser.cjs
           node tests/smoke-activity-routing.cjs
 
+      - name: Leggi lo stato sitemap e indicizzazione da Google
+        working-directory: source
+        env:
+          SEARCH_CONSOLE_SITE: ${{ vars.SEARCH_CONSOLE_SITE || 'https://calabriavera.com/' }}
+        run: node tools/check-search-console-indexing.mjs
+
+      - name: Conserva report pubblico Search Console
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: search-console-indexing
+          path: source/search-console-indexing.json
+          if-no-files-found: ignore
+          retention-days: 30
+
   admin-maintenance:
     needs: retry_gate
     if: needs.retry_gate.outputs.should_run == 'true' && github.ref == 'refs/heads/main'
