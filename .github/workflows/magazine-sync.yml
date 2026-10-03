@@ -1,4 +1,5 @@
 name: Blog automatico - RSS e OpenData
+# Source magazine marker: a06695ff0727c4d48f6803ea51513165a2e2bf98
 
 on:
   schedule:
