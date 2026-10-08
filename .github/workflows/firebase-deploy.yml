@@ -1,5 +1,5 @@
 name: Firebase - Deploy CalabriaVera
-# Source deploy marker: 5b88f687eaac5b5edc53abaa1bb4eefa3af4311b
+# Source deploy marker: 5febe62e6ef81bc88a099e1f895753f4f07c94f8
 
 on:
   push:
@@ -80,6 +80,27 @@ jobs:
           set -euo pipefail
           npm ci --no-audit --no-fund
           npm run build
+
+      - name: Installa browser per verifica produzione
+        run: |
+          npm install --prefix /tmp/cv-smoke --no-package-lock --no-save playwright@1.62.1 axe-core@4.14.0
+          /tmp/cv-smoke/node_modules/.bin/playwright install --with-deps chromium
+
+      - name: Verifica interfaccia admin con fixture locali prima di pubblicare
+        working-directory: source
+        env:
+          PLAYWRIGHT_MODULE: /tmp/cv-smoke/node_modules/playwright
+          SMOKE_ARTIFACT_DIR: /tmp/cv-admin-e2e
+        run: node tests/admin-readonly-e2e.cjs
+
+      - name: Conserva verifica admin locale
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: admin-browser-fixtures
+          path: /tmp/cv-admin-e2e
+          if-no-files-found: ignore
+          retention-days: 7
 
       - uses: google-github-actions/auth@v3
         with:
@@ -163,11 +184,6 @@ jobs:
 
       # Keep this check in the deploy job: dispatches issued with GITHUB_TOKEN
       # must not depend on a second workflow_run being emitted.
-      - name: Installa browser per verifica produzione
-        run: |
-          npm install --prefix /tmp/cv-smoke --no-package-lock --no-save playwright@1.62.1 axe-core@4.14.0
-          /tmp/cv-smoke/node_modules/.bin/playwright install --with-deps chromium
-
       - name: Verifica browser pubblico desktop e mobile dopo il deploy
         working-directory: source
         env:
