@@ -1,5 +1,5 @@
 name: Firebase - Deploy CalabriaVera
-# Source deploy marker: b3335c6db3a22e4c5aaa7918a4155152e0f41166
+# Source deploy marker: 5b88f687eaac5b5edc53abaa1bb4eefa3af4311b
 
 on:
   push:
@@ -165,7 +165,7 @@ jobs:
       # must not depend on a second workflow_run being emitted.
       - name: Installa browser per verifica produzione
         run: |
-          npm install --prefix /tmp/cv-smoke --no-package-lock --no-save playwright@1.62.1
+          npm install --prefix /tmp/cv-smoke --no-package-lock --no-save playwright@1.62.1 axe-core@4.14.0
           /tmp/cv-smoke/node_modules/.bin/playwright install --with-deps chromium
 
       - name: Verifica browser pubblico desktop e mobile dopo il deploy
@@ -174,9 +174,21 @@ jobs:
           PLAYWRIGHT_MODULE: /tmp/cv-smoke/node_modules/playwright
           SMOKE_BASE_URL: https://calabriavera.com
           SMOKE_PUBLIC_ONLY: 'true'
+          AXE_SCRIPT: /tmp/cv-smoke/node_modules/axe-core/axe.min.js
+          SMOKE_ARTIFACT_DIR: /tmp/cv-public-e2e
         run: |
           node tests/smoke-browser.cjs
           node tests/smoke-activity-routing.cjs
+          node tests/react-public-e2e.cjs
+
+      - name: Conserva report e screenshot browser
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: public-browser-e2e
+          path: /tmp/cv-public-e2e
+          if-no-files-found: ignore
+          retention-days: 7
 
       - name: Leggi lo stato sitemap e indicizzazione da Google
         working-directory: source
