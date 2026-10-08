@@ -25,6 +25,8 @@ function runMagazine(marker, event, cron, notDue = false, failQuota = false) {
     const log = path.join(dir, 'calls.log');
     const script = `
       node() {
+        # Ubuntu login profiles may query the runtime version before the block.
+        if [ "$1" = "-v" ] || [ "$1" = "--version" ]; then printf 'v22.0.0\\n'; return 0; fi
         if [ "$1" = "tools/automation-cadence-runner.mjs" ]; then
           if [ "$MOCK_CADENCE_NOT_DUE" = "true" ]; then return 0; fi
           while [ "$1" != "--" ]; do shift; done

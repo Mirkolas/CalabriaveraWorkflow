@@ -4,7 +4,7 @@ name: Verifica codice e backup
 on:
   push:
     branches: [main]
-    paths: ['.github/workflows/verify.yml']
+    paths: ['.github/workflows/verify.yml', 'tests/**']
   workflow_dispatch:
     inputs:
       source_ref:
