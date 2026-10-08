@@ -3,7 +3,9 @@ name: Blog automatico - RSS e OpenData
 
 on:
   schedule:
-    - cron: '17 */6 * * *'
+    - cron: '17 0 * * *'
+    - cron: '17 6 * * *'
+    - cron: '17 12,18 * * *'
   workflow_dispatch:
     inputs:
       mode:
@@ -47,6 +49,7 @@ jobs:
     env:
       PRIVATE_REPO: ${{ secrets.PRIVATE_REPO }}
       PRIVATE_REPO_PAT: ${{ secrets.PRIVATE_REPO_PAT }}
+      SCHEDULED_CRON: ${{ github.event.schedule }}
 
     steps:
       - name: Verifica accesso sorgente privato
@@ -107,7 +110,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          if [ "${{ github.event_name }}" = "schedule" ] && [ "$(date -u +%H)" != "06" ]; then
+          if [ "$GITHUB_EVENT_NAME" = "schedule" ] && [ "$SCHEDULED_CRON" != "17 6 * * *" ]; then
             echo "Controllo token Meta non dovuto in questa finestra."
             exit 0
           fi
@@ -139,11 +142,6 @@ jobs:
             node tools/sync-regional-opendata.mjs; regional_code=$?
             set -e
             node tools/queue-new-magazine-items.mjs
-            if [ "$(date -u +%H)" = "01" ]; then
-              node tools/reconcile-magazine.mjs
-              node tools/enforce-positive-magazine.mjs
-              node tools/backfill-blog-covers.mjs
-            fi
             node tools/publish-magazine-batch.mjs
             if [ "$rss_code" -ne 0 ] && [ "$tourism_code" -ne 0 ] && [ "$regional_code" -ne 0 ]; then exit 1; fi
           ' >"$log" 2>&1
@@ -164,8 +162,36 @@ jobs:
           rm -f "$log"
           exit "$code"
 
+      - name: Manutenzione quotidiana Magazine
+        id: maintenance
+        if: steps.magazine.outputs.quota_exhausted != 'true' && github.event_name == 'schedule'
+        working-directory: source
+        shell: bash
+        run: |
+          set -euo pipefail
+          # Il cron originale resta stabile anche con run ritardate o import non dovuto.
+          if [ "$GITHUB_EVENT_NAME" != "schedule" ] || [ "$SCHEDULED_CRON" != "17 0 * * *" ]; then exit 0; fi
+          log="$(mktemp)"
+          set +e
+          bash -lc '
+            set -euo pipefail
+            node tools/reconcile-magazine.mjs
+            node tools/enforce-positive-magazine.mjs
+            node tools/backfill-blog-covers.mjs
+          ' >"$log" 2>&1
+          code=$?
+          set -e
+          cat "$log"
+          if [ "$code" -ne 0 ] && grep -Eqi 'RESOURCE_EXHAUSTED|Quota exceeded|FIRESTORE_429|(^|[^0-9])429([^0-9]|$)' "$log"; then
+            echo 'quota_exhausted=true' >> "$GITHUB_OUTPUT"
+            echo '::warning::Manutenzione Magazine rinviata per quota Firestore. Social e Story non verranno avviati in questa run.'
+            code=0
+          fi
+          rm -f "$log"
+          exit "$code"
+
       - name: Pubblica la coppia Social se dovuta
-        if: steps.magazine.outputs.quota_exhausted != 'true' && (github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && (inputs.mode == 'social-watchdog' || inputs.mode == 'social-dry-run' || inputs.mode == 'social-publish')) || (github.event_name == 'repository_dispatch' && (github.event.client_payload.social_dry_run == true || github.event.client_payload.social_publish == true)))
+        if: steps.magazine.outputs.quota_exhausted != 'true' && steps.maintenance.outputs.quota_exhausted != 'true' && (github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && (inputs.mode == 'social-watchdog' || inputs.mode == 'social-dry-run' || inputs.mode == 'social-publish')) || (github.event_name == 'repository_dispatch' && (github.event.client_payload.social_dry_run == true || github.event.client_payload.social_publish == true)))
         working-directory: source
         env:
           META_GRAPH_VERSION: ${{ vars.META_GRAPH_VERSION || 'v26.0' }}
@@ -200,7 +226,7 @@ jobs:
           fi
 
       - name: Pubblica Story promozionale se dovuta
-        if: steps.magazine.outputs.quota_exhausted != 'true' && (github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && (inputs.mode == 'promo-story-watchdog' || inputs.mode == 'promo-story-publish')))
+        if: steps.magazine.outputs.quota_exhausted != 'true' && steps.maintenance.outputs.quota_exhausted != 'true' && (github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && (inputs.mode == 'promo-story-watchdog' || inputs.mode == 'promo-story-publish')))
         working-directory: source
         env:
           META_GRAPH_VERSION: ${{ vars.META_GRAPH_VERSION || 'v26.0' }}

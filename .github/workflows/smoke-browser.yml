@@ -49,7 +49,7 @@ jobs:
         run: |
           set -euo pipefail
           mkdir -p /tmp/cv-smoke
-          npm install --prefix /tmp/cv-smoke --no-package-lock --no-save playwright@1.62.1
+          npm install --prefix /tmp/cv-smoke --no-package-lock --no-save playwright@1.62.1 axe-core@4.14.0
           /tmp/cv-smoke/node_modules/.bin/playwright install --with-deps chromium
 
       - name: Verifica CalabriaVera nel browser reale
@@ -72,3 +72,21 @@ jobs:
           PLAYWRIGHT_MODULE: /tmp/cv-smoke/node_modules/playwright
           SMOKE_BASE_URL: https://calabriavera.com
         run: node tests/smoke-activity-routing.cjs
+
+      - name: Verifica pagine, interazioni e accessibilità nelle cinque lingue
+        working-directory: source
+        env:
+          PLAYWRIGHT_MODULE: /tmp/cv-smoke/node_modules/playwright
+          SMOKE_BASE_URL: https://calabriavera.com
+          AXE_SCRIPT: /tmp/cv-smoke/node_modules/axe-core/axe.min.js
+          SMOKE_ARTIFACT_DIR: /tmp/cv-public-e2e
+        run: node tests/react-public-e2e.cjs
+
+      - name: Conserva report e screenshot browser
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: public-browser-e2e
+          path: /tmp/cv-public-e2e
+          if-no-files-found: ignore
+          retention-days: 7

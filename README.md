@@ -68,25 +68,26 @@ Le pianificazioni correnti sono riportate sotto, in UTC. Il controllo condiviso 
 
 Il gate calcola la campagna corrente, legge tramite GitHub Actions API le run schedulate dello stesso workflow e applica queste regole:
 
-- se nella campagna non esiste ancora un successo, il tentativo corrente esegue il lavoro reale;
-- appena un tentativo termina con successo, i tentativi schedulati successivi della stessa campagna terminano senza avviare il lavoro reale;
-- se un tentativo fallisce, il successivo rimane disponibile e riprova;
-- `workflow_dispatch` e `repository_dispatch` non vengono bloccati dal gate;
-- se l'API usata dal gate non e temporaneamente disponibile, il sistema preferisce eseguire il tentativo invece di rischiare di saltare la campagna;
+- se nella campagna non esiste ancora un tentativo schedulato o `repository_dispatch` completato, il tentativo corrente può eseguire il lavoro reale;
+- i tentativi completati, anche falliti, bloccano ulteriori tentativi nella stessa finestra per proteggere la quota Firestore;
+- `workflow_dispatch`, push del runner e `repository_dispatch` di deploy Firebase sono avvii espliciti e superano il gate;
+- se l'API usata dal gate non è disponibile, i workflow Firestore vengono rinviati; gli altri workflow possono procedere;
 - le concurrency schedulate non cancellano il tentativo in corso e gli intervalli sono dimensionati rispetto ai timeout dei job, per evitare sovrapposizioni inutili.
 
 Campagne attive:
 
 - `source-watch.yml`: ogni ora al minuto 02;
 - `seo-sync.yml`: ogni 5 minuti;
-- `magazine-sync.yml`: ogni 6 ore al minuto 17; include feed social e Story, con le rispettive cadenze interne;
+- `magazine-sync.yml`: alle 00:17, 06:17, 12:17 e 18:17; include feed social e Story, con le rispettive cadenze interne. Il ciclo delle 00:17 esegue la manutenzione Magazine e quello delle 06:17 verifica la scadenza dei token Meta. Queste operazioni usano il cron originale del payload, così un ritardo di GitHub non cambia il ciclo previsto;
 - `firebase-deploy.yml`: manutenzione giornaliera alle 02:17; il deploy avviene con push del workflow, dispatch manuale o dispatch dal watcher;
 - `daily-backup.yml`: backup giornaliero alle 02:41;
 - `scheduled-health.yml`: controllo e recupero dei cicli ogni ora al minuto 07.
 
 Gli orari GitHub Actions sono indicativi: il servizio può ritardare le esecuzioni. `promo-story.yml` e `cleanup-old-workflow-runs.yml` non sono workflow separati presenti in questo repository.
 
-Gli errori temporanei di quota Firestore nella sincronizzazione SEO e nella manutenzione Firebase vengono considerati retryable: il job termina senza segnare un falso successo, cosi il tentativo successivo della stessa campagna puo riprovare.
+Gli errori temporanei di quota Firestore nella sincronizzazione SEO, nel Magazine e nella manutenzione Firebase producono un avviso e rinviano il lavoro. La run può risultare riuscita anche se un'operazione è stata rinviata: occorre leggere gli avvisi per distinguere questo caso dal lavoro completato.
+
+`daily-backup.yml` usa un preflight incrementale dedicato e non richiama il gate condiviso. Senza una baseline incrementale verificata non legge Firestore; con una baseline valida esegue il backup incrementale giornaliero.
 
 ## Rilevamento sorgente privato
 
@@ -100,8 +101,12 @@ I nomi delle Variables WIF sono identici al privato. Tuttavia Google Cloud vede 
 
 ## Test
 
-`Verifica codice e backup` controlla il ramo principale del sorgente privato: accesso, dipendenze e audit, test, backup test, validazione, build statica e build React. Non pubblica il sito. Il rilevamento di una PR avvia questo controllo di main, non certifica il codice della PR.
+`Verifica codice e backup` controlla la logica dei workflow con servizi simulati e il ramo principale del sorgente privato: accesso, dipendenze e audit, test, backup test, validazione, build statica, regole Firestore negli emulatori e build React. Non pubblica il sito. Il rilevamento di una PR avvia questo controllo di main, non certifica il codice della PR.
+
+I test del runner si possono ripetere localmente con `node --test tests/workflow-logic.test.cjs` (Bash richiesto; su Windows viene usato Git Bash). Eseguono i blocchi dei workflow su fixture, senza chiamare Firebase o Meta.
 
 Il deploy Firebase esegue i test browser pubblici desktop/mobile e il percorso catalogo-scheda-mappa nello stesso job dopo la pubblicazione. Non crea account di test. `Production - Browser smoke test` permette di ripetere il controllo manualmente; attivando `authenticated` verifica anche l'accesso con un account dedicato, già verificato, configurato nei Secrets `SMOKE_TEST_EMAIL` e `SMOKE_TEST_PASSWORD`.
 
 I controlli pubblici non certificano le operazioni amministrative, l'invio email, il ripristino di un backup o la pubblicazione effettiva su Meta. I workflow applicativi usano le stesse Variables e Secrets del privato.
+
+Il deploy e il controllo browser manuale eseguono anche la matrice delle pagine pubbliche nelle cinque lingue e l'audit axe-core, conservando report e screenshot per 7 giorni. Il workflow manuale SEO - Indicizzazione completa Google legge la sitemap live e ispeziona tutte le sue URL tramite Search Console, senza pubblicare; i deploy ordinari mantengono il campione di 20 URL per contenere il consumo della quota API. I risultati riflettono l'ultima scansione effettuata da Google.
