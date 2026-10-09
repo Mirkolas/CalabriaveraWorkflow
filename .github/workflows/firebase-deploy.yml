@@ -1,5 +1,5 @@
 name: Firebase - Deploy CalabriaVera
-# Source deploy marker: 3c605cf1bb5e561ffc8e265cb2b004b032eaff43
+# Source deploy marker: 55815174a427173279c77550675c5106714a6868
 
 on:
   push:
@@ -86,12 +86,23 @@ jobs:
           npm install --prefix /tmp/cv-smoke --no-package-lock --no-save playwright@1.62.1 axe-core@4.14.0
           /tmp/cv-smoke/node_modules/.bin/playwright install --with-deps chromium
 
-      - name: Verifica interfaccia admin con fixture locali prima di pubblicare
+      - name: Verifica admin e notifiche con fixture locali prima di pubblicare
         working-directory: source
         env:
           PLAYWRIGHT_MODULE: /tmp/cv-smoke/node_modules/playwright
           SMOKE_ARTIFACT_DIR: /tmp/cv-admin-e2e
-        run: node tests/admin-readonly-e2e.cjs
+        run: |
+          node tests/admin-readonly-e2e.cjs
+          SMOKE_ARTIFACT_DIR=/tmp/cv-notifications-e2e node tests/notifications-readonly-e2e.cjs
+
+      - name: Conserva verifica notifiche locale
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: notifications-browser-fixtures
+          path: /tmp/cv-notifications-e2e
+          if-no-files-found: ignore
+          retention-days: 7
 
       - name: Conserva verifica admin locale
         if: always()
