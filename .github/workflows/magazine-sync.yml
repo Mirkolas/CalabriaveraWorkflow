@@ -220,8 +220,7 @@ jobs:
             node tools/publish-social-pair.mjs
           else
             node tools/automation-cadence-runner.mjs social-feed -- bash -lc '
-              node tools/check-meta-config.mjs
-              node tools/publish-social-pair.mjs
+              node tools/check-meta-config.mjs && node tools/publish-social-pair.mjs
             '
           fi
 
