@@ -1,0 +1,77 @@
+name: Firestore - Pulizia sicura log oltre 20 giorni
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/firestore-retention.yml'
+  schedule:
+    - cron: '37 3 * * *'
+  workflow_dispatch:
+    inputs:
+      apply:
+        type: boolean
+        required: false
+        default: false
+        description: 'Applica pulizia; disattivato = anteprima'
+
+permissions:
+  contents: read
+  id-token: write
+
+concurrency:
+  group: firestore-safe-log-retention
+  cancel-in-progress: false
+
+jobs:
+  cleanup:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      PRIVATE_REPO: ${{ secrets.PRIVATE_REPO }}
+      PRIVATE_REPO_PAT: ${{ secrets.PRIVATE_REPO_PAT || secrets.PERSONAL_ACCESS_TOKEN || secrets.PAT || secrets.GH_PAT || secrets.GITHUB_PAT }}
+    steps:
+      - name: Controlla il repository privato
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$PRIVATE_REPO" = 'Mirkolas/calabriavera'
+          test -n "$PRIVATE_REPO_PAT"
+      - name: Scarica script privato
+        uses: actions/checkout@v7
+        with:
+          repository: ${{ env.PRIVATE_REPO }}
+          ref: main
+          token: ${{ env.PRIVATE_REPO_PAT }}
+          persist-credentials: false
+          path: source
+      - uses: actions/setup-node@v7
+        with:
+          node-version: '22'
+      - name: Test sicurezza pulizia Firestore
+        working-directory: source
+        shell: bash
+        run: |
+          set -euo pipefail
+          node --test tests/firestore-retention.test.mjs
+      - name: Installa solo dipendenze backend
+        working-directory: source
+        run: npm --prefix tools ci --no-audit --no-fund
+      - name: Autenticazione Firebase con privilegi backend già autorizzati
+        uses: google-github-actions/auth@v3
+        with:
+          workload_identity_provider: ${{ vars.FIREBASE_BLOG_WIF_PROVIDER }}
+          service_account: ${{ vars.FIREBASE_BLOG_SERVICE_ACCOUNT }}
+      - name: Elimina solo vecchi log non più necessari
+        working-directory: source
+        env:
+          FIREBASE_PROJECT_ID: calabriavera-e08d4
+          APPLY_REQUESTED: ${{ github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && inputs.apply) }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [ "$APPLY_REQUESTED" = 'true' ]; then
+            node tools/firestore-retention.mjs --apply
+          else
+            node tools/firestore-retention.mjs --dry-run
+          fi
