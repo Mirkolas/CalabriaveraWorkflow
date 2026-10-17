@@ -64,7 +64,7 @@ jobs:
         working-directory: source
         env:
           FIREBASE_PROJECT_ID: calabriavera-e08d4
-          APPLY_REQUESTED: ${{ github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && inputs.apply) }}
+          APPLY_REQUESTED: ${{ github.event_name == 'push' || github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && inputs.apply) }}
           SCHEDULED: ${{ github.event_name == 'schedule' }}
         shell: bash
         run: |
