@@ -1,6 +1,7 @@
 name: Magazine - Pulizia sicura ogni 15 giorni
 
 # GitHub controlla ogni giorno; Firestore consente la cancellazione una volta ogni 15 giorni.
+# Safety test gate revision 2.
 # Questa manutenzione NON può azzerare i download mensili Firebase Hosting.
 on:
   push:
