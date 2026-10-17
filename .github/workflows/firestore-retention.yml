@@ -1,4 +1,5 @@
 name: Firestore - Pulizia sicura log oltre 20 giorni
+# Initial safe-mode audit v2: re-evaluate all four collections before applying.
 
 on:
   push:
