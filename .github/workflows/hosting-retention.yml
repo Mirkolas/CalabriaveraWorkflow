@@ -1,0 +1,72 @@
+name: Firebase Hosting - Rotazione release per Spark
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/hosting-retention.yml'
+  schedule:
+    - cron: '23 3 1,21 * *'
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: 'Solo diagnostica senza modificare retention'
+        type: boolean
+        required: false
+        default: false
+
+permissions:
+  contents: read
+  id-token: write
+
+concurrency:
+  group: firebase-hosting-retention
+  cancel-in-progress: false
+
+jobs:
+  retention:
+    runs-on: ubuntu-latest
+    timeout-minutes: 12
+    env:
+      PRIVATE_REPO: ${{ secrets.PRIVATE_REPO }}
+      PRIVATE_REPO_PAT: ${{ secrets.PRIVATE_REPO_PAT || secrets.PERSONAL_ACCESS_TOKEN || secrets.PAT || secrets.GH_PAT || secrets.GITHUB_PAT }}
+    steps:
+      - name: Verifica repository sorgente
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$PRIVATE_REPO" = 'Mirkolas/calabriavera'
+          test -n "$PRIVATE_REPO_PAT"
+      - name: Scarica script privato
+        uses: actions/checkout@v7
+        with:
+          repository: ${{ env.PRIVATE_REPO }}
+          token: ${{ env.PRIVATE_REPO_PAT }}
+          ref: main
+          path: source
+          persist-credentials: false
+      - uses: actions/setup-node@v7
+        with:
+          node-version: '22'
+      - name: Dipendenze e test conservazione release
+        working-directory: source
+        run: |
+          set -euo pipefail
+          npm --prefix tools ci --no-audit --no-fund
+          node --test tests/hosting-release-retention.test.mjs
+      - uses: google-github-actions/auth@v3
+        with:
+          workload_identity_provider: ${{ vars.FIREBASE_WIF_PROVIDER }}
+          service_account: ${{ vars.FIREBASE_DEPLOY_SERVICE_ACCOUNT }}
+      - name: Verifica e limita release obsolete dei due siti
+        working-directory: source
+        env:
+          DRY_RUN: ${{ github.event_name == 'workflow_dispatch' && inputs.dry_run || false }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [ "$DRY_RUN" = 'true' ]; then
+            node tools/hosting-release-retention.mjs --dry-run
+          else
+            node tools/hosting-release-retention.mjs --apply
+          fi
