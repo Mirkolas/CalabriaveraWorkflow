@@ -152,9 +152,10 @@ function runReleaseCheck({ event = 'repository_dispatch', live = 'source-sha', c
     const comparison = Buffer.from(unavailable
       ? 'export async function inspectSeo() { throw new Error("temporary failure"); }'
       : `export async function inspectSeo() { return { needsSync: ${changed} }; }`).toString('base64');
+    const fixtureRoot = portable(path.join(dir, 'check'));
     const block = runBlock(workflow('firebase-deploy.yml'), '- name: Evita una seconda release')
-      .replace('from "/tmp/cv-release-check/tools/check-seo-sync.mjs"', `from "${pathToFileURL(path.join(dir, 'check/tools/check-seo-sync.mjs')).href}"`)
-      .replaceAll('/tmp/cv-release-check', portable(path.join(dir, 'check')));
+      .replaceAll('/tmp/cv-release-check', fixtureRoot)
+      .replace(`from "${fixtureRoot}/tools/check-seo-sync.mjs"`, `from "${pathToFileURL(path.join(dir, 'check/tools/check-seo-sync.mjs')).href}"`);
     const script = `
       gh() {
         printf '%s\\n' "$*" >> "$MOCK_CALL_LOG"

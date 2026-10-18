@@ -252,7 +252,7 @@ jobs:
               ok=0
               for attempt in $(seq 1 3); do
                 headers=$(curl --connect-timeout 10 --max-time 20 --head -sS "$url" || true)
-                status=$(printf "%s\n" "$headers" | awk "toupper(\$1) ~ /^HTTP\\// {code=\$2} END {print code}")
+                status=$(printf "%s\n" "$headers" | tr -d "\r" | awk "toupper(\$1) ~ /^HTTP\\// {code=\$2} END {print code}")
                 if [ "$status" = "200" ] && printf "%s\n" "$headers" | grep -Eqi "^content-type:[[:space:]]*image/(png|jpeg)"; then ok=1; break; fi
                 if [ "$attempt" -lt 3 ]; then sleep 3; fi
               done

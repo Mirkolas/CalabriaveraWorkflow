@@ -115,7 +115,7 @@ jobs:
             # Il deploy verifica già ogni URL: il monitor controlla disponibilità e
             # redirect senza riscaricare tutte le sitemap a ogni campagna.
             headers="$(curl --fail --silent --show-error --head "$SITE_URL/$file")"
-            status="$(printf '%s\n' "$headers" | awk 'toupper($1) ~ /^HTTP\// {code=$2} END {print code}')"
+            status="$(printf '%s\n' "$headers" | tr -d '\r' | awk 'toupper($1) ~ /^HTTP\// {code=$2} END {print code}')"
             test "$status" = "200" || { echo "::error::Sitemap non disponibile senza redirect: $file ($status)"; exit 1; }
           done < <(jq -r '.files[]' "$tmp/manifest.json")
 

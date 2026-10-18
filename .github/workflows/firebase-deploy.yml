@@ -284,7 +284,7 @@ jobs:
             location=""
             for attempt in $(seq 1 20); do
               headers="$(curl --silent --show-error --head -H 'Cache-Control: no-cache' "https://calabriavera-e08d4.web.app${path}")"
-              status="$(printf '%s\n' "$headers" | awk 'toupper($1) ~ /^HTTP\// {code=$2} END {print code}')"
+              status="$(printf '%s\n' "$headers" | tr -d '\r' | awk 'toupper($1) ~ /^HTTP\// {code=$2} END {print code}')"
               location="$(printf '%s\n' "$headers" | awk 'BEGIN{IGNORECASE=1} /^location:/ {sub(/^[^:]+:[[:space:]]*/,""); sub(/\r$/,""); print; exit}')"
               if [ "$status" = '509' ]; then
                 echo '::warning::Verifica redirect legacy rinviata: quota mensile Firebase Hosting esaurita; Cloudflare primario resta verificato.'
