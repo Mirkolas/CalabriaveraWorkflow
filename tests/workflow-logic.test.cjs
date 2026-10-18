@@ -257,8 +257,16 @@ test('Safe cleanup uses an exact 20-day UTC calendar without a database read', (
       assert.match(fs.readFileSync(output,'utf8'), new RegExp(`should_run=${expected}`));
     }
     const magazine = workflow('magazine-retention.yml');
-    assert.doesNotMatch(magazine, /schedule:|--apply/);
-    assert.match(magazine, /--dry-run/);
+    // Archiving is now allowed only after R2 SHA-256 verification, live
+    // source-version match and protected-social-queue checks.
+    assert.match(magazine, /schedule:/);
+    assert.match(magazine, /--dry-run --scheduled/);
+    assert.match(magazine, /--apply --scheduled/);
+    assert.match(magazine, /node tools\/magazine-retention\.mjs --apply/);
+    assert.match(magazine, /Controlla che Cloudflare abbia già pubblicato esattamente questo sorgente/);
+    assert.match(magazine, /Test archivio privato, pubblico e conservazione sicura/);
+    assert.match(magazine, /x-calabriavera-data-source/);
+    assert.match(magazine, /group: firestore-magazine-retention/);
   } finally { fs.rmSync(dir, { recursive:true, force:true }); }
 });
 
