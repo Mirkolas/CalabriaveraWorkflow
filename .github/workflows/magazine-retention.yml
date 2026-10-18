@@ -89,4 +89,13 @@ jobs:
 
       - name: Archivia su R2 con verifica SHA-256 e soltanto poi rimuovi gli idonei
         working-directory: source
-        run: node tools/magazine-retention.mjs --apply --scheduled
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [ "$GITHUB_EVENT_NAME" = "schedule" ]; then
+            node tools/magazine-retention.mjs --apply --scheduled
+          else
+            # Explicit initial/manual run may bootstrap R2 even if an old
+            # pre-archive retention run has just advanced the cadence.
+            node tools/magazine-retention.mjs --apply
+          fi
