@@ -65,6 +65,10 @@ jobs:
           grep -Fq 'IMAGES' frontend-react/wrangler.jsonc
           grep -Fq 'IMAGES' frontend-react/worker.ts
 
+      - name: Test instradamento R2 e helper Firebase Authentication
+        working-directory: source
+        run: node --test tests/r2-image-hosting.test.mjs
+
       - name: Build assets Worker
         working-directory: source/frontend-react
         env:
