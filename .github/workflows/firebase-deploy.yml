@@ -179,7 +179,7 @@ jobs:
         run: |
           set -euo pipefail
           origin="https://calabriavera.sonotacamirko.workers.dev"
-          for path in /assets/Logo.webp /assets/images/home/tropea-1600.webp /assets/images/blog-default-news.webp; do
+          for path in /r2/static/assets/Logo.webp /r2/static/assets/flags/it.svg /r2/static/assets/images/blog-default-news.jpg; do
             headers="$(curl --fail --silent --show-error --head --retry 3 "$origin$path")"
             printf '%s\n' "$headers" | grep -Eiq '^content-type:[[:space:]]*image/'
             printf '%s\n' "$headers" | grep -Eiq '^x-calabriavera-image-source:[[:space:]]*cloudflare-r2'

@@ -51,12 +51,15 @@ jobs:
         with:
           node-version: '22'
 
-      - name: Genera copertine ottimizzate richieste dal controllo architettura
+      - name: Prepara asset e manifest R2 richiesti dal controllo architettura
         working-directory: source/frontend-react
         run: |
           set -euo pipefail
           npm ci --no-audit --no-fund
+          node scripts/copy-legacy-assets.mjs
           node scripts/optimize-magazine-covers.mjs
+          node scripts/optimize-site-images.mjs
+          node scripts/prepare-r2-static.mjs
 
       - name: Verifica set workflow pubblico definitivo
         shell: bash
