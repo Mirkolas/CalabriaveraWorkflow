@@ -1,12 +1,20 @@
-name: Magazine - Anteprima manuale conservazione contenuti
+name: Magazine - Archivio R2 verificato e pulizia Firestore
 
-# Nessuna cancellazione automatica dei post: la manutenzione periodica riguarda
-# soltanto log operativi scaduti e vecchie release Hosting.
+# Ogni post storico resta consultabile su R2. Non si cancellano mai articoli
+# editoriali, SEO indicizzabili, evergreen, eventi futuri o code social aperte.
 on:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/magazine-retention.yml'
   workflow_dispatch:
+  schedule:
+    - cron: '23 3 * * 1'
+
 permissions:
   contents: read
   id-token: write
+
 concurrency:
   group: firestore-magazine-retention
   cancel-in-progress: false
@@ -14,17 +22,23 @@ concurrency:
 jobs:
   retention:
     runs-on: ubuntu-latest
-    timeout-minutes: 16
+    timeout-minutes: 35
     env:
       PRIVATE_REPO: ${{ secrets.PRIVATE_REPO }}
       PRIVATE_REPO_PAT: ${{ secrets.PRIVATE_REPO_PAT || secrets.PERSONAL_ACCESS_TOKEN || secrets.PAT || secrets.GH_PAT || secrets.GITHUB_PAT }}
+      CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+      CLOUDFLARE_ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
+      FIREBASE_PROJECT_ID: calabriavera-e08d4
     steps:
-      - name: Verifica sorgente CalabriaVera
+      - name: Verifica progetto, repo e credenziali
         shell: bash
         run: |
           set -euo pipefail
           test "$PRIVATE_REPO" = 'Mirkolas/calabriavera'
           test -n "$PRIVATE_REPO_PAT"
+          test -n "$CLOUDFLARE_API_TOKEN"
+          test -n "$CLOUDFLARE_ACCOUNT_ID"
+
       - name: Checkout sorgente privato
         uses: actions/checkout@v7
         with:
@@ -33,25 +47,46 @@ jobs:
           ref: main
           path: source
           persist-credentials: false
+
       - uses: actions/setup-node@v7
         with:
           node-version: '22'
-      - name: Verifica invarianti cancellazione sicura
+
+      - name: Test archivio privato, pubblico e conservazione sicura
         working-directory: source
-        run: node --test tests/magazine-retention.test.mjs
-      - name: Installa dipendenze Firebase
+        run: |
+          set -euo pipefail
+          node --test tests/magazine-retention.test.mjs tests/magazine-r2-archive.test.mjs
+
+      - name: Controlla che Cloudflare abbia già pubblicato esattamente questo sorgente
         working-directory: source
-        run: npm --prefix tools ci --no-audit --no-fund
+        shell: bash
+        run: |
+          set -euo pipefail
+          expected="$(git rev-parse HEAD)"
+          live="$(curl --fail --silent --show-error --max-time 25 -H 'Cache-Control: no-cache' "https://calabriavera.com/build-version.txt?magazine=$(date +%s)" | tr -d '\r\n')"
+          test "$live" = "$expected" || { echo "::error::Versione live diversa dal codice archivio. Nessuna cancellazione consentita."; exit 1; }
+          curl --fail --silent --show-error --max-time 25 -H 'Cache-Control: no-cache' -D /tmp/cv-archive-header.txt "https://calabriavera.com/api/public/magazine-archive-v1.json?verify=$(date +%s)" -o /tmp/cv-archive-data.json
+          grep -Eiq '^x-calabriavera-data-source:[[:space:]]*cloudflare-r2-magazine-archive' /tmp/cv-archive-header.txt || { echo "::error::Worker lettura archivio R2 non verificato"; exit 1; }
+          node -e 'const x=require("/tmp/cv-archive-data.json"); if(x.version!==1||!Array.isArray(x.items))process.exit(1)'
+
+      - name: Installa solo SDK amministrativo e Wrangler
+        working-directory: source
+        run: |
+          set -euo pipefail
+          npm --prefix tools ci --no-audit --no-fund
+          npm --prefix frontend-react ci --no-audit --no-fund
+
       - name: Autenticazione Firestore
         uses: google-github-actions/auth@v3
         with:
           workload_identity_provider: ${{ vars.FIREBASE_BLOG_WIF_PROVIDER }}
           service_account: ${{ vars.FIREBASE_BLOG_SERVICE_ACCOUNT }}
-      - name: Mostra i contenuti scaduti senza eliminare post o code
+
+      - name: Anteprima scadenze e risparmio letture
         working-directory: source
-        env:
-          FIREBASE_PROJECT_ID: calabriavera-e08d4
-        shell: bash
-        run: |
-          set -euo pipefail
-          node tools/magazine-retention.mjs --dry-run
+        run: node tools/magazine-retention.mjs --dry-run --scheduled
+
+      - name: Archivia su R2 con verifica SHA-256 e soltanto poi rimuovi gli idonei
+        working-directory: source
+        run: node tools/magazine-retention.mjs --apply --scheduled
