@@ -51,6 +51,13 @@ jobs:
         with:
           node-version: '22'
 
+      - name: Genera copertine ottimizzate richieste dal controllo architettura
+        working-directory: source/frontend-react
+        run: |
+          set -euo pipefail
+          npm ci --no-audit --no-fund
+          node scripts/optimize-magazine-covers.mjs
+
       - name: Verifica set workflow pubblico definitivo
         shell: bash
         run: |
