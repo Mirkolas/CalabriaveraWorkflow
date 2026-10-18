@@ -48,7 +48,7 @@ jobs:
           token: ${{ secrets.PRIVATE_REPO_PAT || secrets.PERSONAL_ACCESS_TOKEN || secrets.PAT || secrets.GH_PAT || secrets.GITHUB_PAT }}
           ref: main
           path: source
-          fetch-depth: 0
+          fetch-depth: 1
           persist-credentials: false
 
       - name: Recupera checkpoint cifrato da un eventuale rerun
@@ -68,7 +68,7 @@ jobs:
 
       - name: Installa dipendenze backup
         working-directory: source
-        run: npm ci && npm --prefix tools ci --no-audit --no-fund
+        run: npm ci --no-audit --no-fund && npm --prefix tools ci --no-audit --no-fund
 
       - name: Preflight senza Firebase
         id: preflight

@@ -2,11 +2,15 @@
 
 Questo repository pubblico esegue i workflow usando il sorgente del repository privato, scaricato soltanto sul runner temporaneo. Il codice applicativo, il nome del repository privato e gli identificativi hardcoded presenti nel sorgente non vengono copiati nel repository pubblico.
 
+`firebase-deploy.yml` è il percorso di produzione completo: build React con dati live, test, caricamento verificato delle immagini nel bucket R2 esistente, deploy Cloudflare Worker come hosting primario, quindi aggiornamento Firebase come fallback. La stessa build viene pubblicata su entrambi. Il dominio principale deve restituire lo SHA previsto e l'header `X-CalabriaVera-Hosting: cloudflare`; una quota Firebase esaurita può rinviare soltanto la verifica del fallback. `cloudflare-worker-r2-api.yml` è un avvio manuale di questo percorso completo, così non esistono due deploy indipendenti che sovrascrivono la produzione.
+
+`migrate-legacy-images-r2.yml` è esclusivamente manuale e parte in audit (`apply=false`). Legge al massimo 1.000 record per sorgente in pagine da 25 e tratta al massimo 500 immagini; usa il bucket esistente e aggiorna un riferimento solo dopo caricamento e verifica dei byte remoti. Il passaggio ad `apply=true` segue l'audit e conserva i dati primari.
+
 ## Regola di configurazione
 
 ### Sitemap e Google Search Console
 
-`seo-sync.yml` confronta i dati pubblici con il manifest pubblicato e avvia il deploy quando serve. Le modifiche arrivate durante la build sono confrontate con l'istante di lettura dei dati. Il cron è richiesto ogni 5 minuti, ma GitHub può ritardare l'esecuzione.
+`seo-sync.yml` confronta i dati pubblici con il manifest pubblicato e avvia il deploy quando serve. Le modifiche arrivate durante la build sono confrontate con l'istante di lettura dei dati. Il cron orario riduce di 12 volte i controlli schedulati rispetto alla precedente cadenza di 5 minuti; GitHub può ritardare l'esecuzione.
 
 Il deploy controlla gli HTML generati, pubblica il sito, verifica sitemap, lingue e `noindex` delle aree personali, quindi invia `sitemap.xml` tramite la Search Console API ufficiale. Non usa Google Indexing API, riservata a tipi di contenuto non pertinenti a questo sito. L'invio è una segnalazione a Google e non garantisce l'indicizzazione.
 
@@ -32,6 +36,7 @@ Gli unici valori tecnici aggiuntivi sono necessari per permettere al runner pubb
 Copia con lo stesso nome e valore del repository privato:
 
 - `FIREBASE_AUTO_DEPLOY_ENABLED`
+- `CLOUDFLARE_ACCOUNT_ID`
 - `FIREBASE_WIF_PROVIDER`
 - `FIREBASE_DEPLOY_SERVICE_ACCOUNT`
 - `BACKUPS_ENABLED`
@@ -53,6 +58,7 @@ Copia con lo stesso nome e valore del repository privato:
 Copia con lo stesso nome e valore del repository privato:
 
 - `CLASPRC_JSON`
+- `CLOUDFLARE_API_TOKEN` (include scrittura Workers e nel bucket R2 già esistente)
 - `CALABRIAVERA_BACKUP_ENCRYPTION_KEY`
 - `FIREBASE_AUTH_HASH_CONFIG`
 - `META_PAGE_ACCESS_TOKEN`
@@ -77,17 +83,20 @@ Il gate calcola la campagna corrente, legge tramite GitHub Actions API le run sc
 Campagne attive:
 
 - `source-watch.yml`: ogni ora al minuto 02;
-- `seo-sync.yml`: ogni 5 minuti;
+- `seo-sync.yml`: ogni ora al minuto 32;
 - `magazine-sync.yml`: alle 00:17, 06:17, 12:17 e 18:17; include feed social e Story, con le rispettive cadenze interne. Il ciclo delle 00:17 esegue la manutenzione Magazine e quello delle 06:17 verifica la scadenza dei token Meta. Queste operazioni usano il cron originale del payload, così un ritardo di GitHub non cambia il ciclo previsto;
 - `firebase-deploy.yml`: manutenzione giornaliera alle 02:17; il deploy avviene con push del workflow, dispatch manuale o dispatch dal watcher;
 - `daily-backup.yml`: backup giornaliero alle 02:41;
-- `scheduled-health.yml`: controllo e recupero dei cicli ogni ora al minuto 07.
+- `scheduled-health.yml`: controllo e recupero dei cicli ogni sei ore al minuto 07. Scarica il manifest e l'indice sitemap compressi, controllando le sitemap figlie con HEAD; la verifica completa dei contenuti resta nel deploy.
+- `hosting-retention.yml` e `firestore-retention.yml`: gate giornaliero UTC senza letture Firestore, esecuzione effettiva ogni 20 giorni dall'ancora del 18 ottobre 2026 (poi 7 novembre, 27 novembre e così via). La pulizia Firestore riguarda esclusivamente vecchi log terminali e avvisi già risolti; conserva utenti, attività, post, code e prove di pubblicazione. `magazine-retention.yml` è soltanto un'anteprima manuale e non elimina contenuti. Non vengono cancellate immagini R2 prive di una prova certa che siano temporanee e inutilizzate.
 
 Gli orari GitHub Actions sono indicativi: il servizio può ritardare le esecuzioni. `promo-story.yml` e `cleanup-old-workflow-runs.yml` non sono workflow separati presenti in questo repository.
 
 Gli errori temporanei di quota Firestore nella sincronizzazione SEO, nel Magazine e nella manutenzione Firebase producono un avviso e rinviano il lavoro. La run può risultare riuscita anche se un'operazione è stata rinviata: occorre leggere gli avvisi per distinguere questo caso dal lavoro completato.
 
 `daily-backup.yml` usa un preflight incrementale dedicato e non richiama il gate condiviso. Senza una baseline incrementale verificata non legge Firestore; con una baseline valida esegue il backup incrementale giornaliero.
+
+Il recupero della manutenzione Firebase usa `maintenance_only=true`, senza generare una nuova release del sito. I dispatch ripetuti del watcher evitano build, pubblicazione e test browser quando lo SHA privato e i dati pubblici corrispondono già alla produzione; un avvio manuale del deploy resta esplicito. Ogni deploy conserva due release precedenti per entrambi i siti Hosting tramite lo script privato verificato, oltre al sito attivo. Firebase programma la rimozione dei contenuti delle release eccedenti: lo spazio non si libera necessariamente subito e il traffico già consumato nel mese non viene azzerato. Le verifiche SEO rinviate per quota Hosting esaurita (HTTP 509) sono segnalate con un avviso senza attivare altri deploy automatici.
 
 ## Rilevamento sorgente privato
 
@@ -105,8 +114,8 @@ I nomi delle Variables WIF sono identici al privato. Tuttavia Google Cloud vede 
 
 I test del runner si possono ripetere localmente con `node --test tests/workflow-logic.test.cjs` (Bash richiesto; su Windows viene usato Git Bash). Eseguono i blocchi dei workflow su fixture, senza chiamare Firebase o Meta.
 
-Il deploy Firebase esegue i test browser pubblici desktop/mobile e il percorso catalogo-scheda-mappa nello stesso job dopo la pubblicazione. Non crea account di test. `Production - Browser smoke test` permette di ripetere il controllo manualmente; attivando `authenticated` verifica anche l'accesso con un account dedicato, già verificato, configurato nei Secrets `SMOKE_TEST_EMAIL` e `SMOKE_TEST_PASSWORD`.
+Il deploy di produzione esegue i test browser pubblici desktop/mobile e il percorso catalogo-scheda-mappa nello stesso job dopo la pubblicazione. Non crea account di test. `Production - Browser smoke test` permette di ripetere il controllo manualmente; attivando `authenticated` verifica anche l'accesso con un account dedicato, già verificato, configurato nei Secrets `SMOKE_TEST_EMAIL` e `SMOKE_TEST_PASSWORD`.
 
 I controlli pubblici non certificano le operazioni amministrative, l'invio email, il ripristino di un backup o la pubblicazione effettiva su Meta. I workflow applicativi usano le stesse Variables e Secrets del privato.
 
-Il deploy e il controllo browser manuale eseguono anche la matrice delle pagine pubbliche nelle cinque lingue e l'audit axe-core, conservando report e screenshot per 7 giorni. Il workflow manuale SEO - Indicizzazione completa Google legge la sitemap live e ispeziona tutte le sue URL tramite Search Console, senza pubblicare; i deploy ordinari mantengono il campione di 20 URL per contenere il consumo della quota API. I risultati riflettono l'ultima scansione effettuata da Google.
+Il deploy e il controllo browser manuale eseguono anche la matrice delle pagine pubbliche nelle cinque lingue e l'audit axe-core, conservando report e screenshot per 2 giorni; i report Search Console restano per 7 giorni. Il workflow manuale SEO - Indicizzazione completa Google legge la sitemap live e ispeziona tutte le sue URL tramite Search Console, senza pubblicare; i deploy ordinari mantengono il campione di 20 URL per contenere il consumo della quota API. I risultati riflettono l'ultima scansione effettuata da Google.

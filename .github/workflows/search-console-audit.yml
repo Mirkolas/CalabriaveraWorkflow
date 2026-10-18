@@ -49,4 +49,4 @@ jobs:
           name: search-console-full-indexing
           path: source/search-console-indexing.json
           if-no-files-found: ignore
-          retention-days: 30
+          retention-days: 7

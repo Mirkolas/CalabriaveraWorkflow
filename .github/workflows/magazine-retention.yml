@@ -1,22 +1,9 @@
-name: Magazine - Pulizia sicura ogni 15 giorni
+name: Magazine - Anteprima manuale conservazione contenuti
 
-# GitHub controlla ogni giorno; Firestore consente la cancellazione una volta ogni 15 giorni.
-# Safety test gate revision 2.
-# Questa manutenzione NON può azzerare i download mensili Firebase Hosting.
+# Nessuna cancellazione automatica dei post: la manutenzione periodica riguarda
+# soltanto log operativi scaduti e vecchie release Hosting.
 on:
-  push:
-    branches: [main]
-    paths:
-      - '.github/workflows/magazine-retention.yml'
-  schedule:
-    - cron: '43 3 * * *'
   workflow_dispatch:
-    inputs:
-      apply:
-        description: 'Elimina i soli contenuti sicuri (false = anteprima)'
-        type: boolean
-        required: false
-        default: false
 permissions:
   contents: read
   id-token: write
@@ -60,21 +47,11 @@ jobs:
         with:
           workload_identity_provider: ${{ vars.FIREBASE_BLOG_WIF_PROVIDER }}
           service_account: ${{ vars.FIREBASE_BLOG_SERVICE_ACCOUNT }}
-      - name: Rimuovi soltanto news RSS scadute e ormai fuori dalle code social
+      - name: Mostra i contenuti scaduti senza eliminare post o code
         working-directory: source
         env:
           FIREBASE_PROJECT_ID: calabriavera-e08d4
-          APPLY_REQUESTED: ${{ github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && inputs.apply) }}
-          SCHEDULED: ${{ github.event_name == 'schedule' }}
         shell: bash
         run: |
           set -euo pipefail
-          if [ "$APPLY_REQUESTED" = 'true' ]; then
-            if [ "$SCHEDULED" = 'true' ]; then
-              node tools/magazine-retention.mjs --apply --scheduled
-            else
-              node tools/magazine-retention.mjs --apply
-            fi
-          else
-            node tools/magazine-retention.mjs --dry-run
-          fi
+          node tools/magazine-retention.mjs --dry-run

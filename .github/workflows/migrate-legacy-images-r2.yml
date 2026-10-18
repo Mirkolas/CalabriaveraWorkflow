@@ -1,0 +1,82 @@
+name: Immagini legacy - Audit e migrazione verificata R2
+
+on:
+  workflow_dispatch:
+    inputs:
+      apply:
+        description: 'Applica solo dopo aver controllato il report di audit; false = nessuna scrittura'
+        type: boolean
+        required: false
+        default: false
+
+permissions:
+  contents: read
+  id-token: write
+
+concurrency:
+  group: migrate-legacy-images-r2
+  cancel-in-progress: false
+
+jobs:
+  migrate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    env:
+      PRIVATE_REPO: ${{ secrets.PRIVATE_REPO }}
+      PRIVATE_REPO_PAT: ${{ secrets.PRIVATE_REPO_PAT || secrets.PERSONAL_ACCESS_TOKEN || secrets.PAT || secrets.GH_PAT || secrets.GITHUB_PAT }}
+      CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+      CLOUDFLARE_ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
+      FIREBASE_PROJECT_ID: calabriavera-e08d4
+      R2_BUCKET: calabriavera-images
+      MIGRATE_APPLY: ${{ inputs.apply }}
+      MIGRATE_LIMIT: '500'
+      MIGRATE_PAGE_SIZE: '25'
+      MIGRATE_SCAN_LIMIT: '1000'
+    steps:
+      - name: Verifica repository e credenziali esistenti
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$PRIVATE_REPO" = 'Mirkolas/calabriavera'
+          test -n "$PRIVATE_REPO_PAT"
+          test -n "$CLOUDFLARE_API_TOKEN"
+          test -n "$CLOUDFLARE_ACCOUNT_ID"
+
+      - uses: actions/checkout@v7
+        with:
+          repository: ${{ env.PRIVATE_REPO }}
+          token: ${{ env.PRIVATE_REPO_PAT }}
+          ref: main
+          path: source
+          persist-credentials: false
+          fetch-depth: 1
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version: '22'
+
+      - name: Installa dipendenze backend e strumenti R2 bloccati dal lockfile
+        working-directory: source
+        run: npm --prefix tools ci --no-audit --no-fund && npm --prefix frontend-react ci --no-audit --no-fund
+
+      - name: Verifica convertitori immagini senza download inutili
+        shell: bash
+        run: |
+          set -euo pipefail
+          if ! command -v ffmpeg >/dev/null || ! command -v ffprobe >/dev/null; then
+            sudo apt-get update
+            sudo apt-get install --no-install-recommends -y ffmpeg
+          fi
+
+      - name: Verifica sintassi migrazione prima di accedere al database
+        working-directory: source
+        run: node --check tools/admin/migrate-business-images-r2.mjs && node --test tests/image-migration.test.mjs
+
+      - uses: google-github-actions/auth@v3
+        with:
+          workload_identity_provider: ${{ vars.FIREBASE_BLOG_WIF_PROVIDER }}
+          service_account: ${{ vars.FIREBASE_BLOG_SERVICE_ACCOUNT }}
+
+      - name: Audit o migrazione limitata senza eliminare dati primari
+        working-directory: source
+        run: node tools/admin/migrate-business-images-r2.mjs

@@ -1,0 +1,35 @@
+name: Internal - Safe cleanup every 20 days
+
+on:
+  workflow_call:
+    outputs:
+      should_run:
+        description: 'true nella data di manutenzione o per un avvio esplicito'
+        value: ${{ jobs.cadence.outputs.should_run }}
+
+permissions:
+  contents: read
+
+jobs:
+  cadence:
+    runs-on: ubuntu-latest
+    timeout-minutes: 2
+    outputs:
+      should_run: ${{ steps.calendar.outputs.should_run }}
+    steps:
+      - name: Controlla il calendario senza leggere Firestore
+        id: calendar
+        shell: bash
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+        run: |
+          set -euo pipefail
+          anchor_day=$(( $(date -u -d '2026-10-18T00:00:00Z' +%s) / 86400 ))
+          today=$(( $(date -u +%s) / 86400 ))
+          elapsed=$((today - anchor_day))
+          due=false
+          if [ "$EVENT_NAME" != 'schedule' ] || { [ "$elapsed" -ge 0 ] && [ "$((elapsed % 20))" -eq 0 ]; }; then
+            due=true
+          fi
+          echo "should_run=$due" >> "$GITHUB_OUTPUT"
+          echo "Manutenzione ogni 20 giorni: due=$due; giorni dall'ancora=$elapsed. Nessuna lettura Firestore."

@@ -1,123 +1,23 @@
-name: Cloudflare Worker - R2 API
-# Source Worker marker: 6a4f9f7b33396042e6d5c4f3b04cac0d973d8172
+name: Cloudflare - Deploy produzione completo
+# Un solo percorso di deploy aggiorna prima Cloudflare e poi il fallback Firebase.
 
 on:
-  push:
-    branches: [main]
-    paths:
-      - '.github/workflows/cloudflare-worker-r2-api.yml'
   workflow_dispatch:
-  repository_dispatch:
-    types: [source-deploy]
 
 permissions:
   contents: read
+  actions: write
 
 concurrency:
-  group: cloudflare-worker-r2-api
-  cancel-in-progress: true
-
-env:
-  PRIVATE_REPO: ${{ secrets.PRIVATE_REPO }}
-  PRIVATE_REPO_PAT: ${{ secrets.PRIVATE_REPO_PAT || secrets.PERSONAL_ACCESS_TOKEN || secrets.PAT || secrets.GH_PAT || secrets.GITHUB_PAT }}
-  CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
-  CLOUDFLARE_ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
+  group: cloudflare-deploy-request
+  cancel-in-progress: false
 
 jobs:
-  deploy-worker:
+  request-production-deploy:
     runs-on: ubuntu-latest
-    timeout-minutes: 25
+    timeout-minutes: 2
     steps:
-      - name: Verifica configurazione
-        shell: bash
-        run: |
-          set -euo pipefail
-          test -n "$PRIVATE_REPO"
-          test -n "$PRIVATE_REPO_PAT"
-          test -n "$CLOUDFLARE_API_TOKEN"
-          test -n "$CLOUDFLARE_ACCOUNT_ID"
-
-      - name: Checkout main privato
-        uses: actions/checkout@v7
-        with:
-          repository: ${{ secrets.PRIVATE_REPO }}
-          token: ${{ env.PRIVATE_REPO_PAT }}
-          ref: main
-          path: source
-          persist-credentials: false
-          fetch-depth: 1
-
-      - uses: actions/setup-node@v7
-        with:
-          node-version: '22'
-          cache: npm
-          cache-dependency-path: source/frontend-react/package-lock.json
-
-      - name: Controllo architettura Worker
-        working-directory: source
-        shell: bash
-        run: |
-          set -euo pipefail
-          if grep -Eqi 'd1_databases|binding[^[:alnum:]]*:[^[:alnum:]]*"?DB"?' frontend-react/wrangler.jsonc; then
-            echo '::error::D1 non deve essere collegato al Worker.'
-            exit 1
-          fi
-          grep -Fq 'IMAGES' frontend-react/wrangler.jsonc
-          grep -Fq 'IMAGES' frontend-react/worker.ts
-
-      - name: Test instradamento R2 e helper Firebase Authentication
-        working-directory: source
-        run: node --test tests/r2-image-hosting.test.mjs
-
-      - name: Build assets Worker
-        working-directory: source/frontend-react
+      - name: Avvia build live, test, upload R2 e deploy coerente
         env:
-          CV_PRERENDER_OFFLINE: '1'
-        shell: bash
-        run: |
-          set -euo pipefail
-          npm ci --no-audit --no-fund
-          npm run build
-          test "$(tr -d '\r\n' < dist/build-version.txt)" = "$(git rev-parse HEAD)"
-
-      - name: Sincronizza immagini statiche React su Cloudflare R2
-        working-directory: source/frontend-react
-        shell: bash
-        run: |
-          set -euo pipefail
-          node scripts/sync-static-images-r2.mjs
-
-      - name: Deploy Worker supporto R2
-        working-directory: source/frontend-react
-        run: npx wrangler deploy
-
-      - name: Verifica workers.dev
-        working-directory: source
-        shell: bash
-        run: |
-          set -euo pipefail
-          expected="$(git rev-parse HEAD)"
-          live=""
-          for attempt in $(seq 1 20); do
-            live="$(curl --fail --silent --show-error --location -H 'Cache-Control: no-cache' "https://calabriavera.sonotacamirko.workers.dev/build-version.txt?run=$GITHUB_RUN_ID&attempt=$attempt" | tr -d '\r\n' || true)"
-            if [ "$live" = "$expected" ]; then
-              echo "Worker R2/API aggiornato al tentativo $attempt: $live"
-              exit 0
-            fi
-            echo "Attendo propagazione Worker ($attempt/20): live=${live:-non-disponibile}, expected=$expected"
-            sleep 3
-          done
-          echo "::error::Worker non allineato dopo la finestra di propagazione: live=${live:-non-disponibile}, expected=$expected"
-          exit 1
-
-      - name: Verifica immagini sul Worker da Cloudflare R2
-        shell: bash
-        run: |
-          set -euo pipefail
-          origin="https://calabriavera.sonotacamirko.workers.dev"
-          for path in "/assets/Logo.webp" "/assets/images/home/tropea-1600.webp" "/assets/images/blog-default-news.webp"; do
-            headers="$(curl --fail --silent --show-error --head --retry 3 "$origin$path")"
-            echo "$headers" | grep -Eiq '^content-type: image/'
-            echo "$headers" | grep -Eiq '^x-calabriavera-image-source: cloudflare-r2'
-            echo "R2 OK: $path"
-          done
+          GH_TOKEN: ${{ github.token }}
+        run: gh workflow run firebase-deploy.yml --repo "$GITHUB_REPOSITORY" --ref main

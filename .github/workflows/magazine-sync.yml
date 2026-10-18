@@ -237,30 +237,27 @@ jobs:
           SOCIAL_INSTAGRAM_ENABLED: ${{ vars.SOCIAL_INSTAGRAM_ENABLED }}
           PROMO_STORY_TARGET: both
           PROMO_STORY_DRY_RUN: 'false'
+          PROMO_STORY_IMAGE_URL: https://img.calabriavera.com/static/assets/Story-Promo_instagram-facebook.png
+          PROMO_FACEBOOK_STORY_IMAGE_URL: https://img.calabriavera.com/static/assets/Story-Promo_instagram-facebook.png
+          PROMO_INSTAGRAM_STORY_IMAGE_URL: https://img.calabriavera.com/static/assets/Story-Promo_instagram-safe.jpg
           AUTOMATION_INTERVAL_MINUTES: '1440'
           AUTOMATION_LOCK_MINUTES: '30'
           AUTOMATION_FORCE: ${{ github.event_name == 'workflow_dispatch' && inputs.mode == 'promo-story-publish' }}
         shell: bash
         run: |
           set -euo pipefail
-          private_version="$(git rev-parse HEAD | sha256sum | cut -c1-16)"
-          export PROMO_STORY_IMAGE_URL="${SITE_URL}/assets/Story-Promo_instagram-facebook.png?v=${private_version}"
-          export PROMO_FACEBOOK_STORY_IMAGE_URL="${SITE_URL}/assets/Story-Promo_instagram-facebook.png?v=${private_version}"
-          export PROMO_INSTAGRAM_STORY_IMAGE_URL="$PROMO_STORY_IMAGE_URL"
           node tools/automation-cadence-runner.mjs promo-story -- bash -lc '
             set -euo pipefail
-            for base in "$PROMO_STORY_IMAGE_URL"; do
+            for url in "$PROMO_FACEBOOK_STORY_IMAGE_URL" "$PROMO_INSTAGRAM_STORY_IMAGE_URL"; do
               ok=0
-              for attempt in $(seq 1 40); do
-                url="${base}&check=${attempt}"
-                status=$(curl --connect-timeout 10 --max-time 30 -L -sS -o /tmp/story.png -w "%{http_code}" "$url" || true)
-                type=$(file -b --mime-type /tmp/story.png 2>/dev/null || true)
-                size=$(wc -c < /tmp/story.png 2>/dev/null || echo 0)
-                if [ "$status" = "200" ] && [ "$type" = "image/png" ] && [ "$size" -gt 25000 ]; then ok=1; break; fi
-                sleep 10
+              for attempt in $(seq 1 3); do
+                headers=$(curl --connect-timeout 10 --max-time 20 --head -sS "$url" || true)
+                status=$(printf "%s\n" "$headers" | awk "toupper(\$1) ~ /^HTTP\\// {code=\$2} END {print code}")
+                if [ "$status" = "200" ] && printf "%s\n" "$headers" | grep -Eqi "^content-type:[[:space:]]*image/(png|jpeg)"; then ok=1; break; fi
+                if [ "$attempt" -lt 3 ]; then sleep 3; fi
               done
               if [ "$ok" != "1" ]; then
-                echo "::error::Asset Story non disponibile: HTTP ${status}, tipo ${type}, dimensione ${size}."
+                echo "::error::Asset Story R2 non disponibile: HTTP ${status}."
                 exit 1
               fi
             done

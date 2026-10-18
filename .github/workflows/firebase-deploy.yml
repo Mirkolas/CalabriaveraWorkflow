@@ -1,4 +1,4 @@
-name: Firebase - Deploy CalabriaVera
+name: Produzione - Cloudflare primario e fallback Firebase
 # Source deploy marker: 774935644e46ec5141b14ea8659dbd2405d46cd2
 
 on:
@@ -10,6 +10,11 @@ on:
   schedule:
     - cron: '17 2 * * *'
   workflow_dispatch:
+    inputs:
+      maintenance_only:
+        description: 'Esegue solo la manutenzione amministrativa senza pubblicare una release'
+        type: boolean
+        default: false
   repository_dispatch:
     types: [source-deploy]
 
@@ -30,17 +35,65 @@ jobs:
       cadence_minutes: 1440
       anchor_offset_minutes: 137
 
-  deploy:
+  release_check:
     needs: retry_gate
-    if: needs.retry_gate.outputs.should_run == 'true' && vars.FIREBASE_AUTO_DEPLOY_ENABLED == 'true' && github.ref == 'refs/heads/main' && github.event_name != 'schedule'
+    if: needs.retry_gate.outputs.should_run == 'true' && (vars.FIREBASE_AUTO_DEPLOY_ENABLED == 'true' || github.event_name == 'workflow_dispatch') && github.ref == 'refs/heads/main' && github.event_name != 'schedule' && inputs.maintenance_only != true
+    runs-on: ubuntu-latest
+    timeout-minutes: 4
+    outputs:
+      should_deploy: ${{ steps.release.outputs.should_deploy }}
+    env:
+      PRIVATE_REPO: ${{ secrets.PRIVATE_REPO }}
+      GH_TOKEN: ${{ secrets.PRIVATE_REPO_PAT || secrets.PERSONAL_ACCESS_TOKEN || secrets.PAT || secrets.GH_PAT || secrets.GITHUB_PAT }}
+    steps:
+      - uses: actions/setup-node@v7
+        with:
+          node-version: '22'
+      - name: Evita una seconda release di sorgente e contenuti già pubblicati
+        id: release
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -n "$PRIVATE_REPO"
+          test -n "$GH_TOKEN"
+          source_sha="$(gh api "repos/${PRIVATE_REPO}/commits/main" --jq .sha)"
+          echo "::add-mask::$source_sha"
+          # Gli avvii manuali e gli aggiornamenti del runner restano release esplicite.
+          # Un watcher duplicato può invece saltare solo se coincidono SHA e dati SEO.
+          should_deploy=true
+          if [ "$GITHUB_EVENT_NAME" = 'repository_dispatch' ]; then
+            live="$(curl --fail --silent --show-error --compressed --max-time 20 https://calabriavera.com/build-version.txt | tr -d '\r\n' || true)"
+            if [ "$live" = "$source_sha" ]; then
+              mkdir -p /tmp/cv-release-check/tools/lib /tmp/cv-release-check/assets/js
+              printf '%s\n' '{"type":"module"}' > /tmp/cv-release-check/package.json
+              gh api "repos/${PRIVATE_REPO}/contents/tools/check-seo-sync.mjs?ref=${source_sha}" --jq .content | base64 -d > /tmp/cv-release-check/tools/check-seo-sync.mjs
+              gh api "repos/${PRIVATE_REPO}/contents/tools/lib/seo-snapshot.mjs?ref=${source_sha}" --jq .content | base64 -d > /tmp/cv-release-check/tools/lib/seo-snapshot.mjs
+              gh api "repos/${PRIVATE_REPO}/contents/assets/js/magazine-rights.js?ref=${source_sha}" --jq .content | base64 -d > /tmp/cv-release-check/assets/js/magazine-rights.js
+              if decision="$(node --input-type=module -e 'import { inspectSeo } from "/tmp/cv-release-check/tools/check-seo-sync.mjs"; const result = await inspectSeo(); console.log(result.needsSync ? "deploy" : "unchanged");')"; then
+                if [ "$decision" = 'unchanged' ]; then should_deploy=false; fi
+              else
+                echo '::warning::Confronto contenuti non disponibile: proseguo con la release richiesta.'
+              fi
+            fi
+          fi
+          echo "should_deploy=$should_deploy" >> "$GITHUB_OUTPUT"
+          if [ "$should_deploy" = 'false' ]; then
+            echo 'Sorgente e contenuti già pubblicati: build, test browser e nuova release evitati.'
+          fi
+
+  deploy:
+    needs: release_check
+    if: needs.release_check.outputs.should_deploy == 'true'
     concurrency:
       group: firebase-production
       cancel-in-progress: false
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 45
     env:
       PRIVATE_REPO: ${{ secrets.PRIVATE_REPO }}
       PRIVATE_REPO_PAT: ${{ secrets.PRIVATE_REPO_PAT || secrets.PERSONAL_ACCESS_TOKEN || secrets.PAT || secrets.GH_PAT || secrets.GITHUB_PAT }}
+      CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+      CLOUDFLARE_ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
 
     steps:
       - name: Verifica accesso sorgente privato
@@ -49,6 +102,8 @@ jobs:
           set -euo pipefail
           test -n "$PRIVATE_REPO" || { echo "::error::PRIVATE_REPO mancante"; exit 1; }
           test -n "$PRIVATE_REPO_PAT" || { echo "::error::PAT per repository privato mancante"; exit 1; }
+          test -n "$CLOUDFLARE_API_TOKEN" || { echo "::error::CLOUDFLARE_API_TOKEN mancante"; exit 1; }
+          test -n "$CLOUDFLARE_ACCOUNT_ID" || { echo "::error::CLOUDFLARE_ACCOUNT_ID mancante"; exit 1; }
 
       - name: Scarica sorgente privato
         uses: actions/checkout@v7
@@ -69,8 +124,10 @@ jobs:
           set -euo pipefail
           npm ci --no-audit --no-fund
           npm test
+          node --test tests/r2-static-images.test.mjs
+          node --test tests/r2-image-hosting.test.mjs
 
-      - name: Build React produzione con SEO live
+      - name: Build React per Cloudflare e fallback Firebase con SEO live
         working-directory: source/frontend-react
         env:
           CV_PRERENDER_OFFLINE: '0'
@@ -95,6 +152,40 @@ jobs:
           node tests/admin-readonly-e2e.cjs
           SMOKE_ARTIFACT_DIR=/tmp/cv-notifications-e2e node tests/notifications-readonly-e2e.cjs
 
+      - name: Carica e verifica tutte le immagini statiche nel bucket R2 esistente
+        working-directory: source
+        run: node frontend-react/scripts/upload-r2-static.mjs --apply
+
+      - name: Pubblica Cloudflare Worker come hosting primario
+        working-directory: source/frontend-react
+        run: npx wrangler deploy
+
+      - name: Verifica la release primaria su workers.dev prima del fallback
+        working-directory: source
+        shell: bash
+        run: |
+          set -euo pipefail
+          expected="$(git rev-parse HEAD)"
+          live=""
+          for attempt in $(seq 1 20); do
+            live="$(curl --fail --silent --show-error --compressed --max-time 20 -H 'Cache-Control: no-cache' "https://calabriavera.sonotacamirko.workers.dev/build-version.txt?run=${GITHUB_RUN_ID}&attempt=${attempt}" | tr -d '\r\n' || true)"
+            if [ "$live" = "$expected" ]; then break; fi
+            sleep 3
+          done
+          test "$live" = "$expected" || { echo '::error::Hosting Cloudflare non allineato: fallback non aggiornato.'; exit 1; }
+
+      - name: Verifica immagini sul Worker da Cloudflare R2
+        shell: bash
+        run: |
+          set -euo pipefail
+          origin="https://calabriavera.sonotacamirko.workers.dev"
+          for path in /assets/Logo.webp /assets/images/home/tropea-1600.webp /assets/images/blog-default-news.webp; do
+            headers="$(curl --fail --silent --show-error --head --retry 3 "$origin$path")"
+            printf '%s\n' "$headers" | grep -Eiq '^content-type:[[:space:]]*image/'
+            printf '%s\n' "$headers" | grep -Eiq '^x-calabriavera-image-source:[[:space:]]*cloudflare-r2'
+            echo "R2 OK: $path"
+          done
+
       - name: Conserva verifica notifiche locale
         if: always()
         uses: actions/upload-artifact@v4
@@ -102,7 +193,7 @@ jobs:
           name: notifications-browser-fixtures
           path: /tmp/cv-notifications-e2e
           if-no-files-found: ignore
-          retention-days: 7
+          retention-days: 2
 
       - name: Conserva verifica admin locale
         if: always()
@@ -111,7 +202,11 @@ jobs:
           name: admin-browser-fixtures
           path: /tmp/cv-admin-e2e
           if-no-files-found: ignore
-          retention-days: 7
+          retention-days: 2
+
+      - name: Installa strumenti Hosting e Search Console
+        working-directory: source
+        run: npm --prefix tools ci --no-audit --no-fund
 
       - uses: google-github-actions/auth@v3
         with:
@@ -122,7 +217,7 @@ jobs:
         working-directory: source
         run: npx --yes firebase-tools@15.22.1 deploy --project calabriavera-e08d4 --only firestore:rules,firestore:indexes
 
-      - name: Deploy React su Firebase Hosting
+      - name: Aggiorna il fallback React su Firebase Hosting
         working-directory: source/frontend-react
         run: npx --yes firebase-tools@15.22.1 deploy --project calabriavera-e08d4 --config firebase.react.json --only hosting
 
@@ -130,7 +225,11 @@ jobs:
         working-directory: source
         run: npx --yes firebase-tools@15.22.1 deploy --project calabriavera-e08d4 --config firebase.legacy-redirect.json --only hosting
 
-      - name: Verifica build pubblicata su calabriavera.com
+      - name: Mantieni due release Hosting precedenti per sito per il rollback
+        working-directory: source
+        run: node tools/hosting-release-retention.mjs --apply
+
+      - name: Verifica hosting primario Cloudflare sul dominio calabriavera.com
         working-directory: source
         shell: bash
         run: |
@@ -143,16 +242,37 @@ jobs:
               echo "Dominio personalizzato allineato al tentativo ${attempt}."
               break
             fi
-            echo "Attendo propagazione Firebase Hosting sul dominio personalizzato (${attempt}/20): live=${live:-non-disponibile}, expected=${expected}"
+            echo "Attendo propagazione Cloudflare sul dominio personalizzato (${attempt}/20): live=${live:-non-disponibile}, expected=${expected}"
             sleep 6
           done
           test "$live" = "$expected"
+          curl --fail --silent --show-error --head "https://calabriavera.com/build-version.txt?hosting=${GITHUB_RUN_ID}" -o live-primary-headers.txt
+          grep -Eqi '^X-CalabriaVera-Hosting:[[:space:]]*cloudflare([[:space:]]|$)' live-primary-headers.txt || { echo '::error::Il dominio primario non conferma hosting Cloudflare'; exit 1; }
           curl --fail --silent --show-error --location -H 'Cache-Control: no-cache' "https://calabriavera.com/?run=$GITHUB_RUN_ID" -o live-home.html
           test -s live-home.html
           grep -Eqi '<html|<!doctype' live-home.html
-          curl --fail --silent --show-error --location -o /dev/null "https://calabriavera.com/__/auth/handler?health=$GITHUB_RUN_ID"
-          curl --fail --silent --show-error --location -o /dev/null "https://calabriavera.com/__/firebase/init.json?health=$GITHUB_RUN_ID"
-          echo "React produzione verificato: $live"
+          for path in /__/auth/handler /__/firebase/init.json; do
+            status="$(curl --silent --show-error --location --connect-timeout 10 --max-time 30 -o /dev/null -w '%{http_code}' "https://calabriavera.com${path}")"
+            if [ "$status" = '509' ]; then
+              echo "::warning::Endpoint Firebase ${path} non verificabile: quota Hosting esaurita; hosting statico Cloudflare verificato."
+            else
+              test "$status" = '200' || { echo "::error::Endpoint auth non disponibile: ${path} HTTP $status"; exit 1; }
+            fi
+          done
+          echo "React su Cloudflare produzione verificato: $live"
+
+      - name: Verifica il fallback Firebase senza consumare la quota del dominio primario
+        working-directory: source
+        shell: bash
+        run: |
+          set -euo pipefail
+          status="$(curl --silent --show-error --compressed --connect-timeout 10 --max-time 30 -w '%{http_code}' https://calabriavera.web.app/build-version.txt -o /tmp/cv-firebase-fallback.txt)"
+          if [ "$status" = '509' ]; then
+            echo '::warning::Fallback Firebase aggiornato ma verifica HTTP rinviata: quota mensile Hosting esaurita. Cloudflare primario già verificato.'
+            exit 0
+          fi
+          test "$status" = '200' || { echo "::error::Fallback Firebase non disponibile: HTTP $status"; exit 1; }
+          test "$(tr -d '\r\n' < /tmp/cv-firebase-fallback.txt)" = "$(git rev-parse HEAD)"
 
       - name: Verifica redirect permanente del dominio Firebase legacy
         shell: bash
@@ -166,6 +286,10 @@ jobs:
               headers="$(curl --silent --show-error --head -H 'Cache-Control: no-cache' "https://calabriavera-e08d4.web.app${path}")"
               status="$(printf '%s\n' "$headers" | awk 'toupper($1) ~ /^HTTP\// {code=$2} END {print code}')"
               location="$(printf '%s\n' "$headers" | awk 'BEGIN{IGNORECASE=1} /^location:/ {sub(/^[^:]+:[[:space:]]*/,""); sub(/\r$/,""); print; exit}')"
+              if [ "$status" = '509' ]; then
+                echo '::warning::Verifica redirect legacy rinviata: quota mensile Firebase Hosting esaurita; Cloudflare primario resta verificato.'
+                exit 0
+              fi
               if [ "$status" = "301" ] && [ "$location" = "$expected" ]; then
                 break
               fi
@@ -182,10 +306,6 @@ jobs:
         env:
           SITE_URL: https://calabriavera.com
         run: node ../tools/verify-seo-deploy.mjs
-
-      - name: Installa strumenti Search Console
-        working-directory: source
-        run: npm --prefix tools ci --no-audit --no-fund
 
       - name: Invia la sitemap verificata a Google Search Console
         working-directory: source
@@ -215,7 +335,7 @@ jobs:
           name: public-browser-e2e
           path: /tmp/cv-public-e2e
           if-no-files-found: ignore
-          retention-days: 7
+          retention-days: 2
 
       - name: Leggi lo stato sitemap e indicizzazione da Google
         working-directory: source
@@ -230,7 +350,7 @@ jobs:
           name: search-console-indexing
           path: source/search-console-indexing.json
           if-no-files-found: ignore
-          retention-days: 30
+          retention-days: 7
 
   admin-maintenance:
     needs: retry_gate

@@ -93,4 +93,4 @@ jobs:
           name: public-browser-e2e
           path: /tmp/cv-public-e2e
           if-no-files-found: ignore
-          retention-days: 7
+          retention-days: 2

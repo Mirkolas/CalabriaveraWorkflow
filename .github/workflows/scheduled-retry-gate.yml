@@ -69,12 +69,12 @@ jobs:
             exit 1
           fi
 
-          # Tetti per i workflow Firestore. Il controllo SEO usa aggregazioni e delta
-          # recenti, quindi può girare ogni 5 minuti senza scansioni complete ripetute.
+          # Tetti per i workflow Firestore: il controllo SEO orario riduce le letture
+          # e i download del manifest senza cambiare le campagne Magazine/social.
           quota_floor=0
           case "$WORKFLOW_FILE" in
             magazine-sync.yml) quota_floor=360 ;;      # max 4 cicli/giorno
-            seo-sync.yml) quota_floor=5 ;;             # delta SEO quasi real-time
+            seo-sync.yml) quota_floor=60 ;;            # delta SEO max 1/ora
             firebase-deploy.yml) quota_floor=1440 ;;   # manutenzione admin schedulata max 1/giorno
             daily-backup.yml) quota_floor=10080 ;;     # backup completo max 1/settimana
           esac

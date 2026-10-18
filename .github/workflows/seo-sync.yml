@@ -2,7 +2,7 @@ name: SEO - Sincronizza attività e sitemap
 
 on:
   schedule:
-    - cron: '*/5 * * * *'
+    - cron: '32 * * * *'
   workflow_dispatch:
   repository_dispatch:
     types: [source-seo-push]
@@ -20,8 +20,8 @@ jobs:
     uses: ./.github/workflows/scheduled-retry-gate.yml
     with:
       workflow_file: seo-sync.yml
-      cadence_minutes: 5
-      anchor_offset_minutes: 0
+      cadence_minutes: 60
+      anchor_offset_minutes: 32
 
   sync:
     needs: retry_gate
@@ -70,6 +70,11 @@ jobs:
           set -e
           printf '%s\n' "$output"
           if [ "$code" -eq 0 ]; then
+            exit 0
+          fi
+          if printf '%s' "$output" | grep -Eq 'HTTP 509([^0-9]|$)'; then
+            echo "::warning::Verifica SEO rinviata: banda mensile Firebase Hosting esaurita (HTTP 509). Nessun deploy automatico o lettura aggiuntiva per tentare di azzerare la quota."
+            echo "needs_sync=false" >> "$GITHUB_OUTPUT"
             exit 0
           fi
           if printf '%s' "$output" | grep -Eqi 'RESOURCE_EXHAUSTED|Quota exceeded|HTTP 429|FIRESTORE_429|(^|[^0-9])429([^0-9]|$)'; then
