@@ -26,7 +26,7 @@ env:
 jobs:
   deploy-worker:
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 25
     steps:
       - name: Verifica configurazione
         shell: bash
@@ -76,6 +76,13 @@ jobs:
           npm run build
           test "$(tr -d '\r\n' < dist/build-version.txt)" = "$(git rev-parse HEAD)"
 
+      - name: Sincronizza immagini statiche React su Cloudflare R2
+        working-directory: source/frontend-react
+        shell: bash
+        run: |
+          set -euo pipefail
+          node scripts/sync-static-images-r2.mjs
+
       - name: Deploy Worker supporto R2
         working-directory: source/frontend-react
         run: npx wrangler deploy
@@ -98,3 +105,15 @@ jobs:
           done
           echo "::error::Worker non allineato dopo la finestra di propagazione: live=${live:-non-disponibile}, expected=$expected"
           exit 1
+
+      - name: Verifica immagini sul Worker da Cloudflare R2
+        shell: bash
+        run: |
+          set -euo pipefail
+          origin="https://calabriavera.sonotacamirko.workers.dev"
+          for path in "/assets/Logo.webp" "/assets/images/home/tropea-1600.webp" "/assets/images/blog-default-news.webp"; do
+            headers="$(curl --fail --silent --show-error --head --retry 3 "$origin$path")"
+            echo "$headers" | grep -Eiq '^content-type: image/'
+            echo "$headers" | grep -Eiq '^x-calabriavera-image-source: cloudflare-r2'
+            echo "R2 OK: $path"
+          done
