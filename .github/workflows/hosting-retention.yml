@@ -1,4 +1,5 @@
 name: Firebase Hosting - Rotazione release per Spark
+# R2 cutover storage housekeeping: retain live version + two previous releases.
 
 on:
   push:
