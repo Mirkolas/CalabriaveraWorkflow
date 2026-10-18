@@ -1,5 +1,5 @@
 name: Produzione - Cloudflare primario e fallback Firebase
-# Source deploy marker: eb37aff8f93116a6ace572fdea536b9d2d8f7db9
+# Source deploy marker: 3470830b0817494aca70d2c4c58960295ee80f84
 
 on:
   push:
