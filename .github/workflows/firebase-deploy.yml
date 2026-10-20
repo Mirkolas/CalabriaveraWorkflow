@@ -1,5 +1,5 @@
 name: Produzione - Cloudflare primario e fallback Firebase
-# Source deploy marker: 40de90db10ebcf1d70241d59949214a08241b7b9 - disable legacy Analytics despite stale consent; preserve automatic OSM maps
+# Source deploy marker: b7c44bf7e5b33d095c9187a5d82350e4fc25630d - no-analytics, automatic OSM maps, suspend-safe R2/AI edge guards
 
 on:
   push:
