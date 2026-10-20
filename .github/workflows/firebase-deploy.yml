@@ -15,6 +15,10 @@ on:
         description: 'Esegue solo la manutenzione amministrativa senza pubblicare una release'
         type: boolean
         default: false
+      refresh_legacy_redirect:
+        description: 'Ripubblica il redirect del vecchio dominio Firebase soltanto quando cambia'
+        type: boolean
+        default: false
   repository_dispatch:
     types: [source-deploy]
 
@@ -260,7 +264,18 @@ jobs:
           retention-days: 7
           include-hidden-files: true
 
+      # The legacy domain already has a permanent redirect. Deploying it on
+      # every React release wastes Hosting quota and repeatedly invokes Firebase
+      # authentication; the following step verifies the live 301 on every run.
+      - name: Rinnova credenziali solo per ripubblicare il redirect legacy
+        if: github.event_name == 'workflow_dispatch' && inputs.refresh_legacy_redirect == true
+        uses: google-github-actions/auth@7c6bc770dae815cd3e89ee6cdf493a5fab2cc093 # v3
+        with:
+          workload_identity_provider: ${{ vars.FIREBASE_WIF_PROVIDER }}
+          service_account: ${{ vars.FIREBASE_DEPLOY_SERVICE_ACCOUNT }}
+
       - name: Disattiva il vecchio dominio Firebase con redirect 301
+        if: github.event_name == 'workflow_dispatch' && inputs.refresh_legacy_redirect == true
         working-directory: source
         run: npx --yes firebase-tools@15.22.1 deploy --project calabriavera-e08d4 --config firebase.legacy-redirect.json --only hosting
 
