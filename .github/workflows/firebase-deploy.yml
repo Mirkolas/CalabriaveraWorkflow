@@ -1,5 +1,5 @@
 name: Produzione - Cloudflare primario e fallback Firebase
-# Source deploy marker: 96df23f7b24939e2edf9155f481175737fb4c171 - security hardening verified
+# Source deploy marker: 9c63409b1c849b952f9da273893e6b1edd5f6534 - Firebase managed endpoint backup fix verified in CI
 
 on:
   push:
