@@ -1,5 +1,5 @@
 name: Verifica codice e backup
-# QA verification marker: d487cbe1f888fe84e2640b3277018f8377501209 - recovery after GitHub Actions startup_failure
+# QA verification marker: 3a0a8a6e9fc5b18619040dd03f116f18f695793a - alias-canonical regression
 
 on:
   push:
