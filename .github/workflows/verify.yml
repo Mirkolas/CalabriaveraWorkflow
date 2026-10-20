@@ -1,5 +1,5 @@
 name: Verifica codice e backup
-# QA verification marker: a358b71a70648379770c1853f97ded0a9da1949d - SSR hydration race fix
+# QA verification marker: 96df23f7b24939e2edf9155f481175737fb4c171 - security hardening and quota controls
 
 on:
   push:
