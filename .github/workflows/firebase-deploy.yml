@@ -1,5 +1,5 @@
 name: Produzione - Cloudflare primario e fallback Firebase
-# Source deploy marker: 464c1e6feef80f9d80b7cb917ad97a39c9de2eb7 - desktop map business list with marker synchronization; notification XSS hardening; mobile unchanged
+# Source deploy marker: a36612c45e91416bf20d23afbf95beb1190dcfe0 - desktop list + notification XSS fix + SEO transient network retry, verify all checks
 
 on:
   push:
