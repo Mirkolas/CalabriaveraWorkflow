@@ -1,5 +1,5 @@
 name: Produzione - Cloudflare primario e fallback Firebase
-# Source deploy marker: 3a0a8a6e9fc5b18619040dd03f116f18f695793a - alias-canonical production fix
+# Source deploy marker: a358b71a70648379770c1853f97ded0a9da1949d - SSR hydration race fix
 
 on:
   push:
