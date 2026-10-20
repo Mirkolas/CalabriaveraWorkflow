@@ -1,5 +1,5 @@
 name: Produzione - Cloudflare primario e fallback Firebase
-# Source deploy marker: 9c63409b1c849b952f9da273893e6b1edd5f6534 - Firebase managed endpoint backup fix verified in CI
+# Source deploy marker: 3a9badbd2a19d06aca60afa1fa1b848fb4cda8ad - always-on OSM business and tourism maps; Google external only
 
 on:
   push:
