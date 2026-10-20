@@ -1,5 +1,5 @@
 name: Produzione - Cloudflare primario e fallback Firebase
-# Source deploy marker: 4e61c2d832038bd325b9d964cc6bd8ba09e47ef1 - WCAG AA map subtitle contrast; preserve always-visible OSM map pending Google Maps API billing/key and privacy setup
+# Source deploy marker: 6b780e6fa27ea661fe687f239f3fb9f463d89c66 - OSM explorer, keyless Google Maps detail iframes, XSS fix and production console cleanup
 
 on:
   push:
