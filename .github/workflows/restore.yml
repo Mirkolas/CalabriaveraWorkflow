@@ -39,7 +39,9 @@ permissions:
   id-token: write
 
 concurrency:
-  group: firebase-production
+  # Read-only integrity checks and emulator drills do not occupy the production
+  # deploy/restore lock. Only a potential live restore uses firebase-production.
+  group: ${{ (inputs.offline_verify == true || inputs.emulator_drill == true) && 'firebase-restore-readonly' || 'firebase-production' }}
   cancel-in-progress: false
 
 jobs:
