@@ -1,4 +1,6 @@
 name: Firebase - Backup cifrato incrementale
+# Explicitly distinguish read-only diagnostics from a successful encrypted snapshot.
+run-name: ${{ github.event_name == 'workflow_dispatch' && inputs.hosting_diagnostics_only == true && 'Diagnostica Hosting (nessun backup creato)' || 'Backup cifrato incrementale' }}
 
 on:
   schedule:
