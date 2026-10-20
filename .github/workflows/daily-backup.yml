@@ -60,6 +60,11 @@ jobs:
           service_account: ${{ vars.FIREBASE_BACKUP_SERVICE_ACCOUNT }}
       - name: Leggi solo metadati dei file generati Hosting
         working-directory: source
+        env:
+          GITHUB_TOKEN: ${{ secrets.PRIVATE_REPO_PAT || secrets.PERSONAL_ACCESS_TOKEN || secrets.PAT || secrets.GH_PAT || secrets.GITHUB_PAT }}
+          PRIVATE_REPO: ${{ secrets.PRIVATE_REPO }}
+          CALABRIAVERA_BACKUP_ENCRYPTION_KEY: ${{ secrets.CALABRIAVERA_BACKUP_ENCRYPTION_KEY }}
+          CV_BACKUP_DIAGNOSE_ARCHIVE: 'true'
         run: node tools/backup/diagnose-hosting.mjs
 
   backup:
