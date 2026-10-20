@@ -1,5 +1,5 @@
 name: Produzione - Cloudflare primario e fallback Firebase
-# Source deploy marker: b7c44bf7e5b33d095c9187a5d82350e4fc25630d - no-analytics, automatic OSM maps, suspend-safe R2/AI edge guards
+# Source deploy marker: 4e61c2d832038bd325b9d964cc6bd8ba09e47ef1 - WCAG AA map subtitle contrast; preserve always-visible OSM map pending Google Maps API billing/key and privacy setup
 
 on:
   push:
