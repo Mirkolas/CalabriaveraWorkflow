@@ -5,12 +5,27 @@ const path = require('node:path');
 const { pathToFileURL } = require('node:url');
 const { spawnSync } = require('node:child_process');
 const { test } = require('node:test');
+const vm = require('node:vm');
 
 const workflow = name => fs.readFileSync(path.join(__dirname, '../.github/workflows', name), 'utf8');
 const bash = process.platform === 'win32'
   ? path.join(process.env.ProgramFiles || 'C:/Program Files', 'Git/bin/bash.exe')
   : '/bin/bash';
 const portable = value => value.replaceAll('\\', '/');
+
+test('branded email verification cannot send QA email or read accounts without explicit manual opt-in', () => {
+  const text=workflow('auth-domain-config.yml');
+  assert.match(text,/send_test_reset:[\s\S]*?type: boolean\r?\n\s+default: false/);
+  const privileged=text.split(/\r?\n      - /).filter(block=>/auth\.passwordReset|google-github-actions\/auth@|accounts:lookup|documents:runQuery/.test(block));
+  assert.equal(privileged.length,4);
+  for(const block of privileged){
+    const condition=block.match(/^\s*if: (.+)$/m)?.[1];
+    assert.ok(condition,'Every email/account operation requires an explicit condition');
+    for(const [event,send,allowed]of [['push',false,false],['push',true,false],['workflow_dispatch',false,false],['workflow_dispatch',true,true]]){
+      assert.equal(vm.runInNewContext(condition,{github:{event_name:event},inputs:{send_test_reset:send}}),allowed);
+    }
+  }
+});
 
 function runBlock(text, marker) {
   const start = text.indexOf(marker);
@@ -272,7 +287,7 @@ test('Safe cleanup uses an exact 20-day UTC calendar without a database read', (
 
 test('Production deploy orders tests, verified R2 uploads, Cloudflare primary and Firebase fallback', () => {
   const text = workflow('firebase-deploy.yml');
-  const markers = ['npm test', "CV_PRERENDER_OFFLINE: '0'", 'node tests/admin-readonly-e2e.cjs',
+  const markers = ['npm test', "CV_PRERENDER_OFFLINE: '0'", 'node tests/admin-readonly-e2e.cjs', 'npm run test:e2e:map',
     'node frontend-react/scripts/upload-r2-static.mjs --apply', 'run: npx wrangler deploy',
     '- name: Verifica la release primaria su workers.dev', '- name: Aggiorna il fallback React su Firebase Hosting'];
   const positions = markers.map(marker => text.indexOf(marker));
@@ -282,6 +297,14 @@ test('Production deploy orders tests, verified R2 uploads, Cloudflare primary an
   const wrapper = workflow('cloudflare-worker-r2-api.yml');
   assert.doesNotMatch(wrapper, /repository_dispatch:|push:|CV_PRERENDER_OFFLINE/);
   assert.match(wrapper, /gh workflow run firebase-deploy\.yml/);
+});
+
+test('release, recovery and auth workflows pin external Actions to immutable commits', () => {
+  for (const file of ['daily-backup.yml','firebase-deploy.yml','restore.yml','apps-script-deploy.yml','auth-domain-config.yml']) {
+    const refs=[...workflow(file).matchAll(/uses:\s*([^\s#]+)/g)].map(match=>match[1]).filter(ref=>!ref.startsWith('./'));
+    assert.ok(refs.length>0,file);
+    for(const ref of refs)assert.match(ref,/^[\w-]+\/[\w-]+@[a-f0-9]{40}$/,`${file}: ${ref}`);
+  }
 });
 
 test('Firebase fallback HTTP509 does not fail Cloudflare production; HTTP500 still fails', () => {

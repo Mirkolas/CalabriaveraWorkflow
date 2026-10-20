@@ -15,6 +15,14 @@ on:
         description: 'Per baseline-v1 scrivere: ACTIVATE BASELINE V1'
         required: false
         type: string
+      checkpoint_run_id:
+        description: 'Run backup precedente da cui riprendere il checkpoint cifrato (facoltativo)'
+        required: false
+        type: string
+      checkpoint_source_commit:
+        description: 'SHA privato completo del checkpoint, per ripresa dopo una correzione del motore'
+        required: false
+        type: string
 
 permissions:
   contents: read
@@ -42,7 +50,7 @@ jobs:
           test -n "$PRIVATE_REPO_PAT" || { echo "::error::PAT per repository privato mancante"; exit 1; }
 
       - name: Scarica motore backup incrementale
-        uses: actions/checkout@v7
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           repository: ${{ secrets.PRIVATE_REPO }}
           token: ${{ secrets.PRIVATE_REPO_PAT || secrets.PERSONAL_ACCESS_TOKEN || secrets.PAT || secrets.GH_PAT || secrets.GITHUB_PAT }}
@@ -52,13 +60,34 @@ jobs:
           persist-credentials: false
 
       - name: Recupera checkpoint cifrato da un eventuale rerun
-        uses: actions/download-artifact@v4
+        if: inputs.checkpoint_run_id == ''
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
         continue-on-error: true
         with:
           name: backup-checkpoint
           path: source/backup-output
 
-      - uses: actions/setup-node@v7
+      - name: Valida richiesta di ripresa da un altro run
+        if: inputs.checkpoint_run_id != ''
+        env:
+          CHECKPOINT_RUN_ID: ${{ inputs.checkpoint_run_id }}
+          CHECKPOINT_SOURCE_COMMIT: ${{ inputs.checkpoint_source_commit }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          [[ "$CHECKPOINT_RUN_ID" =~ ^[0-9]+$ ]] || { echo '::error::Run checkpoint non valido'; exit 1; }
+          [[ "$CHECKPOINT_SOURCE_COMMIT" =~ ^[a-fA-F0-9]{40}$ ]] || { echo '::error::SHA checkpoint completo richiesto'; exit 1; }
+
+      - name: Recupera il solo checkpoint cifrato richiesto
+        if: inputs.checkpoint_run_id != ''
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: backup-checkpoint
+          path: source/backup-output
+          run-id: ${{ inputs.checkpoint_run_id }}
+          github-token: ${{ github.token }}
+
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7
         with:
           node-version: '22'
           cache: npm
@@ -78,13 +107,15 @@ jobs:
           CALABRIAVERA_BACKUP_ENCRYPTION_KEY: ${{ secrets.CALABRIAVERA_BACKUP_ENCRYPTION_KEY }}
           REQUESTED_MODE: ${{ github.event_name == 'schedule' && 'incremental' || inputs.mode }}
           BASELINE_CONFIRM: ${{ inputs.confirm }}
+          CV_BACKUP_RESUME_SOURCE_COMMIT: ${{ inputs.checkpoint_source_commit }}
+          CV_BACKUP_REQUIRE_CHECKPOINT: ${{ inputs.checkpoint_run_id != '' }}
         shell: bash
         run: |
           set -euo pipefail
           mode="${REQUESTED_MODE:-incremental}"
           case "$mode" in
             incremental)
-              node --input-type=module -e 'import { appendFileSync } from "node:fs"; import { downloadBackup, latestVerifiedBackup } from "./tools/backup/releases.mjs"; const repository=process.env.PRIVATE_REPO || "Mirkolas/calabriavera"; const latest=await latestVerifiedBackup(repository); let ready=false; if (!latest) { console.log("Nessun backup verificato: safe-skip, zero letture Firestore."); } else { const { archive }=await downloadBackup(repository, latest.tag_name, process.env.CALABRIAVERA_BACKUP_ENCRYPTION_KEY); ready=Number(archive.metadata.incrementalSchemaVersion || 0)===1; console.log(`Ultimo backup ${latest.tag_name}: schema ${archive.metadata.incrementalSchemaVersion || 0}; ready=${ready}`); } appendFileSync(process.env.GITHUB_OUTPUT, `ready=${ready}\nmode=incremental\n`);'
+              node --input-type=module -e 'import { appendFileSync } from "node:fs"; import { execFileSync } from "node:child_process"; import { readCheckpoint, validateCheckpoint } from "./tools/backup/checkpoint.mjs"; import { downloadBackup, latestVerifiedBackup } from "./tools/backup/releases.mjs"; const repository=process.env.PRIVATE_REPO || "Mirkolas/calabriavera"; let ready=false; const checkpoint=readCheckpoint("backup-output/resume.cvcheckpoint",process.env.CALABRIAVERA_BACKUP_ENCRYPTION_KEY); if(checkpoint){const validation=validateCheckpoint(checkpoint,{project:"calabriavera-e08d4",repository,sourceCommit:execFileSync("git",["rev-parse","HEAD"],{encoding:"utf8"}).trim(),mode:"incremental",incrementalSchemaVersion:1,resumeSourceCommit:process.env.CV_BACKUP_RESUME_SOURCE_COMMIT}); ready=validation.valid && checkpoint.completedPhases.includes("firestore"); if(!ready && process.env.CV_BACKUP_REQUIRE_CHECKPOINT==="true") throw Error(`Checkpoint richiesto rifiutato: ${validation.reason}`); } else if(process.env.CV_BACKUP_REQUIRE_CHECKPOINT==="true") throw Error("Checkpoint richiesto assente"); if(!ready){const latest=await latestVerifiedBackup(repository); if(!latest){console.log("Nessun backup verificato: safe-skip, zero letture Firestore.");}else{const {archive}=await downloadBackup(repository,latest.tag_name,process.env.CALABRIAVERA_BACKUP_ENCRYPTION_KEY); ready=Number(archive.metadata.incrementalSchemaVersion || 0)===1; console.log(`Ultimo backup ${latest.tag_name}: schema ${archive.metadata.incrementalSchemaVersion || 0}; ready=${ready}`);}} else console.log("Checkpoint cifrato valido: nessuna nuova acquisizione Firestore."); appendFileSync(process.env.GITHUB_OUTPUT,`ready=${ready}\nmode=incremental\n`);'
               ;;
             full-emergency)
               echo 'Backup completo di emergenza: non abilita la baseline incrementale.'
@@ -108,7 +139,35 @@ jobs:
         working-directory: source
         run: npm run test:backup
 
-      - uses: google-github-actions/auth@v3
+      - name: Trova i byte della più recente release Hosting conservata
+        if: steps.preflight.outputs.ready == 'true'
+        id: hosting_artifact
+        uses: actions/github-script@ed597411d8f924073f98dfc5c65a23a2325f34cd # v8
+        with:
+          script: |
+            const runs = await github.rest.actions.listWorkflowRuns({
+              ...context.repo, workflow_id: 'firebase-deploy.yml', branch: 'main', per_page: 20
+            });
+            for (const run of runs.data.workflow_runs) {
+              if (run.event === 'pull_request') continue;
+              const { data } = await github.rest.actions.listWorkflowRunArtifacts({ ...context.repo, run_id: run.id });
+              if (data.artifacts.some(a => a.name === 'firebase-hosting-release' && !a.expired)) {
+                core.setOutput('run_id', String(run.id));
+                return;
+              }
+            }
+            core.warning('Artifact Hosting non disponibile: restano obbligatori gli hash della release e i fallback verificati.');
+
+      - name: Recupera i byte pubblici esatti senza consumare Firebase Hosting
+        if: steps.preflight.outputs.ready == 'true' && steps.hosting_artifact.outputs.run_id != ''
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: firebase-hosting-release
+          path: source/frontend-react/dist
+          run-id: ${{ steps.hosting_artifact.outputs.run_id }}
+          github-token: ${{ github.token }}
+
+      - uses: google-github-actions/auth@7c6bc770dae815cd3e89ee6cdf493a5fab2cc093 # v3
         if: steps.preflight.outputs.ready == 'true'
         with:
           workload_identity_provider: ${{ vars.FIREBASE_WIF_PROVIDER }}
@@ -166,6 +225,8 @@ jobs:
           BACKUP_MODE: ${{ steps.preflight.outputs.mode }}
           CV_BACKUP_CHECKPOINT_PATH: backup-output/resume.cvcheckpoint
           CV_BACKUP_RETRY_DELAYS_MS: 30000,120000,300000
+          CV_BACKUP_RESUME_SOURCE_COMMIT: ${{ inputs.checkpoint_source_commit }}
+          CV_BACKUP_REQUIRE_CHECKPOINT: ${{ inputs.checkpoint_run_id != '' }}
         shell: bash
         run: |
           set -euo pipefail
@@ -178,10 +239,17 @@ jobs:
 
       - name: Conserva checkpoint cifrato se tutti i retry falliscono
         if: failure() && steps.preflight.outputs.ready == 'true'
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: backup-checkpoint
           path: source/backup-output/resume.cvcheckpoint
           if-no-files-found: ignore
           retention-days: 2
           overwrite: true
+
+      - name: Evidenzia backup incompleto senza pubblicare dati sensibili
+        if: failure()
+        shell: bash
+        run: |
+          echo '::error::Backup non completato: il checkpoint non sostituisce una copia completa verificata. Controllare il run e riprendere entro 48 ore senza rileggere Firestore.'
+          echo 'Backup incompleto. Nessuna copia precedente deve essere considerata sostituita da questo run.' >> "$GITHUB_STEP_SUMMARY"

@@ -6,6 +6,11 @@ on:
     paths:
       - '.github/workflows/auth-domain-config.yml'
   workflow_dispatch:
+    inputs:
+      send_test_reset:
+        description: 'Inviare un reset al solo account QA e verificare la consegna'
+        type: boolean
+        default: false
 
 permissions:
   contents: read
@@ -29,12 +34,14 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          result="$(curl --fail --silent --show-error --location --retry 3 "${APPS_SCRIPT_URL}?check=auth-links")"
-          test "$(printf '%s' "$result" | jq -r '.ok')" = "true"
-          test "$(printf '%s' "$result" | jq -r '.oauthAuthorized')" = "true"
-          echo "Gateway Auth Spark autorizzato: OK"
+          health="$(curl --fail --silent --show-error --location --retry 3 "${APPS_SCRIPT_URL}")"
+          printf '%s' "$health" | jq --exit-status '.ok == true and .service == "calabriavera-email-gateway" and .emailSent == false and (.version | type == "string") and ((keys - ["ok", "service", "version", "emailSent"]) | length == 0)' > /dev/null
+          diagnostic="$(curl --fail --silent --show-error --location --retry 3 "${APPS_SCRIPT_URL}?check=auth-links")"
+          printf '%s' "$diagnostic" | jq --exit-status '.ok == false and .code == "DIAGNOSTICS_PRIVATE" and .emailSent == false and keys == ["code", "emailSent", "ok"]' > /dev/null
+          echo "Gateway pubblico raggiungibile; diagnostica Auth privata e nessuna email inviata."
 
       - name: Invia reset QA tramite CalabriaVera
+        if: github.event_name == 'workflow_dispatch' && inputs.send_test_reset == true
         shell: bash
         run: |
           set -euo pipefail
@@ -45,13 +52,15 @@ jobs:
           echo "Richiesta email reset QA accettata dal gateway CalabriaVera."
 
       - id: gcp-auth
-        uses: google-github-actions/auth@v3
+        if: github.event_name == 'workflow_dispatch' && inputs.send_test_reset == true
+        uses: google-github-actions/auth@7c6bc770dae815cd3e89ee6cdf493a5fab2cc093 # v3
         with:
           workload_identity_provider: ${{ vars.FIREBASE_WIF_PROVIDER }}
           service_account: ${{ vars.FIREBASE_DEPLOY_SERVICE_ACCOUNT }}
           token_format: access_token
 
       - name: Diagnostica stato account e consegne verifica
+        if: github.event_name == 'workflow_dispatch' && inputs.send_test_reset == true
         env:
           ACCESS_TOKEN: ${{ steps.gcp-auth.outputs.access_token }}
         shell: bash
@@ -95,6 +104,7 @@ jobs:
           NODE
 
       - name: Verifica host salvato senza leggere il link
+        if: github.event_name == 'workflow_dispatch' && inputs.send_test_reset == true
         env:
           ACCESS_TOKEN: ${{ steps.gcp-auth.outputs.access_token }}
         shell: bash
@@ -121,3 +131,7 @@ jobs:
           if(!ok) throw new Error('Nessuna email password.reset inviata con actionHost calabriavera.com');
           console.log('Email Auth verificata: actionHost=calabriavera.com, stato=sent');
           NODE
+
+      - name: Rimuovi risposte QA temporanee
+        if: always() && github.event_name == 'workflow_dispatch' && inputs.send_test_reset == true
+        run: rm -f /tmp/auth-mail-result.json /tmp/account.json /tmp/mail-diagnostic.json /tmp/mail-query.json

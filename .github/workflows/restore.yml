@@ -11,6 +11,14 @@ on:
         description: 'Modificare Firebase? false = sola simulazione'
         type: boolean
         default: false
+      offline_verify:
+        description: 'Verifica cifratura, manifest e ripristinabilità senza leggere o scrivere Firebase'
+        type: boolean
+        default: true
+      emulator_drill:
+        description: 'Prova restore reale nei soli emulatori locali, senza leggere o scrivere Firebase'
+        type: boolean
+        default: false
       confirmation:
         description: 'Conferma richiesta dal tool privato'
         type: string
@@ -52,7 +60,7 @@ jobs:
           test -n "$PRIVATE_REPO_PAT" || { echo "::error::PAT per repository privato mancante"; exit 1; }
 
       - name: Scarica sorgente privato
-        uses: actions/checkout@v7
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           repository: ${{ secrets.PRIVATE_REPO }}
           token: ${{ secrets.PRIVATE_REPO_PAT }}
@@ -60,7 +68,7 @@ jobs:
           path: source
           persist-credentials: false
 
-      - uses: actions/setup-node@v7
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7
         with:
           node-version: '22'
 
@@ -69,12 +77,14 @@ jobs:
         run: npm ci && npm --prefix tools ci --no-audit --no-fund && npm run build && npm run test:backup
 
       - name: Autentica Google Cloud con WIF
-        uses: google-github-actions/auth@v3
+        if: inputs.offline_verify != true && inputs.emulator_drill != true
+        uses: google-github-actions/auth@7c6bc770dae815cd3e89ee6cdf493a5fab2cc093 # v3
         with:
           workload_identity_provider: ${{ vars.FIREBASE_WIF_PROVIDER }}
           service_account: ${{ vars.FIREBASE_RESTORE_SERVICE_ACCOUNT }}
 
       - name: Simulazione o ripristino con copia preventiva
+        if: inputs.emulator_drill != true
         working-directory: source
         env:
           GITHUB_TOKEN: ${{ secrets.PRIVATE_REPO_PAT }}
@@ -83,8 +93,32 @@ jobs:
           FIREBASE_AUTH_HASH_CONFIG: ${{ secrets.FIREBASE_AUTH_HASH_CONFIG }}
           RESTORE_BACKUP_TAG: ${{ inputs.backup_tag }}
           RESTORE_APPLY: ${{ inputs.apply }}
+          RESTORE_OFFLINE_VERIFY: ${{ inputs.offline_verify }}
           RESTORE_CONFIRM: ${{ inputs.confirmation }}
           RESTORE_EXACT: ${{ inputs.exact }}
           RESTORE_DELETE_CONFIRM: ${{ inputs.delete_confirmation }}
           RESTORE_SITE_SETTINGS: ${{ inputs.site_settings }}
         run: node tools/backup/restore.mjs
+
+      - name: Verifica parametri del drill isolato
+        if: inputs.emulator_drill == true
+        env:
+          RESTORE_APPLY: ${{ inputs.apply }}
+        run: test "$RESTORE_APPLY" != 'true' || { echo '::error::Il drill emulatore non consente apply'; exit 1; }
+
+      - name: Prepara Java per gli emulatori locali
+        if: inputs.emulator_drill == true
+        uses: actions/setup-java@b843ebf9b913146b38da2eaa7aeddf76074ae1ad # v6
+        with:
+          distribution: temurin
+          java-version: '21'
+
+      - name: Prova il backup nei soli emulatori locali
+        if: inputs.emulator_drill == true
+        working-directory: source
+        env:
+          GITHUB_TOKEN: ${{ secrets.PRIVATE_REPO_PAT }}
+          PRIVATE_REPO: ${{ secrets.PRIVATE_REPO }}
+          CALABRIAVERA_BACKUP_ENCRYPTION_KEY: ${{ secrets.CALABRIAVERA_BACKUP_ENCRYPTION_KEY }}
+          RESTORE_BACKUP_TAG: ${{ inputs.backup_tag }}
+        run: npx --yes firebase-tools@15.28.1 emulators:exec --project demo-calabriavera --only firestore,auth 'node tools/backup/drill.mjs'
