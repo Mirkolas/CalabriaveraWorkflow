@@ -34,7 +34,7 @@ permissions:
   id-token: write
 
 concurrency:
-  group: firebase-production-backup
+  group: ${{ inputs.hosting_diagnostics_only == true && 'hosting-backup-diagnostic' || 'firebase-production-backup' }}
   cancel-in-progress: false
 
 jobs:
