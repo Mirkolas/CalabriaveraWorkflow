@@ -1,5 +1,5 @@
 name: Produzione - Cloudflare primario e fallback Firebase
-# Source deploy marker: 3a9badbd2a19d06aca60afa1fa1b848fb4cda8ad - always-on OSM business and tourism maps; Google external only
+# Source deploy marker: 7da062f132cbd6f975d7ab37d3eb10794888fdad - always-on OSM maps, privacy disclosures, nullable observer build fix
 
 on:
   push:
