@@ -1,5 +1,5 @@
 name: Produzione - Cloudflare primario e fallback Firebase
-# Source deploy marker: fe873be5916341fdf53bb51ff2d45fceca3fe8d4 - security fixes plus fail-closed auth test and Google map frame correction
+# Source deploy marker: a6d11d3b1fb55cfcd9ea47e1c5ed6db8ab33ccfb - OWASP tests in CI gate; verified map frame and security fixes; source matches successful QA
 
 on:
   push:
