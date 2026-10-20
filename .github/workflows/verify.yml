@@ -1,5 +1,5 @@
 name: Verifica codice e backup
-# QA verification marker: 96df23f7b24939e2edf9155f481175737fb4c171 - security hardening and quota controls
+# QA verification marker: a6d11d3b1fb55cfcd9ea47e1c5ed6db8ab33ccfb - OWASP security regression tests, dependency audit, Firebase emulators and build
 
 on:
   push:
