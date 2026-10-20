@@ -1,5 +1,5 @@
 name: Produzione - Cloudflare primario e fallback Firebase
-# Source deploy marker: 6b780e6fa27ea661fe687f239f3fb9f463d89c66 - OSM explorer, keyless Google Maps detail iframes, XSS fix and production console cleanup
+# Source deploy marker: 2b9366c5b73be411eaec323bbcf9899a3c760be6 - map-frame parity; OWASP fail-closed user status, SSRF redirect guard, safer SPA protocols; browser checks
 
 on:
   push:
