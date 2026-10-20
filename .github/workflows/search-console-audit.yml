@@ -1,6 +1,11 @@
 name: SEO - Indicizzazione completa Google
 
 on:
+  # A change to this audit workflow starts a one-off exhaustive Search Console inspection.
+  # Normal deployments keep the cheaper 20-URL sample to protect API quotas.
+  push:
+    branches: [main]
+    paths: ['.github/workflows/search-console-audit.yml']
   workflow_dispatch:
 
 permissions:
