@@ -171,6 +171,7 @@ jobs:
           done
           test "$ready" = true || { cat /tmp/cv-map-preview.log; exit 1; }
           npm run test:e2e:map
+          SMOKE_ARTIFACT_DIR=/tmp/cv-map-e2e/images node tests/react-image-routing-e2e.cjs
 
       - name: Conserva report e screenshot filtri mappa
         if: always()
