@@ -1,5 +1,5 @@
 name: Produzione - Cloudflare primario e fallback Firebase
-# Source deploy marker: 2b9366c5b73be411eaec323bbcf9899a3c760be6 - map-frame parity; OWASP fail-closed user status, SSRF redirect guard, safer SPA protocols; browser checks
+# Source deploy marker: fe873be5916341fdf53bb51ff2d45fceca3fe8d4 - security fixes plus fail-closed auth test and Google map frame correction
 
 on:
   push:
