@@ -1,5 +1,5 @@
 name: Produzione - Cloudflare primario e fallback Firebase
-# Source deploy marker: 3b7b286f4fc6218c761c851f98a903e503b73acf - Workers quota savings through Cloudflare native static assets; preserve auth, SEO, R2 controls
+# Source deploy marker: fc2df1ce934ff30288dbed0c62e85a781c79bffe - native static asset routing and hydration-safe localized blog; monitor Worker savings
 
 on:
   push:
