@@ -194,6 +194,24 @@ jobs:
         working-directory: source/frontend-react
         run: npx wrangler deploy
 
+      - name: Aggiorna il Worker immagini esistente senza cambiare dominio o bucket
+        working-directory: source/frontend-react
+        run: node node_modules/wrangler/bin/wrangler.js deploy --config wrangler.images.jsonc
+
+      - name: Verifica gateway immagini reale e separazione dei namespace privati
+        shell: bash
+        run: |
+          set -euo pipefail
+          origin="https://img.calabriavera.com"
+          headers="$(curl --fail --silent --show-error --head --retry 3 "$origin/static/assets/Logo-640.webp")"
+          printf '%s\n' "$headers" | grep -Eiq '^content-type:[[:space:]]*image/webp'
+          printf '%s\n' "$headers" | grep -Eiq '^x-calabriavera-hosting:[[:space:]]*cloudflare-images'
+          printf '%s\n' "$headers" | grep -Eiq '^x-calabriavera-image-source:[[:space:]]*cloudflare-r2'
+          for path in /archive/private.webp /settings/private.webp /api/images/avatar; do
+            status="$(curl --silent --show-error --head --output /dev/null --write-out '%{http_code}' "$origin$path")"
+            test "$status" = '404' || { echo "::error::Namespace immagine non isolato: $path ($status)"; exit 1; }
+          done
+
       - name: Verifica la release primaria su workers.dev prima del fallback
         working-directory: source
         shell: bash

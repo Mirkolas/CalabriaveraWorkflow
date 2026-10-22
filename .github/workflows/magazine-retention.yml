@@ -83,10 +83,9 @@ jobs:
           workload_identity_provider: ${{ vars.FIREBASE_BLOG_WIF_PROVIDER }}
           service_account: ${{ vars.FIREBASE_BLOG_SERVICE_ACCOUNT }}
 
-      - name: Anteprima scadenze e risparmio letture
-        working-directory: source
-        run: node tools/magazine-retention.mjs --dry-run --scheduled
-
+      # Apply performs the same eligibility checks and emits the complete stats.
+      # A preceding dry-run would repeat every post/social read without adding
+      # approval or stronger archive verification.
       - name: Archivia su R2 con verifica SHA-256 e soltanto poi rimuovi gli idonei
         working-directory: source
         shell: bash

@@ -184,7 +184,7 @@ jobs:
               ...context.repo, workflow_id: 'firebase-deploy.yml', branch: 'main', per_page: 20
             });
             for (const run of runs.data.workflow_runs) {
-              if (run.event === 'pull_request') continue;
+              if (run.event === 'pull_request' || run.status !== 'completed' || run.conclusion !== 'success') continue;
               const { data } = await github.rest.actions.listWorkflowRunArtifacts({ ...context.repo, run_id: run.id });
               if (data.artifacts.some(a => a.name === 'firebase-hosting-release' && !a.expired)) {
                 core.setOutput('run_id', String(run.id));
@@ -208,8 +208,22 @@ jobs:
           workload_identity_provider: ${{ vars.FIREBASE_WIF_PROVIDER }}
           service_account: ${{ vars.FIREBASE_BACKUP_SERVICE_ACCOUNT }}
 
-      - name: Build locale per verifica Hosting
-        if: steps.preflight.outputs.ready == 'true'
+      - name: Verifica artifact e SHA sorgente contro gli hash della release Hosting
+        if: steps.preflight.outputs.ready == 'true' && steps.hosting_artifact.outputs.run_id != ''
+        id: hosting_artifact_verified
+        working-directory: source
+        env:
+          FIREBASE_PROJECT_ID: calabriavera-e08d4
+        shell: bash
+        run: |
+          set -euo pipefail
+          if ! node tools/backup/hosting-artifact.mjs; then
+            echo '::warning::Artifact non corrispondente alla release corrente: uso preparazione locale e fallback verificati.'
+            echo 'artifact_verified=false' >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Build locale soltanto senza artifact Hosting verificato
+        if: steps.preflight.outputs.ready == 'true' && steps.hosting_artifact_verified.outputs.artifact_verified != 'true'
         working-directory: source
         run: npm run build
 

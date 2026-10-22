@@ -221,7 +221,10 @@ jobs:
           if [ "$RUN_VERIFY" = "true" ]; then dispatch source-verify; fi
           if [ "$RUN_DEPLOY" = "true" ]; then dispatch source-deploy; fi
           if [ "$RUN_APPS" = "true" ]; then dispatch source-apps-script-deploy; fi
-          if [ "$RUN_SEO" = "true" ]; then dispatch source-seo-push; fi
+          # A production release already regenerates the live sitemap and SEO.
+          # Keep the independent SEO trigger for SEO-only changes; avoid its
+          # Firestore comparison and second deploy when the same push publishes.
+          if [ "$RUN_SEO" = "true" ] && [ "$RUN_DEPLOY" != "true" ]; then dispatch source-seo-push; fi
 
           if [ "$RUN_MAGAZINE" = "true" ]; then
             gh api --method POST "repos/${GH_REPO}/dispatches" \

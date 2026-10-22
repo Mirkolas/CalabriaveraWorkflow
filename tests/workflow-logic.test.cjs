@@ -159,6 +159,26 @@ test('Source watcher applies private path filters and social flags before dispat
   }
 });
 
+test('one source push dispatches one production release while preserving SEO-only refreshes', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'cv-watch-dispatch-test-'));
+  try {
+    for (const [deploy, seo, expected] of [['true','true',['source-deploy']], ['true','false',['source-deploy']], ['false','true',['source-seo-push']], ['false','false',[]]]) {
+      const log = path.join(dir, `${deploy}-${seo}`);
+      const script = `
+        gh() { printf '%s\\n' "$*" >> "$MOCK_CALL_LOG"; }
+        export -f gh
+        ${runBlock(workflow('source-watch.yml'), '- name: Avvia gli equivalenti dei trigger privati')}
+      `;
+      const result = spawnSync(bash, ['-c', script], { encoding: 'utf8', env: { ...process.env,
+        GITHUB_REPOSITORY:'fixture/runner', GH_REPO:'fixture/runner', MOCK_CALL_LOG:portable(log), RUN_DEPLOY:deploy, RUN_SEO:seo,
+        RUN_VERIFY:'false', RUN_APPS:'false', RUN_MAGAZINE:'false' } });
+      assert.equal(result.status, 0, result.stderr || result.stdout);
+      const calls = fs.existsSync(log) ? fs.readFileSync(log, 'utf8').trim().split(/\r?\n/).map(line => line.match(/event_type=([^ ]+)/)?.[1]) : [];
+      assert.deepEqual(calls, expected);
+    }
+  } finally { fs.rmSync(dir, { recursive:true, force:true }); }
+});
+
 function runReleaseCheck({ event = 'repository_dispatch', live = 'source-sha', changed = false, unavailable = false } = {}) {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'cv-release-check-test-'));
   try {
@@ -275,7 +295,7 @@ test('Safe cleanup uses an exact 20-day UTC calendar without a database read', (
     // Archiving is now allowed only after R2 SHA-256 verification, live
     // source-version match and protected-social-queue checks.
     assert.match(magazine, /schedule:/);
-    assert.match(magazine, /--dry-run --scheduled/);
+    assert.doesNotMatch(magazine, /--dry-run --scheduled/);
     assert.match(magazine, /--apply --scheduled/);
     assert.match(magazine, /node tools\/magazine-retention\.mjs --apply/);
     assert.match(magazine, /Controlla che Cloudflare abbia già pubblicato esattamente questo sorgente/);
@@ -289,6 +309,7 @@ test('Production deploy orders tests, verified R2 uploads, Cloudflare primary an
   const text = workflow('firebase-deploy.yml');
   const markers = ['npm test', "CV_PRERENDER_OFFLINE: '0'", 'node tests/admin-readonly-e2e.cjs', 'npm run test:e2e:map',
     'node frontend-react/scripts/upload-r2-static.mjs --apply', 'run: npx wrangler deploy',
+    'deploy --config wrangler.images.jsonc', '- name: Verifica gateway immagini reale',
     '- name: Verifica la release primaria su workers.dev', '- name: Aggiorna il fallback React su Firebase Hosting'];
   const positions = markers.map(marker => text.indexOf(marker));
   assert.ok(positions.every(position => position >= 0), 'A production gate is missing');
