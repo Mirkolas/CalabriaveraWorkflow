@@ -1,7 +1,14 @@
 name: Architettura reale e quote - sola lettura
 
 on:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/resource-audit.yml'
   workflow_dispatch:
+  # Collect seven complete UTC days (23-29 October 2026) the following morning.
+  schedule:
+    - cron: '17 6 24-30 10 *'
 
 permissions:
   contents: read
@@ -17,7 +24,21 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
+      - name: Gate seven-day observation window without accessing providers
+        id: window
+        shell: bash
+        run: |
+          set -euo pipefail
+          today="$(date -u +%F)"
+          if [ "$GITHUB_EVENT_NAME" != "schedule" ] || { [[ "$today" > "2026-10-23" ]] && [[ "$today" < "2026-10-31" ]]; }; then
+            echo "allowed=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "allowed=false" >> "$GITHUB_OUTPUT"
+            echo "Observation window closed: no provider API calls."
+          fi
+
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        if: steps.window.outputs.allowed == 'true'
         with:
           repository: ${{ secrets.PRIVATE_REPO }}
           token: ${{ secrets.PRIVATE_REPO_PAT || secrets.PERSONAL_ACCESS_TOKEN || secrets.PAT || secrets.GH_PAT || secrets.GITHUB_PAT }}
@@ -25,21 +46,66 @@ jobs:
           path: source
           persist-credentials: false
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7
+        if: steps.window.outputs.allowed == 'true'
         with:
           node-version: '22'
-      - working-directory: source
+      - if: steps.window.outputs.allowed == 'true'
+        working-directory: source
         run: npm --prefix tools ci --no-audit --no-fund
       - uses: google-github-actions/auth@7c6bc770dae815cd3e89ee6cdf493a5fab2cc093 # v3
+        if: steps.window.outputs.allowed == 'true'
         with:
           workload_identity_provider: ${{ vars.FIREBASE_WIF_PROVIDER }}
           service_account: ${{ vars.FIREBASE_DEPLOY_SERVICE_ACCOUNT }}
       - name: Leggi metadati e contatori aggregati senza dati applicativi
+        if: steps.window.outputs.allowed == 'true'
         working-directory: source
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           CLOUDFLARE_ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
         run: node tools/ops/resource-audit.mjs
+      - name: Riepiloga i contatori misurati e i permessi ancora mancanti
+        if: steps.window.outputs.allowed == 'true'
+        working-directory: source
+        shell: bash
+        run: |
+          node --input-type=commonjs <<'NODE'
+          const fs = require('node:fs');
+          const r = JSON.parse(fs.readFileSync('resource-audit.json', 'utf8'));
+          const lines = ['## CalabriaVera - seven-day quota observation', '',
+            'UTC completed days: ' + r.interval.start.slice(0, 10) + ' to ' + r.interval.end.slice(0, 10) + ' (end exclusive)', '',
+            '| UTC day | Main Worker | Image Worker | Combined / day |',
+            '|---|---:|---:|---:|'];
+          const byDay = new Map();
+          if (r.cloudflare?.workerMetrics?.available) {
+            for (const item of r.cloudflare.workerMetrics.value || []) {
+              const day = item.dimensions?.date;
+              if (!day) continue;
+              const entry = byDay.get(day) || { main: 0, images: 0 };
+              if (item.dimensions?.scriptName === 'calabriavera') entry.main += Number(item.sum?.requests || 0);
+              if (item.dimensions?.scriptName === 'calabriavera-images-worker') entry.images += Number(item.sum?.requests || 0);
+              byDay.set(day, entry);
+            }
+          }
+          if (!byDay.size) lines.push('| unavailable | - | - | - |');
+          for (const [day, counts] of [...byDay].sort(([a], [b]) => a.localeCompare(b))) {
+            const total = counts.main + counts.images;
+            lines.push('| ' + day + ' | ' + counts.main + ' | ' + counts.images + ' | ' + total + ' |');
+            if (total > 100000) lines.push('', '> **WARNING:** ' + day + ' exceeded the 100,000 Workers Free reference for the whole account (other scripts may add more).', '');
+            else if (total >= 80000) lines.push('', '> **WARNING:** ' + day + ' exceeded 80% of the Workers Free account reference.', '');
+          }
+          lines.push('', 'Firestore usage metrics:');
+          for (const op of ['read', 'write', 'delete']) {
+            const state = r.firestoreMetrics?.[op];
+            lines.push('- ' + op + ': ' + (state?.available ? 'data returned (verify completeness and timezone)' : 'UNAVAILABLE (HTTP ' + (state?.httpStatus || 'unknown') + ')'));
+          }
+          lines.push('', 'Traffic attribution: Worker requests are measured totals, **not visitors**. Human/bot split cannot be inferred from aggregate Worker counts. GitHub Actions are a separate workload; their run counts are not a reliable estimate of Worker requests.', '');
+          fs.appendFileSync(process.env.GITHUB_STEP_SUMMARY, lines.join('\n') + '\n');
+          console.log('Seven-day quota summary written; missing metrics are explicitly marked unavailable.');
+          NODE
+
       - name: Conserva solo il rapporto aggregato
+        if: steps.window.outputs.allowed == 'true'
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: resource-audit
