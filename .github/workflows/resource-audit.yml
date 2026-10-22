@@ -32,7 +32,7 @@ jobs:
       - uses: google-github-actions/auth@7c6bc770dae815cd3e89ee6cdf493a5fab2cc093 # v3
         with:
           workload_identity_provider: ${{ vars.FIREBASE_WIF_PROVIDER }}
-          service_account: ${{ vars.FIREBASE_BACKUP_SERVICE_ACCOUNT }}
+          service_account: ${{ vars.FIREBASE_DEPLOY_SERVICE_ACCOUNT }}
       - name: Leggi metadati e contatori aggregati senza dati applicativi
         working-directory: source
         env:
