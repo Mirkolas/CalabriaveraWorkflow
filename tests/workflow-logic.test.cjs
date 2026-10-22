@@ -35,6 +35,31 @@ function runBlock(text, marker) {
   return block[1].replace(/^ {10}/gm, '');
 }
 
+test('Apps Script quota configuration accepts current defaults and upgrades legacy defaults', () => {
+  const block = runBlock(workflow('apps-script-deploy.yml'), 'name: Applica protezione quota Firestore al worker email').replaceAll('\r', '');
+  const code = block.match(/node <<'NODE'\n([\s\S]*?)\nNODE/)?.[1];
+  assert.ok(code, 'Missing quota migration script');
+  const current = [
+    'const EMAIL_AUTOMATION_INTERVAL_MINUTES = 10;',
+    'const EMAIL_AUTOMATION_MAX_EVENTS = 10;',
+    'const EMAIL_AUTOMATION_CAMPAIGN_BATCH = 10;',
+    'const EMAIL_AUTOMATION_WELCOME_RECOVERY_USERS = 50;',
+    'const EMAIL_AUTOMATION_WELCOME_RECOVERY_INTERVAL_MS = 24 * 60 * 60 * 1000;',
+  ].join('\n');
+  const legacy = current.replace('INTERVAL_MINUTES = 10', 'INTERVAL_MINUTES = 1').replace('MAX_EVENTS = 10', 'MAX_EVENTS = 50').replace('CAMPAIGN_BATCH = 10', 'CAMPAIGN_BATCH = 50').replace('RECOVERY_USERS = 50', 'RECOVERY_USERS = 120').replace('INTERVAL_MS = 24', 'INTERVAL_MS = 6');
+  const run = input => {
+    let output = input;
+    vm.runInNewContext(code, { require: name => {
+      assert.equal(name, 'node:fs');
+      return { readFileSync: () => output, writeFileSync: (file, value) => { output = value; } };
+    } });
+    return output;
+  };
+  assert.equal(run(current), current);
+  assert.equal(run(legacy), current);
+  assert.throws(() => run(current.replace('INTERVAL_MINUTES = 10', 'INTERVAL_MINUTES = 99')), /Contratto EmailAutomation/);
+});
+
 function runMagazine(marker, event, cron, notDue = false, failQuota = false) {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'cv-workflow-test-'));
   try {

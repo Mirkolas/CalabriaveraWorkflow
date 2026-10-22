@@ -78,8 +78,8 @@ jobs:
             ["const EMAIL_AUTOMATION_WELCOME_RECOVERY_INTERVAL_MS = 6 * 60 * 60 * 1000;", "const EMAIL_AUTOMATION_WELCOME_RECOVERY_INTERVAL_MS = 24 * 60 * 60 * 1000;"]
           ];
           for (const [before, after] of replacements) {
-            if (!s.includes(before)) throw new Error(`Contratto EmailAutomation non trovato: ${before}`);
-            s = s.replace(before, after);
+            if (s.includes(before)) s = s.replace(before, after);
+            else if (!s.includes(after)) throw new Error(`Contratto EmailAutomation non trovato: ${before}`);
           }
           fs.writeFileSync(file, s);
           NODE
