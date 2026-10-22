@@ -1,5 +1,5 @@
 name: Produzione - Cloudflare primario e fallback Firebase
-# Source deploy marker: 7e7ce09efb69c684268c41fe2c4dd6b694d365da - desktop OSM list and notification XSS fixes; hydration-safe SSR/client mount and resilient SEO checks
+# Source deploy marker: 3b7b286f4fc6218c761c851f98a903e503b73acf - Workers quota savings through Cloudflare native static assets; preserve auth, SEO, R2 controls
 
 on:
   push:
@@ -314,6 +314,35 @@ jobs:
             fi
           done
           echo "React su Cloudflare produzione verificato: $live"
+
+      # Native Cloudflare Static Assets do not invoke Workers and therefore
+      # cannot consume the daily 100k Worker invocation allowance.
+      # Regressions in routing would silently undo this saving.
+      - name: Verifica asset JS/CSS serviti senza invocare il Worker
+        working-directory: source/frontend-react
+        shell: bash
+        run: |
+          set -euo pipefail
+          asset="$(find dist/assets -type f \\( -name '*.js' -o -name '*.css' \\) -print -quit)"
+          test -n "$asset" || { echo '::error::Nessun asset JS/CSS distribuito'; exit 1; }
+          relative="${asset#dist}"
+          test "$relative" != "$asset" || exit 1
+          for attempt in 1 2 3; do
+            if curl --fail --silent --show-error --head --location --connect-timeout 10 --max-time 30 "https://calabriavera.com${relative}?cf_asset_check=${GITHUB_RUN_ID}&attempt=${attempt}" -o /tmp/cv-static-asset-headers.txt; then
+              break
+            fi
+            if [ "$attempt" = 3 ]; then echo '::error::Asset statico non disponibile'; exit 1; fi
+            sleep 3
+          done
+          if grep -Eqi '^X-CalabriaVera-Hosting:' /tmp/cv-static-asset-headers.txt; then
+            echo "::error::L'asset ${relative} invoca ancora il Worker (quota gratuita a rischio)"
+            exit 1
+          fi
+          grep -Eqi '^X-Content-Type-Options:[[:space:]]*nosniff' /tmp/cv-static-asset-headers.txt || {
+            echo '::error::Header di sicurezza assente negli asset nativi'
+            exit 1
+          }
+          echo "Cloudflare Static Assets: ${relative} consegnato senza Worker invocation."
 
       - name: Verifica il fallback Firebase senza consumare la quota del dominio primario
         working-directory: source
