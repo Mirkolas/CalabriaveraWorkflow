@@ -323,7 +323,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          asset="$(find dist/assets -type f \\( -name '*.js' -o -name '*.css' \\) -print -quit)"
+          asset="$(find dist/assets -type f -name '*.js' -print -quit)"
           test -n "$asset" || { echo '::error::Nessun asset JS/CSS distribuito'; exit 1; }
           relative="${asset#dist}"
           test "$relative" != "$asset" || exit 1
