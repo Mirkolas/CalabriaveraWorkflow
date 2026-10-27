@@ -1,4 +1,5 @@
 name: Verifica codice e backup
+# SEO full verification for approved-only sitemap, noindex tourism, current R2 image and undici 7.30.1
 # SEO regression verification: business-only sitemap, magazine always noindex.
 # QA verification marker: a6d11d3b1fb55cfcd9ea47e1c5ed6db8ab33ccfb - OWASP security regression tests, dependency audit, Firebase emulators and build
 
