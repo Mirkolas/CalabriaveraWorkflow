@@ -13,6 +13,34 @@ const bash = process.platform === 'win32'
   : '/bin/bash';
 const portable = value => value.replaceAll('\\', '/');
 
+test('all external Actions use immutable commits and checkouts discard their credentials', () => {
+  const names = fs.readdirSync(path.join(__dirname, '../.github/workflows')).filter(name => /\.ya?ml$/.test(name));
+  let external = 0;
+  for (const name of names) {
+    const text = workflow(name);
+    for (const match of text.matchAll(/^\s*(?:-\s*)?uses:\s*([^\s#]+)/gm)) {
+      const action = match[1];
+      if (action.startsWith('./')) continue;
+      assert.match(action, /^[^@]+@[a-f0-9]{40}$/, `${name}: mutable action ${action}`);
+      external++;
+    }
+    for (const block of text.split(/\r?\n\s{6}- /).filter(value => /uses:\s*actions\/checkout@/.test(value))) {
+      assert.match(block, /persist-credentials:\s*false/, `${name}: checkout must not persist its PAT`);
+    }
+    assert.doesNotMatch(text, /^\s*pull_request_target:/m, `${name}: privileged jobs must not run untrusted PR code`);
+  }
+  assert.ok(external > 50, 'The check must cover the complete workflow control plane');
+});
+
+test('Firestore access rules are deployed once before publishing the Worker that consumes them', () => {
+  const text = workflow('firebase-deploy.yml');
+  const ruleStep = text.indexOf('- name: Deploy Firestore rules e indexes');
+  const edgeStep = text.indexOf('- name: Pubblica Cloudflare Worker come hosting primario');
+  assert.ok(ruleStep > 0 && ruleStep < edgeStep);
+  assert.equal(text.match(/- name: Deploy Firestore rules e indexes/g)?.length, 1);
+  assert.ok(text.indexOf('- name: Installa strumenti Hosting e Search Console') < ruleStep);
+});
+
 test('branded email verification cannot send QA email or read accounts without explicit manual opt-in', () => {
   const text=workflow('auth-domain-config.yml');
   assert.match(text,/send_test_reset:[\s\S]*?type: boolean\r?\n\s+default: false/);

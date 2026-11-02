@@ -33,13 +33,13 @@ jobs:
           test -n "$PRIVATE_REPO_PAT" || { echo "::error::PAT repository privato mancante"; exit 1; }
 
       - name: Scarica repository workflow
-        uses: actions/checkout@v7
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           path: workflow-repo
           persist-credentials: false
 
       - name: Scarica sorgente privato
-        uses: actions/checkout@v7
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           repository: ${{ secrets.PRIVATE_REPO }}
           token: ${{ env.PRIVATE_REPO_PAT }}
@@ -47,7 +47,7 @@ jobs:
           path: source
           persist-credentials: false
 
-      - uses: actions/setup-node@v7
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7
         with:
           node-version: '22'
 
@@ -91,15 +91,16 @@ jobs:
           if (oneTime.length) throw new Error(`Workflow one-time non ammessi nel control plane definitivo: ${oneTime.join(', ')}`);
           if (removed.length) throw new Error(`Workflow di migrazione già completati non devono tornare: ${removed.join(', ')}`);
 
-          const checkoutOffenders = [];
+          const actionOffenders = [];
           for (const name of names) {
             const text = fs.readFileSync(path.join(dir, name), 'utf8');
-            for (const match of text.matchAll(/uses:\s*actions\/checkout@v(\d+)/g)) {
-              if (match[1] !== '7') checkoutOffenders.push(`${name} (checkout@v${match[1]})`);
+            for (const match of text.matchAll(/^\s*(?:-\s*)?uses:\s*([^\s#]+)/gm)) {
+              const action = match[1];
+              if (!action.startsWith('./') && !/^[^@]+@[a-f0-9]{40}$/.test(action)) actionOffenders.push(`${name} (${action})`);
             }
           }
-          if (checkoutOffenders.length) throw new Error(`Versioni checkout non allineate: ${checkoutOffenders.join(', ')}`);
-          console.log(`Control plane: ${names.length} workflow YAML, set permanente presente, nessun one-time, checkout allineato.`);
+          if (actionOffenders.length) throw new Error(`Action esterne senza commit immutabile: ${actionOffenders.join(', ')}`);
+          console.log(`Control plane: ${names.length} workflow YAML, set permanente presente, nessun one-time, action esterne fissate a commit.`);
           NODE
 
       - name: Verifica manifest workflow privati

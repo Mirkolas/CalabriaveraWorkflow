@@ -6,9 +6,9 @@ on:
     paths:
       - '.github/workflows/resource-audit.yml'
   workflow_dispatch:
-  # Collect seven complete UTC days (23-29 October 2026) the following morning.
+  # One aggregate inspection weekly; no application document reads or writes.
   schedule:
-    - cron: '17 6 24-30 10 *'
+    - cron: '17 6 * * 1'
 
 permissions:
   contents: read
@@ -24,18 +24,12 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
-      - name: Gate seven-day observation window without accessing providers
+      - name: Gate weekly aggregate inspection without accessing providers
         id: window
         shell: bash
         run: |
           set -euo pipefail
-          today="$(date -u +%F)"
-          if [ "$GITHUB_EVENT_NAME" != "schedule" ] || { [[ "$today" > "2026-10-23" ]] && [[ "$today" < "2026-10-31" ]]; }; then
-            echo "allowed=true" >> "$GITHUB_OUTPUT"
-          else
-            echo "allowed=false" >> "$GITHUB_OUTPUT"
-            echo "Observation window closed: no provider API calls."
-          fi
+          echo "allowed=true" >> "$GITHUB_OUTPUT"
 
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         if: steps.window.outputs.allowed == 'true'
