@@ -1,11 +1,17 @@
 name: Blog automatico - RSS e OpenData
-# Source magazine marker: a06695ff0727c4d48f6803ea51513165a2e2bf98
+# Source magazine marker: 661f89e9016f70d249c300900592342d019f2df2
 
 on:
   schedule:
     - cron: '17 0 * * *'
     - cron: '17 6 * * *'
     - cron: '17 12,18 * * *'
+  # An explicit update to this public runner is a controlled release, unlike
+  # quota-limited scheduled/repository-dispatch imports.
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/magazine-sync.yml'
   workflow_dispatch:
     inputs:
       mode:
