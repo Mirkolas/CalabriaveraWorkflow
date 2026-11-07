@@ -124,13 +124,13 @@ jobs:
 
       - name: Controlla tutte le fonti e pubblica i nuovi contenuti
         id: magazine
-        if: github.event_name == 'schedule' || github.event_name == 'repository_dispatch' || (github.event_name == 'workflow_dispatch' && inputs.mode == 'blog')
+        if: github.event_name == 'push' || github.event_name == 'schedule' || github.event_name == 'repository_dispatch' || (github.event_name == 'workflow_dispatch' && inputs.mode == 'blog')
         working-directory: source
         env:
           NODE_OPTIONS: --import=./tools/source-fetch-compat.mjs
           AUTOMATION_INTERVAL_MINUTES: '360'
           AUTOMATION_LOCK_MINUTES: '35'
-          AUTOMATION_FORCE: ${{ (github.event_name == 'workflow_dispatch' && inputs.mode == 'blog') || (github.event_name == 'repository_dispatch' && github.event.client_payload.magazine_force == true) }}
+          AUTOMATION_FORCE: ${{ github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && inputs.mode == 'blog') || (github.event_name == 'repository_dispatch' && github.event.client_payload.magazine_force == true) }}
         shell: bash
         run: |
           set -euo pipefail
@@ -197,7 +197,7 @@ jobs:
           exit "$code"
 
       - name: Pubblica la coppia Social se dovuta
-        if: steps.magazine.outputs.quota_exhausted != 'true' && steps.maintenance.outputs.quota_exhausted != 'true' && (github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && (inputs.mode == 'social-watchdog' || inputs.mode == 'social-dry-run' || inputs.mode == 'social-publish')) || (github.event_name == 'repository_dispatch' && (github.event.client_payload.social_dry_run == true || github.event.client_payload.social_publish == true)))
+        if: steps.magazine.outputs.quota_exhausted != 'true' && steps.maintenance.outputs.quota_exhausted != 'true' && (github.event_name == 'push' || github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && (inputs.mode == 'social-watchdog' || inputs.mode == 'social-dry-run' || inputs.mode == 'social-publish')) || (github.event_name == 'repository_dispatch' && (github.event.client_payload.social_dry_run == true || github.event.client_payload.social_publish == true)))
         working-directory: source
         env:
           META_GRAPH_VERSION: ${{ vars.META_GRAPH_VERSION || 'v26.0' }}
@@ -217,7 +217,7 @@ jobs:
           AUTOMATION_INTERVAL_MINUTES: '360'
           AUTOMATION_LOCK_MINUTES: '35'
           AUTOMATION_ADVANCE_ON_FAILURE: 'true'
-          AUTOMATION_FORCE: ${{ (github.event_name == 'workflow_dispatch' && inputs.mode == 'social-publish') || (github.event_name == 'repository_dispatch' && github.event.client_payload.social_publish == true) }}
+          AUTOMATION_FORCE: ${{ github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && inputs.mode == 'social-publish') || (github.event_name == 'repository_dispatch' && github.event.client_payload.social_publish == true) }}
         shell: bash
         run: |
           set -euo pipefail
